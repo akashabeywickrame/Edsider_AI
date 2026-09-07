@@ -1,0 +1,23 @@
+venv/
+__pycache__/
+*.pyc
+data/*.db
+.pytest_cache/
+
+# Real EdSider exports. Their question bank is not ours to commit -
+# data/questions.json and data/ground_truth.json are the sample set and
+# stay tracked, but anything exported from their database does not.
+data/*.csv
+data/edsider_*.json
+# Same export, from before this file's own data/*.csv rule existed - at
+# the repo root, wrong extension for that rule to catch. 684 MB, and it
+# is real EdSider data, not ours to commit either.
+edsider_questions.csv.pub
+
+# Real database credentials for scripts/sync.py. Never committed -
+# .env.example documents what belongs here with no real values.
+.env
+
+# Timestamped safety-net copies of a real database, taken before a risky
+# operation (see CLAUDE.md). Real data, and large - never committed.
+data/*.bak*

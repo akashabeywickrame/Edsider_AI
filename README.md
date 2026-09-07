@@ -20,7 +20,7 @@ at this scale.
 ## Run
 
 ```
-.\venv\Scripts\python.exe -m pytest tests\ -v      78 tests
+.\venv\Scripts\python.exe -m pytest tests\ -v      106 tests
 .\venv\Scripts\python.exe scripts\load.py          load sample questions
 .\venv\Scripts\python.exe scripts\embed.py         compute fingerprints
 .\venv\Scripts\python.exe scripts\find_similar.py  command-line results
@@ -28,13 +28,82 @@ at this scale.
 .\venv\Scripts\streamlit.exe run app.py            the web interface
 ```
 
-To check a single question against the bank:
+To check a single question against the bank, from a terminal:
 
 ```
 .\venv\Scripts\python.exe scripts\check_new.py "Your question here"
 ```
 
 `embed.py` downloads the model on first run, then caches it.
+
+## Running it as a service
+
+`check_new.py` reloads the model on every run - fine once, wrong for
+anything that needs an answer repeatedly. `service.py` loads the model
+and the bank's fingerprints once, keeps them in memory, and answers
+requests over HTTP:
+
+```
+$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
+.\venv\Scripts\uvicorn.exe service:app --host 0.0.0.0 --port 8000
+```
+
+Then, from anywhere:
+
+```
+curl -X POST http://localhost:8000/check -H "Content-Type: application/json" -d '{
+  "text": "Explain the process of photosynthesis in green plants.",
+  "grade": "8", "subject": "Science"
+}'
+```
+
+```json
+{
+  "verdict": "LIKELY DUPLICATE",
+  "exact_duplicate_of": [],
+  "matches": [{"id": "9011", "text": "...", "score": 0.97, "reasons": []}],
+  "elapsed_ms": 157.1
+}
+```
+
+Measured against the real 15,998-question bank: an exact match resolves
+in **4.6ms** (Pass 1 only - the model is never touched), and a reworded
+question resolves in **157ms** (a real embedding plus the guard layer).
+
+`GET /health` reports what the service is currently serving against -
+which database, how many comparable questions, whether the model has
+finished loading. `POST /reload` re-reads OUR OWN database and rebuilds
+the in-memory index, without restarting the process - it does not talk
+to EdSider. `GET /docs` is a form for trying `/check` by hand in the
+browser.
+
+## Pulling directly from EdSider's database
+
+```
+cp .env.example .env         # fill in PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD
+.\venv\Scripts\python.exe scripts\sync.py
+.\venv\Scripts\python.exe scripts\embed.py
+```
+
+This replaces the manual CSV export for ongoing use - it queries
+EdSider's own PostgreSQL with a read-only account and pulls only
+questions newer than the last successful sync (tracked in our own
+database, not theirs). It reuses `import_edsider.py`'s row mapping
+unchanged, so a Postgres row and a CSV row are handled identically.
+
+The account needs `SELECT` only, and the script opens its own session
+read-only as a second safeguard - it never writes to EdSider's database.
+`--full` ignores the watermark and pulls everything; `--reload-url`
+tells a running `service.py` to pick up what was just synced.
+
+This does not make checking "real-time" by itself - something still has
+to run `sync.py` on a schedule (cron, Task Scheduler, or similar). See
+`CLAUDE.md` for what's still open with EdSider's team before this can
+run against their real database rather than a local test.
+
+This is a local service, not yet a deployed one - see "What 'usable as a
+service' still needs" in `CLAUDE.md` for what stands between this and
+something EdSider's own save button could call.
 
 ## Using real EdSider data
 
@@ -202,7 +271,7 @@ scripts/
   find_similar.py          Stages 1-2, self-scoring
   check_new.py             one question against the bank
   tune.py                  threshold sweep, with vs without guards
-tests/                     78 tests
+tests/                     106 tests
 data/
   questions.json           30 sample questions, duplicates planted
   ground_truth.json        the answer key
