@@ -123,6 +123,48 @@ def find_contrast(text_a, text_b):
     return None
 
 
+# Words too common to distinguish anything - every question shares them,
+# so they would drown out real candidates. Deliberately short: this is a
+# heuristic that surfaces CANDIDATES for a person to review, not a rule
+# that fires on its own, so erring toward keeping a borderline word in
+# costs nothing - a person filters the rest.
+_STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "of", "in", "on", "to", "and", "or", "for", "with", "by", "from",
+    "at", "as", "this", "that", "these", "those", "its", "it", "not",
+    "what", "which", "how", "why", "when", "where", "who", "does", "do",
+    "did", "has", "have", "had", "will", "would", "should", "can",
+    "given", "following", "above", "below", "each", "one", "two",
+    "into", "than", "then", "your", "you", "their", "there", "about",
+}
+
+_CANDIDATE_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def candidate_contrast_terms(text_a, text_b):
+    """Words present in one question's text but not the other's -
+    candidates for CONTRAST_GROUPS, not new rules by themselves.
+
+    Meant to be called when a reviewer marks a pair the system flagged
+    as similar "Not a duplicate" - the two texts scored close enough to
+    be shown together, so whatever vocabulary differs between them is
+    a plausible reason they are NOT the same question, the same
+    reasoning find_contrast() already applies to the hand-written
+    CONTRAST_GROUPS list, just without a list to check against yet.
+
+    Nothing here is applied automatically - "the system suggests, a
+    person decides" applies just as much to a new guard term as it does
+    to a merge. This only records what MIGHT distinguish a pair, for a
+    person to confirm later before it becomes a real CONTRAST_GROUPS
+    entry (see CLAUDE.md, "known limitations").
+
+    Returns (only_in_a, only_in_b) - two sorted lists of words.
+    """
+    words_a = {w.lower() for w in _CANDIDATE_WORD.findall(text_a)} - _STOPWORDS
+    words_b = {w.lower() for w in _CANDIDATE_WORD.findall(text_b)} - _STOPWORDS
+    return sorted(words_a - words_b), sorted(words_b - words_a)
+
+
 def check(question_a, question_b):
     """Run every guard on a pair.
 

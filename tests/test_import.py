@@ -221,3 +221,14 @@ def test_shape_reaches_the_saved_question():
     row = dict(ROWS[0], sub_questions="1,2,3")
     assert to_question(row, 1)["shape"] == "parent"
     assert to_question(ROWS[0], 1)["shape"] == "standalone"
+
+
+def test_children_raw_is_captured_on_a_parent_row():
+    """Kept verbatim so store.link_children_to_parents() can derive each
+    child's parent_id later, independent of import order."""
+    row = dict(ROWS[0], sub_questions="837,838,839")
+    assert to_question(row, 1)["children_raw"] == "837,838,839"
+
+
+def test_children_raw_is_none_on_a_non_parent_row():
+    assert to_question(ROWS[0], 1)["children_raw"] is None

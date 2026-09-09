@@ -8,11 +8,16 @@ Cheapest technique first, most expensive last.
 """
 
 import json
+import re
+from collections import defaultdict
 
 import numpy as np
 
 from . import guards
 from .embeddings import similarity_matrix
+from .normalize import normalize
+
+_LETTERS = re.compile(r"[A-Za-z]")
 
 # Score bands. Provisional until tuned against real labelled data.
 AUTO_THRESHOLD = 0.92
@@ -210,6 +215,116 @@ def check_one(question, rows, use_guards=True,
 
     results.sort(key=lambda r: -r["score"])
     return results[:top_k]
+
+
+def find_within_assessment_duplicates(assessment_groups, use_guards=True,
+                                      threshold=0.95):
+    """Find repeats within each assessment (exam paper), not across the
+    whole bank.
+
+    `assessment_groups` is {assessment_id: rows} - typically
+    store.questions_in_assessment() called once per
+    store.assessment_ids(). Each group is compared only against itself
+    with find_pairs(), reused rather than reimplemented.
+
+    threshold defaults to 0.95, not REVIEW_THRESHOLD (0.85) - measured,
+    not assumed, on the real bank: at 0.85, 650 real papers produced
+    34,648 "repeats", 89% of them sitting at 0.85-0.90 and looking like
+    "Russian Revolution" MCQ options scored against "French Revolution"
+    MCQ options - the same raw-embedding false-positive shape the
+    whole-bank sweep has, not genuine repeats. MCQ option text carries
+    enough shared vocabulary that guards barely help here (34,648 ->
+    27,829 with guards on, at 0.85) - unlike the whole-bank sweep, the
+    fix is the threshold, not the guard layer. At 0.95, real spot-checks
+    were all genuine: the exact same MCQ, word for word, landing twice
+    on one paper.
+
+    use_guards defaults to True anyway, since it still filters out a
+    real fraction of the noise (323 -> 194 pairs at 0.95) for no cost -
+    the earlier assumption that a small group makes guards pointless
+    turned out to only be true of the threshold, not the guards.
+
+    Returns a list of dicts like find_pairs, each also carrying its
+    assessment_id, highest score first.
+    """
+    results = []
+    for assessment_id, rows in assessment_groups.items():
+        for pair in find_pairs(rows, use_guards=use_guards, threshold=threshold):
+            pair["assessment_id"] = assessment_id
+            results.append(pair)
+    results.sort(key=lambda r: -r["score"])
+    return results
+
+
+def find_cross_passage_duplicates(children, use_guards=True, threshold=0.95,
+                                  min_letters=10, max_parents=4):
+    """Find a sub-question reused under a DIFFERENT passage/parent - the
+    one case a comprehension set's own structure cannot rule out by
+    itself.
+
+    `children` is store.linked_children_with_embeddings() - comparable
+    sub-questions, each carrying a `parent_id`. Two failure modes run in
+    opposite directions here, which is why this is a separate function
+    from find_pairs() rather than a call to it with no changes:
+
+    - Two sub-questions under the SAME parent are SUPPOSED to differ - a
+      comprehension set of six questions on one passage is not six
+      duplicates of each other. Comparing them would recreate exactly
+      the false-positive storm that concatenating passage + question
+      produces (measured: 0.978-0.987 for genuinely different questions
+      sharing one passage) - so pairs sharing a parent_id are never
+      compared at all, not merely demoted.
+    - The same sub-question reused under a DIFFERENT parent_id, on a
+      different paper, is a genuine repeat and today nothing else checks
+      for it - sub-questions are excluded from every other check in this
+      codebase (COMPARABLE requires shape='standalone') because a
+      sub-question means nothing without its parent for context. Here,
+      the parent_id itself is what makes the comparison safe: it is not
+      being used to judge meaning, only to guarantee two sub-questions
+      being compared did not come from the same six-question set.
+
+    Three numbers here are measured against the real bank, not assumed -
+    the first version of this shipped with threshold=REVIEW_THRESHOLD
+    (0.85) and no filters, and that was wrong the same way the
+    within-assessment check's first version was wrong:
+
+    - min_letters drops a "sub-question" that is not real question text
+      at all - an MCQ option letter ("c__________"), a raw number, a
+      fill-in-the-blank stub. 2,241 of 16,967 real linked children (13%)
+      fell under 10 real letters, and they dominated the highest-scoring
+      "matches" (score 1.0, because the TEXT is identical, not because
+      the content means anything - "5" matching "5" is not a duplicate).
+    - max_parents drops a sub-question text recurring under more than
+      this many DIFFERENT parents - the sub-question equivalent of the
+      already-documented "Fill in the blanks" parent-row redundancy: a
+      generic prompt every comprehension paper of a kind asks ("What is
+      the title of the poem?"), not a one-off copy-paste duplicate.
+    - threshold still matters after both filters: at 0.85 on the
+      filtered real data, still 171,032 matches, 92% sitting in the
+      0.85-0.90 band - the same raw-embedding-noise shape the
+      whole-bank and within-assessment sweeps both have. At 0.95, 2,055
+      pairs, and ten real random spot-checks were all genuine - exact
+      repeats, and legitimate rewordings ("Explain the process of
+      credit creation by commercial banks." vs "Explain how commercial
+      banks 'create money' through the credit creation process.").
+
+    Returns a list of dicts like find_pairs, highest score first.
+    """
+    children = [r for r in children
+               if len(_LETTERS.findall(r["text"])) >= min_letters]
+
+    by_norm = defaultdict(set)
+    for r in children:
+        by_norm[normalize(r["text"])].add(r["parent_id"])
+    generic = {t for t, parents in by_norm.items() if len(parents) > max_parents}
+    children = [r for r in children if normalize(r["text"]) not in generic]
+
+    by_id = {r["id"]: r for r in children}
+    pairs = find_pairs(children, use_guards=use_guards, threshold=threshold)
+    return [
+        p for p in pairs
+        if by_id[p["a"]]["parent_id"] != by_id[p["b"]]["parent_id"]
+    ]
 
 
 def search(query_vector, rows, top_k=5):

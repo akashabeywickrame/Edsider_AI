@@ -84,6 +84,26 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_id         INTEGER NOT NULL DEFAULT 0,
     last_synced_at  TEXT
 );
+
+-- Which assessments (exam papers) each question appears on. Mirrors
+-- EdSider's own assessment.assessment_question junction table directly -
+-- a question can legitimately appear on more than one assessment (the
+-- same item reused across two Grade 10 Term 1 papers is normal, not a
+-- bug), so this is a many-to-many link, not a column on questions.
+-- Keyed on link_id - their own assessment_question_id - so a re-synced
+-- row replaces itself instead of duplicating.
+CREATE TABLE IF NOT EXISTS question_assessments (
+    link_id          INTEGER PRIMARY KEY,
+    assessment_id    TEXT NOT NULL,
+    question_id      TEXT NOT NULL,
+    question_number  INTEGER,
+    mark_allocation  REAL,
+    section_id       TEXT,
+    added_by         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_qa_assessment ON question_assessments(assessment_id);
+CREATE INDEX IF NOT EXISTS idx_qa_question   ON question_assessments(question_id);
 """
 
 
@@ -117,6 +137,28 @@ def connect():
 MIGRATIONS = [
     ("questions", "title", "TEXT"),
     ("questions", "shape", "TEXT NOT NULL DEFAULT 'standalone'"),
+    # Which parent (passage/stimulus) a sub-question belongs to - set on
+    # the CHILD row. Nothing at import time knows this about a child in
+    # isolation (a row only lists its OWN id); it is filled in after the
+    # fact by link_children_to_parents(), reading it off the parent's own
+    # children_raw.
+    ("questions", "parent_id", "TEXT"),
+    # The parent's raw, EdSider-supplied comma list of its own children's
+    # ids ("837,838,839"), stored verbatim on the PARENT row. Kept around
+    # (rather than only used transiently at import time) so
+    # link_children_to_parents() can be re-run at any time, in any order
+    # relative to when the children themselves arrive, and always recover
+    # the same links - a child synced before its parent, or re-synced
+    # later, is repaired (or stays linked - see save()) the next time it
+    # runs.
+    ("questions", "children_raw", "TEXT"),
+    # A JSON-encoded (only_in_a, only_in_b) word list - see
+    # guards.candidate_contrast_terms(). Populated only when a reviewer
+    # rejects a pair the system flagged ("Not a duplicate"), as raw
+    # material for later promoting real entries into
+    # guards.CONTRAST_GROUPS. Never read automatically by anything -
+    # a person reviews it first.
+    ("decisions", "candidate_contrast_terms", "TEXT"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -125,6 +167,16 @@ MIGRATIONS = [
 # content is an image or equation - "Simplify" appears 110 times, each
 # time against a different expression that lives in an attachment.
 COMPARABLE = "shape = 'standalone' AND has_figure = 0"
+
+# A sub-question becomes safe to compare once it is LINKED to its parent -
+# not on its own text (meaningless alone - "how many links" fits six
+# different food chains) but as a way to tell WHICH sub-questions must
+# never be compared to each other (same parent_id - a comprehension set
+# is supposed to differ) from the one thing actually worth checking:
+# the same sub-question reused under a DIFFERENT parent_id, on a
+# different paper. See dedupe.find_cross_passage_duplicates().
+COMPARABLE_CHILD = ("shape = 'sub-question' AND has_figure = 0 "
+                    "AND parent_id IS NOT NULL")
 
 
 def use_database(path):
@@ -157,12 +209,29 @@ def init():
 
 
 def save(conn, q):
+    # ON CONFLICT DO UPDATE, not INSERT OR REPLACE - deliberately. A
+    # plain REPLACE deletes and re-inserts the whole row, which would
+    # wipe parent_id every time a child question is re-synced or
+    # re-imported (parent_id is never part of `q`; it comes only from
+    # link_children_to_parents()). Naming every updated column instead
+    # means parent_id is simply never touched here, so a link once made
+    # survives any number of re-saves of either the child or its parent.
     conn.execute(
-        """INSERT OR REPLACE INTO questions
+        """INSERT INTO questions
            (id, text, title, grade, subject, topic, marks, answer,
             language, contributor, source_file, content_hash, has_figure,
-            shape)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            shape, children_raw)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+               text=excluded.text, title=excluded.title,
+               grade=excluded.grade, subject=excluded.subject,
+               topic=excluded.topic, marks=excluded.marks,
+               answer=excluded.answer, language=excluded.language,
+               contributor=excluded.contributor,
+               source_file=excluded.source_file,
+               content_hash=excluded.content_hash,
+               has_figure=excluded.has_figure, shape=excluded.shape,
+               children_raw=excluded.children_raw""",
         (
             q["id"], q["text"], q.get("title"),
             q.get("grade"), q.get("subject"),
@@ -171,8 +240,40 @@ def save(conn, q):
             q.get("source_file"), q["content_hash"],
             1 if q.get("has_figure") else 0,
             q.get("shape", "standalone"),
+            q.get("children_raw"),
         ),
     )
+
+
+def link_children_to_parents(conn):
+    """Recompute parent_id on every child, from every parent's own
+    children_raw.
+
+    Order-independent and safe to re-run after any import or sync: a
+    child that did not exist yet on an earlier run gets linked the next
+    time this runs after it arrives, and save() leaves parent_id alone
+    on a re-save (see the comment there), so a link once made survives
+    a later re-sync of either row.
+
+    Returns how many child rows carry a parent_id after this call.
+    """
+    parents = conn.execute(
+        "SELECT id, children_raw FROM questions "
+        "WHERE shape = 'parent' AND children_raw IS NOT NULL"
+    ).fetchall()
+
+    for parent in parents:
+        child_ids = [c.strip() for c in parent["children_raw"].split(",")
+                    if c.strip()]
+        for cid in child_ids:
+            conn.execute(
+                "UPDATE questions SET parent_id = ? WHERE id = ?",
+                (parent["id"], cid),
+            )
+
+    return conn.execute(
+        "SELECT COUNT(*) AS n FROM questions WHERE parent_id IS NOT NULL"
+    ).fetchone()["n"]
 
 
 def count(conn):
@@ -294,6 +395,46 @@ def questions_needing_embedding(conn, model, language=None):
     ).fetchall()
 
 
+def children_needing_embedding(conn, model, language=None):
+    """Same idea as questions_needing_embedding(), over linked
+    sub-questions instead of standalone rows.
+
+    A separate pass, not a broader filter on the existing one: a
+    sub-question is only worth fingerprinting once it is linked to its
+    parent (see COMPARABLE_CHILD) - fingerprinting one that is not
+    linked would let it into a comparison where it has no way to be
+    correctly excluded from its own siblings.
+    """
+    params = [model]
+    lang_filter = ""
+    if language is not None:
+        lang_filter = "AND q.language = ?"
+        params.append(language)
+    return conn.execute(
+        f"""SELECT DISTINCT q.content_hash, MIN(q.text) AS text
+            FROM questions q
+            LEFT JOIN embeddings e
+              ON e.content_hash = q.content_hash AND e.model = ?
+            WHERE e.content_hash IS NULL AND {COMPARABLE_CHILD} {lang_filter}
+            GROUP BY q.content_hash""",
+        params,
+    ).fetchall()
+
+
+def linked_children_with_embeddings(conn, model):
+    """Comparable sub-questions, each carrying its parent_id - the pool
+    dedupe.find_cross_passage_duplicates() runs over."""
+    return conn.execute(
+        f"""SELECT q.*, e.vector
+            FROM questions q
+            JOIN embeddings e
+              ON e.content_hash = q.content_hash AND e.model = ?
+            WHERE {COMPARABLE_CHILD}
+            ORDER BY q.id""",
+        (model,),
+    ).fetchall()
+
+
 def questions_with_embeddings(conn, model):
     """Every question joined to its fingerprint, comparable or not."""
     return conn.execute(
@@ -343,10 +484,87 @@ def embedding_count(conn):
 
 
 def record_decision(conn, a, b, verdict, decided_by,
-                    similarity=None, guard_flags=None):
+                    similarity=None, guard_flags=None,
+                    candidate_contrast_terms=None):
+    """`candidate_contrast_terms` is (only_in_a, only_in_b) from
+    guards.candidate_contrast_terms() - only meaningful, and only ever
+    passed by a caller, when verdict is 'distinct': what vocabulary
+    might explain why a pair the system flagged turned out not to be a
+    duplicate. Stored as JSON for a person to review later; nothing
+    reads it back automatically."""
     conn.execute(
         """INSERT INTO decisions
-           (question_a, question_b, similarity, guard_flags, verdict, decided_by)
-           VALUES (?,?,?,?,?,?)""",
-        (a, b, similarity, guard_flags, verdict, decided_by),
+           (question_a, question_b, similarity, guard_flags, verdict,
+            decided_by, candidate_contrast_terms)
+           VALUES (?,?,?,?,?,?,?)""",
+        (a, b, similarity, guard_flags, verdict, decided_by,
+         json.dumps(candidate_contrast_terms) if candidate_contrast_terms else None),
     )
+
+
+def save_assessment_link(conn, link_id, assessment_id, question_id,
+                         question_number=None, mark_allocation=None,
+                         section_id=None, added_by=None):
+    """Upsert one row from EdSider's assessment.assessment_question.
+
+    Keyed on link_id - their own assessment_question_id - so a re-synced
+    row replaces itself instead of duplicating. Same idempotency
+    reasoning as save()'s content_hash keying and set_watermark()'s
+    ON CONFLICT.
+    """
+    conn.execute(
+        """INSERT INTO question_assessments
+           (link_id, assessment_id, question_id, question_number,
+            mark_allocation, section_id, added_by)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(link_id) DO UPDATE SET
+               assessment_id=excluded.assessment_id,
+               question_id=excluded.question_id,
+               question_number=excluded.question_number,
+               mark_allocation=excluded.mark_allocation,
+               section_id=excluded.section_id,
+               added_by=excluded.added_by""",
+        (link_id, assessment_id, question_id, question_number,
+         mark_allocation, section_id, added_by),
+    )
+
+
+def assessment_ids(conn):
+    """Every assessment with at least one linked, comparable, fingerprinted
+    question - what a within-paper sweep iterates over."""
+    return [r["assessment_id"] for r in conn.execute(
+        "SELECT DISTINCT assessment_id FROM question_assessments"
+    ).fetchall()]
+
+
+def questions_in_assessment(conn, assessment_id, model):
+    """Comparable, fingerprinted questions on one paper - the group a
+    within-assessment duplicate check runs over.
+
+    Small (tens of rows, not tens of thousands), unlike the whole-bank
+    sweep - which is exactly why the guard layer is skippable here: a
+    paper repeating the same MCQ is worth a person's eyes even if a
+    guard would soften it at bank scale.
+    """
+    return conn.execute(
+        f"""SELECT q.*, e.vector, qa.question_number
+            FROM question_assessments qa
+            JOIN questions  q ON q.id = qa.question_id
+            JOIN embeddings e ON e.content_hash = q.content_hash
+                              AND e.model = ?
+            WHERE qa.assessment_id = ? AND {COMPARABLE}
+            ORDER BY qa.question_number""",
+        (model, assessment_id),
+    ).fetchall()
+
+
+def assessments_for_question(conn, question_id):
+    """Which papers a question appears on - context for a cross-
+    assessment match ("also appears on assessment 6, question 3"),
+    where reuse with different values is expected rather than a
+    problem."""
+    return conn.execute(
+        """SELECT assessment_id, question_number FROM question_assessments
+           WHERE question_id = ? ORDER BY assessment_id""",
+        (question_id,),
+    ).fetchall()

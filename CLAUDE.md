@@ -223,10 +223,21 @@ seconds** once `VectorIndex` holds float32. Candidates above 0.97 / 0.95 /
 ## Known limitations
 
 - **The concept-contrast list in `guards.py` is hand-written** and does not
-  scale. Planned fix: mine it from EdSider's existing approved bank (any
-  high-scoring pair among already-approved questions tells you which words
-  distinguish questions), plus LLM adjudication for the handful of pairs
-  the rules cannot settle.
+  scale by itself, but the app now captures its own raw material for
+  growing it. `guards.candidate_contrast_terms(text_a, text_b)` diffs the
+  vocabulary of a pair - words in one text but not the other - and every
+  "Not a duplicate" click on a flagged pair, in both `app.py` review pages,
+  passes that diff into `store.record_decision()`'s new
+  `candidate_contrast_terms` column (JSON, `decisions` table). Nothing
+  reads this column automatically - it is deliberately just a capture
+  step, following the same "the system suggests, a person decides" rule
+  as everything else in this project. What is still missing: a review
+  step (a script or a page listing the most common candidate pairs across
+  many rejections) where a person promotes the real ones into
+  `CONTRAST_GROUPS` by hand. That needs real rejections to accumulate
+  first - as of this writing there are still zero in either database, all
+  existing `decisions` rows being confirms - so the column exists and is
+  wired in, but nothing has populated it yet.
 - **Thresholds are tuned on 30 English questions.** They must be re-derived
   on EdSider's real bank via `tune.py`, which needs a few hundred pairs
   labelled by a teacher.
@@ -388,6 +399,148 @@ above concretely rather than by inspection.
 embedder rather than starting a server or loading the real model -
 same reasoning as `test_similarity.py` and `test_check_new.py`: prove
 the logic, not the model.
+
+## Assessments - a question can belong to more than one paper
+
+`title` on a question is a per-question code, not a paper title - it
+was tried and ruled out as a way to identify which assessment a
+question belongs to. The real link lives in a separate junction table,
+`assessment.assessment_question` (columns confirmed directly against
+the live schema: `assessment_question_id` PK, `assessment_id`,
+`question_id`, `question_number`, `mark_allocation`, `section_id`,
+`added_by`, `is_optional`). Junction table means many-to-many: the
+same question legitimately appears on more than one paper - the same
+item reused across two Grade 10 Term 1 papers is normal, not a bug.
+
+That rules out a plain `assessment_id` column on `questions` (a
+question in three papers has nowhere to put the second and third id),
+and rules out folding it into `sync.py`'s existing `QUERY` (a `JOIN`
+there would fan a question out into one row per assessment it belongs
+to, breaking the one-row-per-question assumption `to_question()` and
+the watermark both rely on). Instead:
+
+- **`question_assessments`**, a local table mirroring the real one,
+  keyed on `link_id` (their own `assessment_question_id`) so a re-synced
+  row upserts rather than duplicates - same idempotency reasoning as
+  `save()`'s `content_hash` keying.
+- **A second query and a second watermark in `sync.py`**
+  (`SOURCE_LINKS = "edsider_assessment_links"`), independent of the
+  question sync - it can run, fail, or be re-run without touching
+  question rows, and vice versa.
+- **This data only reaches OUR database through `sync.py`.** The
+  original CSV export never included `assessment_question` - it is a
+  different schema entirely - so `import_edsider.py`'s CSV path has no
+  way to populate it. A CSV-imported bank will show no assessment
+  links until it is later kept in sync live.
+
+Two different checks fall out of this, and only one is new logic:
+
+- **Across assessments** - the same question, reworded or with
+  different numbers, on two different papers - is already handled
+  correctly by the existing whole-bank sweep: Guard 1 (`numbers_differ`)
+  already stops a template-with-different-values from being flagged.
+  `question_assessments` just adds visible context here (`store.
+  assessments_for_question()`, surfaced in the UI as "Also appears on
+  assessment(s): #6, #9") rather than changing any scoring.
+- **Within one assessment** - the same question appearing twice on the
+  SAME paper, MCQ or structured or essay - is a real problem.
+  `dedupe.find_within_assessment_duplicates()` groups comparable
+  questions by `assessment_id` (`store.questions_in_assessment()`) and
+  runs the existing `find_pairs()` on each small group. Surfaced in the
+  app as its own page, "Duplicates within a paper," separate from the
+  whole-bank sweep.
+
+  The first version of this skipped guards and used `REVIEW_THRESHOLD`
+  (0.85), on the reasoning that a paper is small enough that a false
+  alarm costs a reviewer nothing to dismiss. Measured against the real
+  bank instead of assumed: **wrong**. 650 real papers with more than one
+  comparable, embedded question produced **34,648** "repeats" at 0.85 -
+  89% of them sitting at 0.85-0.90 and looking exactly like the
+  whole-bank sweep's known false-positive shape, e.g. an MCQ about the
+  Russian Revolution scored 0.90 against one about the French Revolution
+  because their answer OPTIONS share vocabulary even though the
+  questions do not. Guards barely help here (34,648 -> 27,829 with
+  guards on, at 0.85) - MCQ option text carries too much shared
+  vocabulary for the guard list to catch. The threshold is what matters:
+  at **0.95**, 650 papers produced 194 pairs (guards on), and every one
+  spot-checked was a genuine word-for-word repeat, e.g. the same
+  economics MCQ, stem and all four options identical, saved onto one
+  paper twice. Guards stayed on anyway - no reason not to, since they
+  still remove real noise (323 -> 194 at 0.95) at no cost, and they
+  correctly stop two DIFFERENT-but-similar items (same template,
+  different numbers, deliberately placed on one paper as two separate
+  questions) from being flagged as if they were a copy-paste mistake.
+  `find_within_assessment_duplicates()` therefore defaults to
+  `use_guards=True, threshold=0.95` - not `REVIEW_THRESHOLD`.
+
+## Cross-passage duplicates - the comprehension-set problem
+
+There is no `passage` field to key off. `passage` is `NULL` for every
+row in the export; EdSider stores a multi-part comprehension question
+as a **parent** row (the shared stimulus) plus **child** rows (each
+actual question) - the same `shape` structure that already excludes
+sub-questions from every other check in this codebase, because a child
+means nothing on its own ("How many links does the food chain have?"
+fits six different food chains).
+
+That exclusion was correct as far as it went, but it threw out
+something real along with the noise: the same sub-question, reused
+under a **different** parent on a different paper, was invisible to
+every check. Fixing that without reintroducing the false-positive storm
+concatenation would cause (measured earlier: 0.978-0.987 for genuinely
+different questions sharing one passage, once glued together) needed
+the parent link to be explicit rather than assumed:
+
+- **`parent_id`** on the child, **`children_raw`** (verbatim) on the
+  parent. `store.link_children_to_parents()` derives the former from the
+  latter, and is deliberately idempotent and order-independent - a child
+  synced before its parent gets linked the next time this runs, and
+  `save()` was changed from `INSERT OR REPLACE` to `ON CONFLICT DO
+  UPDATE` naming every column explicitly, so a re-synced child no longer
+  silently loses a link a previous run already made.
+- **`dedupe.find_cross_passage_duplicates()`** compares linked children,
+  but only ever ACROSS different parents - two children sharing a
+  parent are never compared at all, not merely demoted, so the
+  concatenation failure mode cannot recur even by accident.
+- **`embed.py --children`** is a separate embedding pass - a
+  sub-question is only safe to fingerprint once it has a `parent_id`.
+
+**The first version of this, measured against the real bank, was
+noisy in a new way** - not the MCQ-option-vocabulary noise the
+assessment page had, but two different problems specific to
+sub-questions:
+
+- **Junk fragments.** A meaningful fraction of "sub-question" rows are
+  not question text at all - MCQ option letters (`"c__________"`), raw
+  numbers, fill-in-the-blank stubs. 2,241 of 16,967 real linked,
+  English, embedded children (13%) fell under 10 real letters, and they
+  dominated the highest-scoring false "matches" - score 1.0, because
+  the text really is identical, but "5" matching "5" means nothing.
+  Fixed with a `min_letters` filter in `find_cross_passage_duplicates()`.
+- **Generic recurring prompts.** The sub-question equivalent of the
+  already-documented "Fill in the blanks" parent-row redundancy - some
+  prompts ("What is the title of the poem?") are asked verbatim on
+  dozens of unrelated comprehension papers by design, not copied from
+  one to another. Fixed with a `max_parents` filter: a text recurring
+  under more than 4 distinct parents is treated as boilerplate, not a
+  duplicate.
+- **Threshold, same as everywhere else on the real bank.** Even after
+  both filters, 0.85 produced 171,032 pairs on 14,721 real children,
+  92% sitting in the same 0.85-0.90 raw-embedding-noise band every
+  other real-bank sweep has shown. At 0.95: 2,055 pairs, and ten random
+  spot-checks were all genuine - exact repeats, and legitimate
+  rewordings ("Explain the process of credit creation by commercial
+  banks." vs "Explain how commercial banks 'create money' through the
+  credit creation process."). `find_cross_passage_duplicates()`
+  defaults to `threshold=0.95, min_letters=10, max_parents=4`.
+
+Not yet done: a UI page for this (the assessment-scoping page is the
+template to follow), and the `min_letters`/`max_parents` filters could
+move earlier - into `COMPARABLE_CHILD` itself, via a precomputed column
+like `has_figure` - so a junk fragment is never embedded in the first
+place rather than filtered out after. Not done yet because it would
+mean a second re-embed of the already-embedded real children; worth
+doing the next time this needs a full re-sync anyway.
 
 **WAL mode** (`PRAGMA journal_mode=WAL`, set in `store.connect()`) went
 in alongside this. The default SQLite journal mode blocks a reader

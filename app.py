@@ -13,7 +13,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import store, dedupe
+from src import store, dedupe, guards
 from src.embeddings import DEFAULT_MODEL
 from src.normalize import content_hash
 
@@ -45,6 +45,49 @@ def sweep(db_name, threshold, use_guards):
     return dedupe.find_pairs(rows, use_guards=use_guards, threshold=threshold)
 
 
+@st.cache_data(ttl=15)
+def load_assessment_groups(db_name):
+    """Comparable, fingerprinted questions grouped by the paper they're
+    on. Only groups of more than one question can possibly contain a
+    within-paper repeat, so smaller ones are dropped here rather than
+    compared for nothing."""
+    with store.connect() as conn:
+        ids = store.assessment_ids(conn)
+        groups = {
+            aid: [dict(r) for r in
+                 store.questions_in_assessment(conn, aid, DEFAULT_MODEL)]
+            for aid in ids
+        }
+    return {aid: rs for aid, rs in groups.items() if len(rs) > 1}
+
+
+@st.cache_data(ttl=15)
+def other_assessments(db_name, qid):
+    """Which papers a question appears on - informational context, not a
+    flag. The same question on two different papers is normal; it is
+    only a problem when it repeats on the SAME paper (see the
+    'Duplicates within a paper' page)."""
+    with store.connect() as conn:
+        return [dict(r) for r in store.assessments_for_question(conn, qid)]
+
+
+def assessment_caption(qid):
+    links = other_assessments(store.DB_PATH.name, qid)
+    if not links:
+        return
+    where = ", ".join(f"#{l['assessment_id']}" for l in links)
+    st.caption(f"Also appears on assessment(s): {where}")
+
+
+def title_caption(q):
+    """The per-question code EdSider stores against this question - a
+    label for a reviewer to cross-reference against the paper, never
+    fingerprinted and never part of the comparison itself."""
+    title = q.get("title")
+    if title:
+        st.caption(f"Title: {title}")
+
+
 # ------------------------------------------------------------- sidebar
 
 st.sidebar.title("EdSider AI")
@@ -65,7 +108,7 @@ if banks:
 
 page = st.sidebar.radio(
     "View",
-    ["Check a new question", "Find duplicates",
+    ["Check a new question", "Find duplicates", "Duplicates within a paper",
      "Search by meaning", "Question bank"],
 )
 
@@ -131,11 +174,13 @@ if page == "Check a new question":
             )
             for r in exact:
                 st.markdown(f"**{r['id']}**")
+                title_caption(r)
                 st.write(r["text"])
                 st.caption(
                     f"Grade {r['grade']} - {r['subject']} - "
                     f"{r['topic'] or 'untagged'}"
                 )
+                assessment_caption(r["id"])
             st.info(
                 "Matched by hash alone. No embedding was computed - the "
                 "cheapest pass settled it."
@@ -192,11 +237,13 @@ if page == "Check a new question":
                     f"### :{colour}[{m['verdict']}] &nbsp; "
                     f"{m['score']:.0%} similar &nbsp; - &nbsp; {q['id']}"
                 )
+                title_caption(q)
                 st.write(q["text"])
                 st.caption(
                     f"Grade {q['grade']} - {q['subject']} - "
                     f"{q['topic'] or 'untagged'}"
                 )
+                assessment_caption(q["id"])
                 if m["reasons"]:
                     st.warning(
                         "**Safety checks fired** (score lowered from "
@@ -289,12 +336,14 @@ elif page == "Find duplicates":
         for col, q in ((left, qa), (right, qb)):
             with col:
                 st.markdown(f"**{q['id']}**")
+                title_caption(q)
                 st.write(q["text"])
                 st.caption(
                     f"Grade {q['grade']} - {q['subject']} - "
                     f"{q['topic'] or 'untagged'}"
                 )
                 st.caption(f"by {q['contributor'] or 'unknown'}")
+                assessment_caption(q["id"])
 
         if pair["reasons"]:
             st.warning(
@@ -313,16 +362,178 @@ elif page == "Find duplicates":
                 )
             st.success("Recorded as duplicate.")
         if d2.button("Not a duplicate", key=f"not_{key}"):
+            # The system flagged these as similar - whatever vocabulary
+            # differs between them is a candidate reason why they are
+            # not the same question, worth capturing for later guard
+            # tuning even though nothing acts on it automatically.
+            only_a, only_b = guards.candidate_contrast_terms(qa["text"], qb["text"])
             with store.connect() as conn:
                 store.record_decision(
                     conn, pair["a"], pair["b"], "distinct", "reviewer",
                     pair["score"], "; ".join(pair["reasons"]),
+                    candidate_contrast_terms=(only_a, only_b),
                 )
             st.success("Recorded as distinct.")
+            if only_a or only_b:
+                st.caption(
+                    f"Captured as a candidate distinguishing pair: "
+                    f"{', '.join(only_a[:5]) or '(none)'} vs "
+                    f"{', '.join(only_b[:5]) or '(none)'}"
+                )
         d3.button("Skip", key=f"skip_{key}")
 
         st.divider()
 
+
+# ------------------------------------------------ duplicates within a paper
+
+elif page == "Duplicates within a paper":
+    st.title("Duplicates within a paper")
+    st.caption(
+        "The same question should never appear twice on one assessment - "
+        "MCQ, structured or essay. This checks each paper only against "
+        "itself, not the rest of the bank, and does not use the safety "
+        "checks: a paper is small enough that a false alarm costs nothing "
+        "to dismiss, and a repeat here is a real problem even with "
+        "different numbers plugged in - which is exactly what a safety "
+        "check would otherwise excuse. The same question turning up on a "
+        "DIFFERENT paper is normal and is not what this checks; see the "
+        "'Also appears on assessment(s)' note on the other pages for that."
+    )
+
+    groups_all = load_assessment_groups(store.DB_PATH.name)
+
+    if not groups_all:
+        st.info(
+            "No assessment links with more than one comparable question "
+            "were found. Either scripts/sync.py has not pulled "
+            "assessment.assessment_question yet, or every synced paper "
+            "has zero or one comparable question on it."
+        )
+    else:
+        # Filters narrow WHICH questions are compared, not just which
+        # results are shown - a row that fails a filter is dropped from
+        # its paper's group before find_pairs ever sees it, so a group
+        # left with only one question after filtering is correctly
+        # skipped rather than reported as having "0 repeats".
+        all_rows = [r for rs in groups_all.values() for r in rs]
+
+        f1, f2, f3, f4 = st.columns(4)
+        grade_f = f1.selectbox(
+            "Grade",
+            ["All"] + sorted({r["grade"] for r in all_rows if r["grade"]}),
+        )
+        subject_f = f2.selectbox(
+            "Subject",
+            ["All"] + sorted({r["subject"] for r in all_rows if r["subject"]}),
+        )
+        title_f = f3.text_input(
+            "Title code contains", placeholder="e.g. Q3-2024"
+        )
+        assessment_options = sorted(
+            groups_all.keys(),
+            key=lambda x: (0, int(x)) if str(x).isdigit() else (1, str(x)),
+        )
+        assessment_f = f4.selectbox("Assessment #", ["All"] + assessment_options)
+
+        def _matches(r):
+            if grade_f != "All" and r["grade"] != grade_f:
+                return False
+            if subject_f != "All" and r["subject"] != subject_f:
+                return False
+            if title_f and title_f.lower() not in (r.get("title") or "").lower():
+                return False
+            return True
+
+        groups = {}
+        for aid, rs in groups_all.items():
+            if assessment_f != "All" and aid != assessment_f:
+                continue
+            kept = [r for r in rs if _matches(r)]
+            if len(kept) > 1:
+                groups[aid] = kept
+
+        st.divider()
+
+        if not groups:
+            st.warning(
+                "No paper has more than one comparable question matching "
+                "these filters."
+            )
+        else:
+            with st.spinner(f"Checking {len(groups):,} papers..."):
+                results = dedupe.find_within_assessment_duplicates(groups)
+
+            a, b = st.columns(2)
+            a.metric("Papers checked", f"{len(groups):,}")
+            b.metric("Repeats found", f"{len(results):,}")
+
+            st.divider()
+
+            if not results:
+                st.success("No paper repeats a question.")
+
+            by_assessment = {aid: {r["id"]: r for r in rs}
+                             for aid, rs in groups.items()}
+
+            for pair in results:
+                aid = pair["assessment_id"]
+                by_id = by_assessment[aid]
+                qa, qb = by_id[pair["a"]], by_id[pair["b"]]
+
+                st.markdown(
+                    f"### :red[REPEAT ON ASSESSMENT #{aid}] &nbsp; "
+                    f"{pair['score']:.0%} similar"
+                )
+
+                left, right = st.columns(2)
+                for col, q in ((left, qa), (right, qb)):
+                    with col:
+                        # EdSider stores a sentinel (int32 max) on some
+                        # rows rather than leaving question_number null -
+                        # not a real position, so it is not worth showing.
+                        num = q.get("question_number")
+                        if num is not None and num > 100_000:
+                            num = None
+                        st.markdown(
+                            f"**{q['id']}**"
+                            + (f" (question {num} on this paper)" if num else "")
+                        )
+                        title_caption(q)
+                        st.write(q["text"])
+                        st.caption(
+                            f"Grade {q['grade']} - {q['subject']} - "
+                            f"{q['topic'] or 'untagged'}"
+                        )
+
+                d1, d2, d3, _ = st.columns([1, 1, 1, 3])
+                key = f"paper_{aid}_{pair['a']}_{pair['b']}"
+                if d1.button("Confirm duplicate", key=f"dup_{key}"):
+                    with store.connect() as conn:
+                        store.record_decision(
+                            conn, pair["a"], pair["b"], "duplicate", "reviewer",
+                            pair["score"], "within-assessment repeat",
+                        )
+                    st.success("Recorded as duplicate.")
+                if d2.button("Not a duplicate", key=f"not_{key}"):
+                    only_a, only_b = guards.candidate_contrast_terms(
+                        qa["text"], qb["text"])
+                    with store.connect() as conn:
+                        store.record_decision(
+                            conn, pair["a"], pair["b"], "distinct", "reviewer",
+                            pair["score"], "within-assessment repeat",
+                            candidate_contrast_terms=(only_a, only_b),
+                        )
+                    st.success("Recorded as distinct.")
+                    if only_a or only_b:
+                        st.caption(
+                            f"Captured as a candidate distinguishing pair: "
+                            f"{', '.join(only_a[:5]) or '(none)'} vs "
+                            f"{', '.join(only_b[:5]) or '(none)'}"
+                        )
+                d3.button("Skip", key=f"skip_{key}")
+
+                st.divider()
 
 # ---------------------------------------------------- search by meaning
 
@@ -357,6 +568,7 @@ elif page == "Search by meaning":
         for hit in hits:
             q = hit["question"]
             st.markdown(f"**{hit['score']:.0%} match** - {q['id']}")
+            title_caption(q)
             st.write(q["text"])
             st.caption(
                 f"Grade {q['grade']} - {q['subject']} - "
@@ -373,6 +585,7 @@ else:
     df = pd.DataFrame([
         {
             "ID": r["id"],
+            "Title": r["title"],
             "Question": r["text"],
             "Grade": r["grade"],
             "Subject": r["subject"],

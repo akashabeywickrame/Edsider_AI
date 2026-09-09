@@ -165,6 +165,12 @@ def to_question(row, index):
         "content_hash": content_hash(text),
         "has_figure": has_attachments(pick(row, COLUMN_MAP["text"])),
         "shape": row_shape(row),
+        # Only ever populated on a parent row - row_shape() returns
+        # "parent" for exactly the rows where this is present. Kept
+        # verbatim so store.link_children_to_parents() can derive
+        # parent_id on the children later, in any order, any number of
+        # times.
+        "children_raw": _str(pick(row, COLUMN_MAP["sub_questions"])),
     }
 
 
@@ -260,11 +266,19 @@ def main():
 
         total = store.count(conn)
 
+    # Every parent row now carries its own children_raw; use it to link
+    # each child to its parent_id. Runs once per import, over every
+    # parent currently in the database (not just this batch's), so it
+    # is correct regardless of which rows arrived in which run.
+    with store.connect() as conn:
+        linked = store.link_children_to_parents(conn)
+
     print(f"Rows read         : {seen}")
     print(f"Imported          : {imported}")
     print(f"Skipped (no text) : {skipped}")
     print(f"Contain images    : {with_figures}  (text alone is incomplete)")
     print(f"Database total    : {total}")
+    print(f"Sub-questions linked to a parent : {linked}")
 
     if imported:
         print("\nROW SHAPES (only standalone rows without figures are")

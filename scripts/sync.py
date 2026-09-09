@@ -88,6 +88,33 @@ QUERY = """
     ORDER BY q.question_id
 """
 
+SOURCE_LINKS = "edsider_assessment_links"
+
+# Which assessment(s) each question belongs to is a SEPARATE table -
+# assessment.assessment_question - not a column on question.question, so
+# it needs its own query, not a JOIN bolted onto QUERY above. A JOIN
+# there would fan a question out into one row per assessment it belongs
+# to, breaking the one-row-per-question assumption fetch_new_rows() and
+# to_question() both rely on.
+#
+# Confirmed directly against a screenshot of the real table, not
+# guessed:
+#   assessment_question_id  PK, integer   - our watermark column
+#   assessment_id            integer
+#   question_id               integer
+#   added_by                  varchar(15)
+#   mark_allocation            double precision
+#   question_number            integer
+#   section_id                 integer, nullable
+#   is_optional                boolean    (not pulled - not needed yet)
+LINKS_QUERY = """
+    SELECT assessment_question_id, assessment_id, question_id,
+           question_number, mark_allocation, section_id, added_by
+    FROM assessment.assessment_question
+    WHERE assessment_question_id > %(watermark)s
+    ORDER BY assessment_question_id
+"""
+
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
@@ -148,11 +175,25 @@ def fetch_new_rows(pg_conn, watermark):
     cur.close()
 
 
+def fetch_new_links(pg_conn, watermark):
+    """Same streaming shape as fetch_new_rows, over the assessment link
+    table instead - a separate named cursor, opened after the first one
+    has already been closed by exhausting fetch_new_rows()."""
+    cur = pg_conn.cursor(name="edsider_sync_links")
+    cur.itersize = 500
+    cur.execute(LINKS_QUERY, {"watermark": watermark})
+    for row in cur:
+        yield dict(row)
+    cur.close()
+
+
 def main():
     args = parse_args()
 
     with store.connect() as local_conn:
         watermark = 0 if args.full else store.get_watermark(local_conn, SOURCE)
+        link_watermark = (0 if args.full
+                          else store.get_watermark(local_conn, SOURCE_LINKS))
 
     print(f"\nSyncing from EdSider's database "
           f"({'full pull' if args.full else f'since id {watermark}'})...")
@@ -184,9 +225,45 @@ def main():
             # Only advance the watermark after every row in this batch
             # saved without error. If something crashes mid-loop, the
             # next run re-pulls from the old watermark - safe, because
-            # store.save() is an upsert (INSERT OR REPLACE).
+            # store.save() is an upsert (ON CONFLICT DO UPDATE).
             store.set_watermark(local_conn, SOURCE, highest_seen)
             total = store.count(local_conn)
+
+        # Every parent row just synced carries its own children_raw
+        # (unchanged from import_edsider.py's to_question()); use it to
+        # link each child to its parent_id. Runs over every parent
+        # currently in the database, not just this batch's, so a child
+        # synced in an earlier run still gets linked once its parent
+        # arrives now, and vice versa.
+        with store.connect() as local_conn:
+            linked = store.link_children_to_parents(local_conn)
+
+        # Which assessments each question belongs to - a second pull,
+        # with its own watermark, from assessment.assessment_question.
+        # Independent of the question sync above: it can run, fail, or
+        # be re-run without touching question rows at all.
+        links_pulled = links_saved = 0
+        highest_link_seen = link_watermark
+
+        with store.connect() as local_conn:
+            for link in fetch_new_links(pg_conn, link_watermark):
+                links_pulled += 1
+                link_id = link.get("assessment_question_id")
+                if link_id is not None:
+                    try:
+                        highest_link_seen = max(highest_link_seen, int(link_id))
+                    except (TypeError, ValueError):
+                        pass
+
+                store.save_assessment_link(
+                    local_conn, link_id,
+                    link.get("assessment_id"), link.get("question_id"),
+                    link.get("question_number"), link.get("mark_allocation"),
+                    link.get("section_id"), link.get("added_by"),
+                )
+                links_saved += 1
+
+            store.set_watermark(local_conn, SOURCE_LINKS, highest_link_seen)
     finally:
         pg_conn.rollback()  # nothing was written; close the read cleanly
         pg_conn.close()
@@ -196,6 +273,9 @@ def main():
     print(f"  skipped (no text)   : {skipped:,}")
     print(f"  watermark now at    : {highest_seen:,}")
     print(f"  our database total  : {total:,}")
+    print(f"  sub-questions linked to a parent : {linked:,}")
+    print(f"  assessment links    : {links_saved:,} pulled "
+          f"(watermark now at {highest_link_seen:,})")
 
     if imported:
         print("\nNext: python scripts/embed.py   (only new text gets embedded)")

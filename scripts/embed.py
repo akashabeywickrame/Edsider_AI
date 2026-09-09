@@ -6,12 +6,19 @@ keyed by content hash, so re-running only embeds what is new.
 Usage:
     python scripts/embed.py                    every comparable question
     python scripts/embed.py --language English  one language at a time
+    python scripts/embed.py --children          linked sub-questions instead
 
 --language lets English go through the pipeline now and Sinhala/Tamil
 wait. Nothing else needs to know about the split: comparable_questions()
 joins on embeddings, so an un-embedded language just does not appear in
 a duplicate check yet - re-run without --language (or with a different
 one) whenever that language is ready to be measured.
+
+--children is a separate pass, not a broader filter on the default one:
+a sub-question is only worth fingerprinting once store.
+link_children_to_parents() has given it a parent_id (see
+store.COMPARABLE_CHILD) - run scripts/sync.py or import_edsider.py
+first, since that is what sets parent_id.
 """
 
 import argparse
@@ -29,6 +36,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--language", default=None,
                         help="only embed this language's rows, e.g. English")
+    parser.add_argument("--children", action="store_true",
+                        help="embed linked sub-questions instead of "
+                             "standalone rows")
     args = parser.parse_args()
 
     store.init()
@@ -39,19 +49,20 @@ def main():
             print("\nNo questions loaded. Run scripts/load.py first.\n")
             return
 
-        pending = store.questions_needing_embedding(
-            conn, DEFAULT_MODEL, language=args.language)
+        finder = (store.children_needing_embedding if args.children
+                 else store.questions_needing_embedding)
+        pending = finder(conn, DEFAULT_MODEL, language=args.language)
 
+        kind = "linked sub-questions" if args.children else "comparable questions"
         if not pending:
             scope = f" for language={args.language!r}" if args.language else ""
-            print(f"\nAll comparable questions{scope} already have "
-                  "fingerprints.")
+            print(f"\nAll {kind}{scope} already have fingerprints.")
             print(f"Stored fingerprints: {store.embedding_count(conn)}\n")
             return
 
         scope = f" ({args.language})" if args.language else ""
         print(f"\n{len(pending)} distinct texts need fingerprints{scope} "
-              f"(out of {total} questions).\n")
+              f"({kind}, out of {total} questions).\n")
 
         embedder = Embedder()
         texts = [r["text"] for r in pending]

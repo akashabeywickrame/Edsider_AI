@@ -244,3 +244,49 @@ def test_guards_demote_below_threshold():
     raw = 0.95
     penalty, _ = guards.check(a, b)
     assert raw - penalty < 0.85, "guard did not demote the pair far enough"
+
+
+# ---------- mining candidate contrast terms from a rejected pair ----------
+
+def test_candidate_contrast_terms_finds_the_distinguishing_words():
+    only_a, only_b = guards.candidate_contrast_terms(
+        "Calculate the area of a rectangle 12 cm by 5 cm",
+        "Calculate the perimeter of a rectangle 12 cm by 5 cm",
+    )
+    assert "area" in only_a
+    assert "perimeter" in only_b
+    # Shared words must not appear on either side.
+    assert "area" not in only_b
+    assert "rectangle" not in only_a
+    assert "rectangle" not in only_b
+
+
+def test_candidate_contrast_terms_drops_common_words():
+    only_a, only_b = guards.candidate_contrast_terms(
+        "What is the capital of Sri Lanka?",
+        "What is the capital of India?",
+    )
+    assert "what" not in only_a and "what" not in only_b
+    assert "the" not in only_a and "the" not in only_b
+    assert "sri" in only_a or "lanka" in only_a
+    assert "india" in only_b
+
+
+def test_candidate_contrast_terms_is_empty_for_identical_text():
+    only_a, only_b = guards.candidate_contrast_terms(
+        "Explain photosynthesis in green plants.",
+        "Explain photosynthesis in green plants.",
+    )
+    assert only_a == []
+    assert only_b == []
+
+
+def test_candidate_contrast_terms_ignores_short_noise_words():
+    """Words under 3 letters ('is', 'of', 'a') are not useful signal on
+    their own and would drown out real candidates."""
+    only_a, only_b = guards.candidate_contrast_terms(
+        "Is it a solid or a liquid?",
+        "Is it a gas or a plasma?",
+    )
+    assert all(len(w) >= 3 for w in only_a)
+    assert all(len(w) >= 3 for w in only_b)

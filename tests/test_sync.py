@@ -40,19 +40,27 @@ class FakePgConn:
     """Stands in for a psycopg2 connection. Records everything a test
     needs to assert on: was the session opened read-only, was a named
     (server-side, streaming) cursor used, was rollback (not commit)
-    called on the way out."""
+    called on the way out.
 
-    def __init__(self, rows):
+    Two separate cursors, keyed by name, because sync.py now opens two
+    of them per run - one for questions, one for assessment links - and
+    they must not share rows or an executed_with record."""
+
+    def __init__(self, rows, link_rows=None):
         self.rows = rows
+        self.link_rows = link_rows if link_rows is not None else []
         self.cursor_names = []
         self.session_calls = []
         self.rolled_back = False
         self.committed = False
         self.closed = False
         self._cursor = FakeCursor(rows)
+        self._links_cursor = FakeCursor(self.link_rows)
 
     def cursor(self, name=None, cursor_factory=None):
         self.cursor_names.append(name)
+        if name == "edsider_sync_links":
+            return self._links_cursor
         return self._cursor
 
     def set_session(self, readonly=None, autocommit=None):
@@ -76,6 +84,20 @@ def row(question_id, content, title="", grade_name=None, subject_name=None,
         "language_name": "English", "is_subquestion": is_subquestion,
         "sub_questions": sub_questions, "created_by": "1",
         "created_at": "2024-01-01",
+    }
+
+
+def link_row(assessment_question_id, assessment_id, question_id,
+            question_number=1, mark_allocation=25, section_id=None,
+            added_by="CASS2"):
+    """Shaped like a row from assessment.assessment_question, confirmed
+    against the real table's columns."""
+    return {
+        "assessment_question_id": assessment_question_id,
+        "assessment_id": assessment_id, "question_id": question_id,
+        "question_number": question_number,
+        "mark_allocation": mark_allocation,
+        "section_id": section_id, "added_by": added_by,
     }
 
 
@@ -139,11 +161,13 @@ def test_full_flag_ignores_the_stored_watermark(monkeypatch, local_db):
 def test_uses_a_named_server_side_cursor(monkeypatch, local_db):
     """A plain cursor buffers the whole result client-side. The first
     sync could be the full real bank (40,000+ rows, some 6.5MB) - this
-    must stream, not load it all into memory."""
+    must stream, not load it all into memory. Two cursors now, one per
+    query - questions, then assessment links."""
     fake_pg = FakePgConn([])
     run_sync(monkeypatch, fake_pg)
-    assert fake_pg.cursor_names == ["edsider_sync"]
+    assert fake_pg.cursor_names == ["edsider_sync", "edsider_sync_links"]
     assert fake_pg._cursor.itersize and fake_pg._cursor.itersize > 1
+    assert fake_pg._links_cursor.itersize and fake_pg._links_cursor.itersize > 1
 
 
 # --------------------------------------------------------------- safety
@@ -243,3 +267,73 @@ def test_rerunning_the_same_rows_is_safe(monkeypatch, local_db):
     run_sync(monkeypatch, FakePgConn(rows), argv=["--full"])
     with store.connect() as conn:
         assert store.count(conn) == 1
+
+
+# ------------------------------------------------------ assessment links
+
+def test_links_query_uses_its_own_stored_watermark(monkeypatch, local_db):
+    """The link sync has a separate watermark from the question sync -
+    they can be at different points, e.g. after a crash between the
+    two."""
+    with store.connect() as conn:
+        store.set_watermark(conn, sync.SOURCE, 900)
+        store.set_watermark(conn, sync.SOURCE_LINKS, 30)
+
+    fake_pg = FakePgConn([])
+    run_sync(monkeypatch, fake_pg)
+
+    _, q_params = fake_pg._cursor.executed_with
+    _, link_params = fake_pg._links_cursor.executed_with
+    assert q_params == {"watermark": 900}
+    assert link_params == {"watermark": 30}
+
+
+def test_link_rows_are_saved_into_our_own_database(monkeypatch, local_db):
+    links = [
+        link_row(13, assessment_id=5, question_id=8, question_number=1),
+        link_row(14, assessment_id=5, question_id=9, question_number=2),
+    ]
+    run_sync(monkeypatch, FakePgConn([], link_rows=links))
+
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM question_assessments ORDER BY link_id"
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["assessment_id"] == "5"
+    assert rows[0]["question_id"] == "8"
+    assert rows[0]["question_number"] == 1
+    assert rows[0]["mark_allocation"] == 25
+    assert rows[0]["added_by"] == "CASS2"
+
+
+def test_link_watermark_advances_to_the_highest_link_id_pulled(monkeypatch, local_db):
+    links = [link_row(13, 5, 8), link_row(25, 8, 17)]
+    run_sync(monkeypatch, FakePgConn([], link_rows=links))
+    with store.connect() as conn:
+        assert store.get_watermark(conn, sync.SOURCE_LINKS) == 25
+
+
+def test_rerunning_the_same_links_is_safe(monkeypatch, local_db):
+    """save_assessment_link() upserts on link_id, same crash-recovery
+    reasoning as the question sync - re-pulling an already-saved link
+    must not duplicate it."""
+    links = [link_row(13, 5, 8)]
+    run_sync(monkeypatch, FakePgConn([], link_rows=links))
+    run_sync(monkeypatch, FakePgConn([], link_rows=links), argv=["--full"])
+    with store.connect() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM question_assessments"
+        ).fetchone()["n"]
+    assert n == 1
+
+
+def test_a_question_can_have_more_than_one_assessment_link(monkeypatch, local_db):
+    """The whole reason this is a separate table rather than a column:
+    the same question reused across two papers is normal, not an error."""
+    links = [link_row(13, assessment_id=5, question_id=8),
+            link_row(14, assessment_id=6, question_id=8)]
+    run_sync(monkeypatch, FakePgConn([], link_rows=links))
+    with store.connect() as conn:
+        linked = store.assessments_for_question(conn, "8")
+    assert {r["assessment_id"] for r in linked} == {"5", "6"}

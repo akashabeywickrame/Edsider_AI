@@ -171,6 +171,176 @@ def test_find_pairs_matches_across_the_block_boundary():
     assert ("EARLY", "LATE") in found
 
 
+# ---------------------------------------------- within-assessment checks
+
+def test_repeat_within_one_assessment_is_flagged():
+    """The rule this exists for: the same MCQ landing on one paper twice
+    is a problem even though its two mentions of "12 cm" are identical
+    numbers, which a whole-bank guard would treat as fine."""
+    paper = [
+        q("A1", "What is the capital of Sri Lanka?", [1.0, 0.0, 0.0]),
+        q("A2", "What is the capital city of Sri Lanka?", [0.99, 0.1, 0.0]),
+        q("A3", "Name the longest river in Sri Lanka.", [0.0, 1.0, 0.0]),
+    ]
+    results = dedupe.find_within_assessment_duplicates({"P1": paper})
+    assert {tuple(sorted((r["a"], r["b"]))) for r in results} == {("A1", "A2")}
+    assert results[0]["assessment_id"] == "P1"
+
+
+def test_same_question_across_different_assessments_is_not_flagged():
+    """Reusing a question across two different papers is normal and is
+    scoped out entirely - each assessment is only compared to itself."""
+    same_vector = [1.0, 0.0, 0.0]
+    groups = {
+        "P1": [q("A1", "Calculate the area of a rectangle 12 cm by 5 cm",
+                 same_vector)],
+        "P2": [q("B1", "Calculate the area of a rectangle 12 cm by 5 cm",
+                 same_vector)],
+    }
+    assert dedupe.find_within_assessment_duplicates(groups) == []
+
+
+def test_guards_still_apply_within_an_assessment_by_default():
+    """Guards default ON here, same as the whole-bank sweep - reversed
+    from an earlier assumption that a small group made them pointless.
+    Measured on the real bank instead: two questions built from the
+    same template but with different numbers on ONE paper is normal
+    exam design (two separate items, deliberately similar), not a
+    copy-paste mistake, and Guard 1 correctly tells the two apart."""
+    paper = [
+        q("A1", "Calculate the area of a rectangle 12 cm by 5 cm",
+          [1.0, 0.0, 0.0]),
+        q("A2", "Calculate the area of a rectangle 20 cm by 8 cm",
+          [0.97, 0.1, 0.0]),
+    ]
+    assert dedupe.find_within_assessment_duplicates(
+        {"P1": paper}, threshold=0.80) == []
+
+
+def test_a_word_for_word_repeat_still_clears_guards():
+    """The case guards must NOT excuse: the exact same question, same
+    numbers, twice on one paper."""
+    paper = [
+        q("A1", "Calculate the area of a rectangle 12 cm by 5 cm",
+          [1.0, 0.0, 0.0]),
+        q("A2", "Calculate the area of a rectangle 12 cm by 5 cm",
+          [1.0, 0.0, 0.0]),
+    ]
+    results = dedupe.find_within_assessment_duplicates({"P1": paper})
+    assert len(results) == 1
+    assert results[0]["reasons"] == []
+
+
+def test_default_threshold_is_high_to_match_the_real_bank():
+    """0.95, not the sample-tuned 0.85 - measured: at 0.85, real MCQ
+    option text produced 34,648 "repeats" across 650 papers, 89% of
+    them the same raw-embedding false-positive shape the whole-bank
+    sweep has (shared MCQ vocabulary, different topic entirely). At
+    0.95 every spot-check was a genuine word-for-word repeat."""
+    import inspect
+    defaults = inspect.signature(dedupe.find_within_assessment_duplicates).parameters
+    assert defaults["use_guards"].default is True
+    assert defaults["threshold"].default == 0.95
+
+
+# -------------------------------------------------- cross-passage checks
+
+def child(qid, text, vector, parent_id):
+    row = q(qid, text, vector)
+    row["parent_id"] = parent_id
+    return row
+
+
+def test_same_sub_question_under_different_parents_is_flagged():
+    """The one gap exclusion alone cannot close: the same comprehension
+    question reused under a DIFFERENT passage, on a different paper."""
+    children = [
+        child("C1", "How many links does the food chain have?",
+              [1.0, 0.0, 0.0], parent_id="P1"),
+        child("C2", "How many links does the food chain have?",
+              [1.0, 0.0, 0.0], parent_id="P2"),
+    ]
+    results = dedupe.find_cross_passage_duplicates(children)
+    assert {tuple(sorted((r["a"], r["b"]))) for r in results} == {("C1", "C2")}
+
+
+def test_sub_questions_under_the_same_parent_are_never_compared():
+    """A comprehension set is supposed to differ - even wildly similar
+    wording under the SAME parent must never be flagged, the same
+    failure mode passage-concatenation would otherwise recreate."""
+    children = [
+        child("C1", "How many links does the food chain have?",
+              [1.0, 0.0, 0.0], parent_id="P1"),
+        child("C2", "How many links does the food chain have?",
+              [1.0, 0.0, 0.0], parent_id="P1"),
+    ]
+    assert dedupe.find_cross_passage_duplicates(children) == []
+
+
+def test_cross_passage_mixes_both_cases_correctly():
+    children = [
+        child("A1", "Name the top predator in this food chain.",
+              [1.0, 0.0, 0.0], parent_id="P1"),
+        # Same parent as A1, a different question entirely - part of the
+        # same comprehension set and never compared to A1 regardless.
+        child("A2", "What is the boiling point of water?",
+              [0.0, 0.0, 1.0], parent_id="P1"),
+        # Different parent, same question as A1 - a real repeat.
+        child("B1", "Name the top predator in this food chain.",
+              [1.0, 0.0, 0.0], parent_id="P2"),
+        # Different parent, unrelated question - not a match at all.
+        child("B2", "What is the boiling point of water?",
+              [0.0, 1.0, 0.0], parent_id="P2"),
+    ]
+    results = dedupe.find_cross_passage_duplicates(children)
+    pairs = {tuple(sorted((r["a"], r["b"]))) for r in results}
+    assert pairs == {("A1", "B1")}
+
+
+def test_short_fragment_children_are_excluded_from_comparison():
+    """MCQ option letters, raw numbers, fill-in-the-blank stubs are not
+    real question text, however identical they score - measured on the
+    real bank: 2,241 of 16,967 linked children fell under 10 real
+    letters and dominated the highest-scoring false "matches"."""
+    children = [
+        child("C1", "c__________", [1.0, 0.0, 0.0], parent_id="P1"),
+        child("C2", "c__________", [1.0, 0.0, 0.0], parent_id="P2"),
+    ]
+    assert dedupe.find_cross_passage_duplicates(children) == []
+
+
+def test_a_prompt_recurring_across_many_parents_is_not_flagged():
+    """The sub-question equivalent of the already-documented "Fill in
+    the blanks" parent-row redundancy - a generic prompt every
+    comprehension paper of a kind asks, not a one-off copy-paste
+    duplicate."""
+    text = "What is the title of the poem in this passage?"
+    children = [
+        child(f"C{i}", text, [1.0, 0.0, 0.0], parent_id=f"P{i}")
+        for i in range(6)  # more distinct parents than the default max_parents=4
+    ]
+    assert dedupe.find_cross_passage_duplicates(children) == []
+
+
+# -------------------------------------------------------- search()
+
+def test_search_returns_the_closest_match_first():
+    query = unit([1.0, 0.02, 0.0])
+    hits = dedupe.search(query, BANK, top_k=3)
+    assert hits
+    assert hits[0]["question"]["id"] in ("Q001", "Q002")
+    assert hits[0]["score"] >= hits[-1]["score"]
+
+
+def test_search_respects_top_k():
+    query = unit([1.0, 0.0, 0.0])
+    assert len(dedupe.search(query, BANK, top_k=1)) == 1
+
+
+def test_search_on_an_empty_bank_is_not_an_error():
+    assert dedupe.search(unit([1.0, 0.0, 0.0]), [], top_k=5) == []
+
+
 def test_metadata_guard_fires_across_subjects():
     # Worded differently from Q001 on purpose. Identical text across a
     # grade or subject boundary is one question filed twice, and the
