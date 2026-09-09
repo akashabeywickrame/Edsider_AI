@@ -17,16 +17,55 @@ python -m venv venv
 The CPU build of torch is ~250 MB instead of ~2 GB, and is plenty fast
 at this scale.
 
-## Run
+## Getting real data in
+
+There is no sample bank any more, and no default database — `EDSIDER_DB`
+must be set to a real `.db` file before anything runs, or every script
+refuses with a clear error rather than silently guessing:
 
 ```
-.\venv\Scripts\python.exe -m pytest tests\ -v      106 tests
-.\venv\Scripts\python.exe scripts\load.py          load sample questions
-.\venv\Scripts\python.exe scripts\embed.py         compute fingerprints
-.\venv\Scripts\python.exe scripts\find_similar.py  command-line results
-
-.\venv\Scripts\streamlit.exe run app.py            the web interface
+$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
 ```
+
+Two ways to fill that file, both feeding the same importer logic:
+
+**A CSV export**, produced by hand from EdSider's own database (see
+`scripts/import_edsider.py`'s docstring for the export SQL):
+
+```
+.\venv\Scripts\python.exe scripts\import_edsider.py path\to\export.csv
+```
+
+**Directly from EdSider's live PostgreSQL** — the ongoing way, once a
+read-only account exists:
+
+```
+cp .env.example .env         # fill in PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD
+.\venv\Scripts\python.exe scripts\sync.py --full
+```
+
+Either way, then:
+
+```
+.\venv\Scripts\python.exe scripts\embed.py --language English
+.\venv\Scripts\python.exe scripts\find_duplicates.py     Stage 1 only, no AI
+.\venv\Scripts\streamlit.exe run app.py                  the web interface
+```
+
+CSV or JSON both work as an import source. The importer prints the
+column names it found and maps common variations automatically; if
+rows are skipped, edit `COLUMN_MAP` in `import_edsider.py` — that is
+the only thing that should need changing.
+
+## Run the tests
+
+```
+.\venv\Scripts\python.exe -m pytest tests\ -v
+```
+
+148 tests, none of which need the real model or a real server - vectors
+are hand-made, Postgres and the embedder are faked. Runs in about two
+seconds.
 
 To check a single question against the bank, from a terminal:
 
@@ -66,30 +105,26 @@ curl -X POST http://localhost:8000/check -H "Content-Type: application/json" -d 
 }
 ```
 
-Measured against the real 15,998-question bank: an exact match resolves
-in **4.6ms** (Pass 1 only - the model is never touched), and a reworded
-question resolves in **157ms** (a real embedding plus the guard layer).
+Measured against the real bank: an exact match resolves in **4.6ms**
+(Pass 1 only - the model is never touched), and a reworded question
+resolves in **157ms** (a real embedding plus the guard layer).
 
 `GET /health` reports what the service is currently serving against -
 which database, how many comparable questions, whether the model has
-finished loading. `POST /reload` re-reads OUR OWN database and rebuilds
-the in-memory index, without restarting the process - it does not talk
-to EdSider. `GET /docs` is a form for trying `/check` by hand in the
-browser.
+finished loading - and works even before EDSIDER_DB has been set or
+startup has finished, rather than crashing. `POST /reload` re-reads OUR
+OWN database and rebuilds the in-memory index, without restarting the
+process - it does not talk to EdSider. `GET /docs` is a form for trying
+`/check` by hand in the browser.
 
-## Pulling directly from EdSider's database
+## Keeping it in sync
 
-```
-cp .env.example .env         # fill in PG_HOST, PG_PORT, PG_DB, PG_USER, PG_PASSWORD
-.\venv\Scripts\python.exe scripts\sync.py
-.\venv\Scripts\python.exe scripts\embed.py
-```
-
-This replaces the manual CSV export for ongoing use - it queries
-EdSider's own PostgreSQL with a read-only account and pulls only
-questions newer than the last successful sync (tracked in our own
-database, not theirs). It reuses `import_edsider.py`'s row mapping
-unchanged, so a Postgres row and a CSV row are handled identically.
+`scripts/sync.py` queries EdSider's own PostgreSQL with a read-only
+account and pulls only what changed since the last successful run
+(tracked in OUR OWN database, not theirs) - both new questions and
+which assessments (papers) they belong to. It reuses
+`import_edsider.py`'s row mapping unchanged, so a Postgres row and a CSV
+row are handled identically.
 
 The account needs `SELECT` only, and the script opens its own session
 read-only as a second safeguard - it never writes to EdSider's database.
@@ -97,47 +132,23 @@ read-only as a second safeguard - it never writes to EdSider's database.
 tells a running `service.py` to pick up what was just synced.
 
 This does not make checking "real-time" by itself - something still has
-to run `sync.py` on a schedule (cron, Task Scheduler, or similar). See
-`CLAUDE.md` for what's still open with EdSider's team before this can
-run against their real database rather than a local test.
+to run `sync.py`, then `embed.py`, on a schedule (cron, Task Scheduler,
+or similar). See `CLAUDE.md` for what's still open with EdSider's team,
+and for what "usable as a production service" still needs beyond this.
 
-This is a local service, not yet a deployed one - see "What 'usable as a
-service' still needs" in `CLAUDE.md` for what stands between this and
-something EdSider's own save button could call.
+## What a real export actually looks like
 
-## Using real EdSider data
-
-Keep the real bank in its own database, or `tune.py` will score tens of
-thousands of real questions against a 30-row answer key:
-
-```
-$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
-
-.\venv\Scripts\python.exe scripts\import_edsider.py data\edsider_questions.csv
-.\venv\Scripts\python.exe scripts\embed.py
-.\venv\Scripts\python.exe scripts\find_duplicates.py
-.\venv\Scripts\streamlit.exe run app.py
-```
-
-Unset, everything falls back to the sample bank. The export command
-itself lives in the `scripts/import_edsider.py` docstring, next to the
-code that reads it.
-
-CSV or JSON both work. The importer prints the column names it found and
-maps common variations automatically. If rows are skipped, edit
-`COLUMN_MAP` — that is the only thing that should need changing.
-
-### What a real export actually looks like
-
-Measured on a 684 MB, 41,139-row export, because almost none of it
-matched what the sample set implied:
+Measured on the real bank - 103,337 rows, 60% Sinhala or Tamil - because
+almost none of it was what a hand-written sample would suggest:
 
 - **A question is not always a row.** A multi-part question is a *parent*
   row holding the shared stimulus, plus a *child* row per part. "How many
   links of the above food chain" means nothing without the parent that
   holds the food chain, and appears under six different ones. Parents are
   instructions — 43% of them are redundant purely because "Fill in the
-  blanks" recurs. Only **standalone** rows are compared.
+  blanks" recurs. Only **standalone** rows are compared by default; linked
+  sub-questions get their own, separate, cross-passage check (see
+  `CLAUDE.md`).
 - **Questions whose content is an image are excluded.** `"Simplify"`
   appears 110 times, each against a different expression living in an
   attachment. Scoring those on text alone is meaningless, so they are
@@ -147,11 +158,14 @@ matched what the sample set implied:
   rate read 100%.
 - **Cells reach 6.5 MB** (base64 images) against a default CSV field limit
   of 128 KB, and the file is streamed rather than loaded.
+- **A question can belong to more than one assessment (paper).** Reusing
+  the same item across two papers is normal; the same item appearing
+  twice on the SAME paper is the actual problem - two different checks,
+  in two different app pages, for exactly that reason.
 
 The importer reports the shape breakdown and per-field fill rates on
 every run, so which fields can be trusted is a number rather than a
-guess. Guard 4 needs grade and subject — on the real bank those are 95.5%
-and 99.9% populated across the comparable rows.
+guess.
 
 Rich-text (Draft.js) fields are unwrapped automatically. For MCQs the
 content field is a list — the stem followed by each option — so an MCQ
@@ -182,9 +196,14 @@ entities are named, or the grade and subject do not match. Each guard
 returns a readable reason, so the reviewer sees *why* a pair was
 demoted rather than a bare number.
 
-**On the sample data, the guards take flagged pairs from 13 down to 4** —
-removing exactly the pairs that are not duplicates. The web interface
-has a toggle so you can demonstrate that live.
+**Measured, not assumed**: best achievable F1 without the guard layer is
+0.667; with it, 1.000. On the real bank, at the threshold the sample set
+suggested (0.85), guards cut candidate pairs from 1.46 million to a
+number a person could actually review. See `CLAUDE.md` for the full,
+repeatedly-measured story - three separate real-bank checks (the
+whole-bank sweep, within-one-paper, and cross-passage) each needed a
+different real threshold than first assumed, found by measuring, not by
+guessing.
 
 ## Checking one new question
 
@@ -216,10 +235,6 @@ PASS 2 + 3 - meaning fingerprint, with safety checks
 VERDICT: LIKELY DUPLICATE of Q003 (0.977) - review before adding.
 ```
 
-Four *area* questions scored 0.933–0.957 on the raw fingerprint and were
-all demoted; the one real match surfaced above them. That is the guard
-layer doing its job on a single question rather than on a whole sweep.
-
 Two details worth knowing:
 
 - **Pass 1 runs before the model loads.** An exact match is one indexed
@@ -236,45 +251,48 @@ usually zero, because the hash settles it.
 
 ## Interface
 
-Four views:
+Five views:
 
 - **Check a new question** — paste a draft, get a verdict before it is
   added. The same three passes as the script, in the browser.
 - **Find duplicates** — pairs side by side with scores and the reasons
   any guard fired. A toggle turns the safety checks on and off and
   shows the difference in the counts above. Confirm / reject buttons
-  record the verdict.
+  record the verdict - and rejecting a flagged pair also captures which
+  words distinguish the two questions, as raw material for later guard
+  tuning.
+- **Duplicates within a paper** — the same question should never appear
+  twice on one assessment. Scoped, zero-tolerance, separate from the
+  whole-bank sweep.
 - **Search by meaning** — type a topic, get the closest questions.
   Finds *"How do green plants make their own food?"* when you search
   for photosynthesis.
 - **Question bank** — the full table, filterable by subject and grade.
 
 **Nothing is merged or deleted automatically.** The system suggests; a
-person decides. Every decision is written to the `decisions` table,
-which becomes the data for tuning thresholds later.
+person decides. Every decision is written to the `decisions` table.
 
 ## Layout
 
 ```
 app.py                     Streamlit interface
+service.py                 FastAPI service - the check, always on
 src/
   normalize.py             text extraction, normalisation, hashing
   embeddings.py            the model wrapper
-  guards.py                the four safety checks
-  dedupe.py                the full pipeline
+  guards.py                the four safety checks + contrast-term mining
+  dedupe.py                the full pipeline (whole-bank, within-paper,
+                           cross-passage)
   store.py                 all database access
 scripts/
-  load.py                  load sample questions
-  import_edsider.py        load a real EdSider export
+  import_edsider.py        load a real EdSider export (CSV or JSON)
+  sync.py                  pull directly from EdSider's own Postgres
   embed.py                 compute fingerprints
-  find_duplicates.py       Stage 1 only
-  find_similar.py          Stages 1-2, self-scoring
+  find_duplicates.py       Stage 1 only, no AI
   check_new.py             one question against the bank
-  tune.py                  threshold sweep, with vs without guards
-tests/                     106 tests
-data/
-  questions.json           30 sample questions, duplicates planted
-  ground_truth.json        the answer key
+tests/                     148 tests
+data/                      the real database lives here (gitignored -
+                           EDSIDER_DB must point at it explicitly)
 ```
 
 ## Design notes
@@ -282,6 +300,12 @@ data/
 **`store.py` is the only module that touches the database.** Moving to
 PostgreSQL with pgvector means rewriting that one file. Nothing else
 knows or cares what is underneath.
+
+**No default database.** `EDSIDER_DB` must be set, or `store.connect()`
+refuses to run. There used to be a 30-question sample bank to silently
+fall back to; falling back to nothing at all now would mean SQLite
+quietly creating a brand new empty database and every check reporting
+"no duplicates" for everything, with no warning - worse than an error.
 
 **Unicode normalisation is not decoration.** In Sinhala and Tamil the
 same visible character can have more than one byte representation, and
@@ -313,11 +337,9 @@ from Britain"*.
 
 ## Next
 
-- Tune the thresholds against real labelled pairs from EdSider
-- Learn the contrast list from the decision log instead of maintaining
-  it by hand
-- Test on Sinhala and Tamil questions
-- Wrap `check_one` in a save-time endpoint with a warm model, so the
-  check happens where questions are actually added
-- Swap the brute-force sweep for a pgvector HNSW index once the bank
-  passes a few thousand questions
+See `CLAUDE.md`'s "What 'usable as a service' still needs" for the full,
+ordered list. In short: get real reviewer decisions flowing (everything
+else below depends on it), automate `sync.py` on a schedule, re-tune
+thresholds on real verdicts instead of the real bank's statistics alone,
+mine the contrast list from real rejections, then embed and measure
+Sinhala and Tamil.

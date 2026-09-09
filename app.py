@@ -92,19 +92,33 @@ def title_caption(q):
 
 st.sidebar.title("EdSider AI")
 
-# Which bank is open has to be visible and switchable. Relying on
-# EDSIDER_DB alone means launching from a shell that never set it opens
-# the 30-question sample and silently shows its planted duplicates.
+# Which bank is open has to be visible and switchable - launching
+# without EDSIDER_DB set should not be a crash just because store.py
+# refuses to guess a database on its own (see store.py's DB_PATH
+# comment). If nothing has been configured yet but a bank exists on
+# disk, open the first one found rather than leave DB_PATH as None.
 banks = sorted(p.name for p in (ROOT / "data").glob("*.db"))
-if banks:
-    current = store.DB_PATH.name
-    chosen = st.sidebar.selectbox(
-        "Question bank", banks,
-        index=banks.index(current) if current in banks else 0,
+if banks and store.DB_PATH is None:
+    store.use_database(ROOT / "data" / banks[0])
+
+if not banks:
+    st.title("EdSider AI")
+    st.error(
+        "No database found under `data/*.db`. Build one first:\n\n"
+        "```\n$env:EDSIDER_DB = \"data/edsider_real.db\"\n"
+        "python scripts/sync.py --full\n"
+        "python scripts/embed.py --language English\n```"
     )
-    if chosen != store.DB_PATH.name:
-        store.use_database(ROOT / "data" / chosen)
-        st.rerun()
+    st.stop()
+
+current = store.DB_PATH.name
+chosen = st.sidebar.selectbox(
+    "Question bank", banks,
+    index=banks.index(current) if current in banks else 0,
+)
+if chosen != store.DB_PATH.name:
+    store.use_database(ROOT / "data" / chosen)
+    st.rerun()
 
 page = st.sidebar.radio(
     "View",

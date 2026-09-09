@@ -10,15 +10,22 @@ import os
 import sqlite3
 from pathlib import Path
 
-# The sample bank and a real EdSider import must not share a database -
-# mixing them makes tune.py score 41,000 real questions against a 30-row
-# answer key. Set EDSIDER_DB to keep them apart:
+# No default database. There used to be one - a 30-question sample bank
+# - and silently falling back to it when EDSIDER_DB was forgotten was
+# already documented as dangerous: it would open with the sample's
+# planted duplicates showing as though they were EdSider's own. The
+# sample bank is gone now, which makes the silent fallback worse, not
+# safer - SQLite would happily create a brand new EMPTY database at
+# whatever path was guessed, and duplicate checking would silently
+# report "nothing found" for everything, with no error at all. connect()
+# refuses to run instead.
 #
 #   $env:EDSIDER_DB = "data/edsider_real.db"
-DB_PATH = Path(os.environ.get(
-    "EDSIDER_DB",
-    Path(__file__).resolve().parent.parent / "data" / "edsider.db",
-))
+#
+# None here is a real value, not a bug - it means "not configured yet",
+# checked explicitly by connect(). Tests never rely on this default;
+# every fixture calls use_database() before connect().
+DB_PATH = Path(os.environ["EDSIDER_DB"]) if os.environ.get("EDSIDER_DB") else None
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS questions (
@@ -115,6 +122,13 @@ _schema_ready = False
 
 def connect():
     global _schema_ready
+    if DB_PATH is None:
+        raise RuntimeError(
+            "No database configured. Set EDSIDER_DB to a real .db file "
+            "before running anything, e.g.:\n\n"
+            '    $env:EDSIDER_DB = "data/edsider_real.db"\n\n'
+            "or call store.use_database(path) directly."
+        )
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -182,12 +196,19 @@ COMPARABLE_CHILD = ("shape = 'sub-question' AND has_figure = 0 "
 def use_database(path):
     """Point every subsequent connection at a different file.
 
-    The sample bank and a real import live in separate databases, and
-    the UI lets a reviewer switch between them. Keeping that here means
-    callers never touch DB_PATH or the schema flag themselves.
+    Different databases exist for different purposes (a real import vs.
+    a throwaway one a test builds in tmp_path), and the UI lets a
+    reviewer switch between them. Keeping that here means callers never
+    touch DB_PATH or the schema flag themselves.
+
+    `path=None` resets to "not configured" - the same state DB_PATH
+    starts in when EDSIDER_DB was never set. A test that saves the
+    original DB_PATH before pointing at its own tmp_path database, then
+    restores it afterward, must be able to pass that original value
+    straight back through here even when it was None.
     """
     global DB_PATH, _schema_ready
-    DB_PATH = Path(path)
+    DB_PATH = Path(path) if path is not None else None
     _schema_ready = False
     return DB_PATH
 

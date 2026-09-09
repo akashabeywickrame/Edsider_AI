@@ -46,7 +46,8 @@ def main():
     with store.connect() as conn:
         total = store.count(conn)
         if total == 0:
-            print("\nNo questions loaded. Run scripts/load.py first.\n")
+            print("\nNo questions loaded. Run scripts/import_edsider.py "
+                  "or scripts/sync.py first.\n")
             return
 
         finder = (store.children_needing_embedding if args.children

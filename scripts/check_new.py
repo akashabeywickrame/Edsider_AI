@@ -1,9 +1,9 @@
 """Check ONE new question against the bank before it is added.
 
-This is the check EdSider actually needs. `find_similar.py` sweeps the
-whole bank against itself, which answers "what duplicates already
-exist". This answers the question a teacher asks at save time: "is the
-thing I just wrote already in here?"
+This is the check EdSider actually needs. The app's "Find duplicates"
+page sweeps the whole bank against itself, which answers "what
+duplicates already exist". This answers the question a teacher asks at
+save time: "is the thing I just wrote already in here?"
 
 The difference matters at scale. A sweep of 20,000 questions is 200
 million comparisons. Checking one question against 20,000 is 20,000 -

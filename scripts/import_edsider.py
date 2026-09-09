@@ -5,7 +5,7 @@ Usage:
     python scripts/import_edsider.py path\\to\\export.json
 
 The rest of the pipeline does not care where questions came from, so
-once this has run, embed.py and find_similar.py work unchanged.
+once this has run, embed.py and everything downstream work unchanged.
 
 COLUMN MAPPING is the only thing you should need to edit. Set it to
 match the column names in EdSider's export.

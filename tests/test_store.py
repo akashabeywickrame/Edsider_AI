@@ -31,6 +31,29 @@ def seed(conn, qid, text, language):
                       "content_hash": content_hash(text)})
 
 
+# ------------------------------------------ no database configured yet
+
+def test_connect_refuses_to_run_with_no_database_configured():
+    """There is no sample bank to fall back to any more - silently
+    creating a brand new empty database at a guessed path would be
+    worse than the old fallback, not safer, so connect() must refuse."""
+    original = store.DB_PATH
+    try:
+        store.use_database(None)
+        with pytest.raises(RuntimeError, match="EDSIDER_DB"):
+            store.connect()
+    finally:
+        store.use_database(original)
+
+
+def test_use_database_none_resets_cleanly(local_db):
+    """A caller that saves DB_PATH before switching, then restores it,
+    must be able to pass None straight back through - the state DB_PATH
+    starts in when EDSIDER_DB was never set."""
+    assert store.use_database(None) is None
+    assert store.DB_PATH is None
+
+
 def test_language_filter_only_returns_that_language(local_db):
     with store.connect() as conn:
         seed(conn, "E1", "Explain photosynthesis in plants.", "English")

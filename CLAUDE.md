@@ -45,48 +45,57 @@ mismatched grade/subject. Each returns a human-readable reason.
 
 ## The key measured finding
 
-On real embeddings over the 30-question sample set:
+Measured early on, over a 30-question hand-written sample set (since
+removed from the repo - see "Two databases" below for why, and for what
+replaced it):
 
-- Real duplicates score **0.894 - 1.000**
-- Hard negatives score **0.914 - 0.977**
+- Real duplicates scored **0.894 - 1.000**
+- Hard negatives scored **0.914 - 0.977**
 
 **These ranges overlap.** A real duplicate scores *below* a look-alike. No
 threshold can separate them. Only rules that read what the questions
 actually say can.
 
-Threshold sweep from 0.70 to 0.99:
+Threshold sweep from 0.70 to 0.99, on that same sample:
 - Best achievable F1 **without** guards: **0.667**
 - Best achievable F1 **with** guards: **1.000**
 
-That is the central claim of the project, and it is measured, not asserted.
+That is the central claim of the project, and it was measured, not
+asserted - the sample set and `tune.py` that produced these two numbers
+are gone now that the project is real-data-only, but the numbers stood
+up again on the real bank in every subsequent measurement: the
+whole-bank sweep, `find_within_assessment_duplicates()`, and
+`find_cross_passage_duplicates()` each independently found that the
+raw embedding score alone floods a reviewer with false positives, and
+each needed its own threshold and (for two of the three) a filter,
+found by measuring the real bank rather than assumed - see those
+sections further down for the actual numbers each one turned out to
+need.
 
 ## Layout
 
 ```
-app.py                  Streamlit UI (4 pages, guard on/off toggle)
+app.py                  Streamlit UI (5 pages, guard on/off toggle)
 service.py              FastAPI service - the check, always on
                         (model + fingerprints load once, at startup)
 src/
   normalize.py          text extraction, normalisation, hashing
   embeddings.py         model wrapper (E5 prefix handling)
-  guards.py             the four guards
-  dedupe.py             full pipeline + thresholds
-  evaluate.py           scoring with transitive closure
+  guards.py             the four guards + contrast-term mining
+  dedupe.py             full pipeline (whole-bank, within-paper,
+                        cross-passage) + thresholds
   store.py              ALL database access - the only file that
                         changes when moving to PostgreSQL + pgvector
 scripts/
-  load.py               load sample questions
   import_edsider.py     load a real EdSider export (CSV or JSON)
   embed.py              compute fingerprints
   find_duplicates.py    Pass 1 only
-  find_similar.py       Passes 1-2, deliberately WITHOUT guards
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
-  tune.py               threshold sweep, with vs without guards
-tests/                  106 tests
-data/
-  questions.json        30 sample questions, duplicates planted
-  ground_truth.json     answer key: real duplicates + hard negatives
+tests/                  148 tests
+data/                   the real database lives here (gitignored -
+                        EDSIDER_DB must point at it explicitly, see
+                        "Two databases")
 ```
 
 ## Running it
@@ -97,13 +106,17 @@ python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 
 .\venv\Scripts\python.exe -m pytest tests\ -v
-.\venv\Scripts\python.exe scripts\load.py
-.\venv\Scripts\python.exe scripts\embed.py
-.\venv\Scripts\python.exe scripts\tune.py
+
+$env:EDSIDER_DB = "data/edsider_real.db"
+.\venv\Scripts\python.exe scripts\import_edsider.py path\to\export.csv
+.\venv\Scripts\python.exe scripts\embed.py --language English
 .\venv\Scripts\streamlit.exe run app.py
 ```
 
-`embed.py` downloads the model on first run, then caches it.
+`embed.py` downloads the model on first run, then caches it. There is no
+default database any more - `EDSIDER_DB` must be set before any script
+that touches storage, or `store.connect()` refuses to run (see "Two
+databases").
 
 ## Conventions to follow
 
@@ -135,9 +148,12 @@ explicitly keeps the Sinhala (0D80-0DFF) and Tamil (0B80-0BFF) blocks.
 mix of that and plain text. `extract_text()` handles either, so formatting
 differences never affect the fingerprint.
 
-**Duplicates are transitive.** If A=B and B=C then A=C. `evaluate.py`
-computes the closure with union-find; without it the scorer punishes the
-system for being correct.
+**Duplicates are transitive.** If A=B and B=C then A=C. The old
+sample-set scorer (`evaluate.py`, removed - see "Two databases")
+computed this closure with union-find; without it, it would have
+punished the system for being correct. Worth remembering when a
+decisions-table-based scorer eventually replaces it (see "Known
+limitations").
 
 **The entity guard needs a conflict on both sides.** One question mentioning
 an extra place is not evidence of difference - a test caught this using
@@ -211,10 +227,13 @@ normalised text matches.
 **Penalties and thresholds are one setting, not two.** A 0.15 penalty at a
 threshold of 0.78 demotes a pair; at 0.95 it needs a raw score of 1.10 to
 survive, so it deletes it. Every guard becomes a kill switch as the
-threshold rises. The sample set tunes to 0.78, but 0.85 on the real bank
+threshold rises. The sample set tuned to 0.78, but 0.85 on the real bank
 yields **1.46 million** candidate pairs - unreviewable - so real thresholds
 sit near 0.95, where the current penalties are far too strong. Re-tune both
-together, on real labels, with `tune.py`.
+together, on real labels, once there are enough - the tool that would do
+this (`tune.py`) has been removed along with the sample answer key it
+swept against; a real version needs building against the `decisions`
+table instead (see "Known limitations").
 
 Sweep scale, measured: the whole 128-million-pair matmul takes **1.6
 seconds** once `VectorIndex` holds float32. Candidates above 0.97 / 0.95 /
@@ -238,9 +257,12 @@ seconds** once `VectorIndex` holds float32. Candidates above 0.97 / 0.95 /
   first - as of this writing there are still zero in either database, all
   existing `decisions` rows being confirms - so the column exists and is
   wired in, but nothing has populated it yet.
-- **Thresholds are tuned on 30 English questions.** They must be re-derived
-  on EdSider's real bank via `tune.py`, which needs a few hundred pairs
-  labelled by a teacher.
+- **Thresholds were originally tuned on 30 English sample questions**, via
+  `tune.py`, which is now removed along with that sample set - the
+  project is real-data-only from here on. They must be re-derived on
+  EdSider's real bank instead, which needs a few hundred pairs labelled
+  by a teacher (via the `decisions` table) and a new version of `tune.py`
+  built to sweep against that instead of `ground_truth.json`.
 - **Sinhala and Tamil are synced but deliberately not embedded yet.** The
   684 MB CSV export was English-only, which is why earlier notes here said
   the assumption was untested - but that was the export, not the bank.
@@ -292,30 +314,43 @@ already has it. Three things about it are deliberate:
 `--add` refuses to write when anything was flagged. Nothing is added over
 a flag without a person.
 
-## Two databases
+## Two databases (there used to be)
 
-The sample bank and a real import must not share one file, or `tune.py`
-scores 40,000 real questions against a 30-row answer key. `store.DB_PATH`
-reads `EDSIDER_DB`:
+There used to be a 30-question hand-written sample bank
+(`data/questions.json`), an answer key describing it
+(`data/ground_truth.json`), and machinery built around scoring against
+that answer key (`scripts/load.py`, `scripts/tune.py`,
+`scripts/find_similar.py`, `src/evaluate.py`). All five are gone now -
+removed once the project moved to being real-data-only, rather than
+left around as dead weight nothing could run any more (`tune.py` has no
+answer key to sweep against without a labelled set; there is no
+decisions-table-based replacement yet - see "Known limitations").
+
+That leaves one database, but the discipline that motivated keeping two
+apart still matters, in a stricter form now: `store.DB_PATH` reads
+`EDSIDER_DB`, and **there is no default any more**:
 
 ```
 $env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
 .\venv\Scripts\python.exe scripts\import_edsider.py edsider_questions.csv
 ```
 
-Unset, it falls back to `data/edsider.db` - the sample bank the tests and
-`ground_truth.json` describe. `find_duplicates.py` refuses to score
-against the answer key when none of its questions are present.
+Unset, `DB_PATH` is `None`, and `store.connect()` raises immediately
+with a message naming `EDSIDER_DB`, rather than silently creating a
+brand new empty database at a guessed path - which would be a worse
+failure than the old one: every check would silently report "no
+duplicates found" for everything, with no error and no visible sign
+anything was wrong. The old sample-bank fallback was at least visibly a
+demo; a silently-empty real bank is not.
 
-The environment variable is easy to forget, and forgetting it opens the
-30-question sample and shows its planted duplicates as though they were
-EdSider's. So the app names the open database in the sidebar and offers a
-selector over every `data/*.db`; switching calls `store.use_database()`,
-which is also the only supported way to repoint storage at runtime.
+The app still names the open database in the sidebar and offers a
+selector over every `data/*.db`, for whenever more than one real bank
+exists side by side (a staging copy, say) - `store.use_database()` is
+the only supported way to repoint storage at runtime, and remains so.
 
 The duplicates page defaults to a threshold of **0.95** on a bank over a
-thousand questions rather than the sample-tuned 0.85, and renders the top
-50 pairs. At 0.85 the real bank returns 1.46 million pairs, which is
+thousand questions rather than the old sample-tuned 0.85, and renders the
+top 50 pairs. At 0.85 the real bank returns 1.46 million pairs, which is
 neither reviewable nor renderable.
 
 ## The live service
@@ -550,10 +585,12 @@ decision gets recorded or the poller writes newly imported questions.
 
 **What "usable as a service" still needs**, roughly in order:
 
-1. `evaluate.py` reading the `decisions` table, not just
-   `ground_truth.json` - so `tune.py` can run on real teacher verdicts
-   once enough accumulate, instead of thresholds reasoned from the real
-   bank's statistics alone.
+1. A decisions-table-based scorer and threshold sweep, replacing the
+   removed `evaluate.py`/`tune.py` pair (which read `ground_truth.json`,
+   the sample answer key - both gone now, see "Two databases"), so
+   thresholds can be re-derived from real teacher verdicts once enough
+   accumulate, instead of reasoned from the real bank's statistics
+   alone.
 2. `sync.py` has now run against the real database - `question.question`,
    schema-qualified, joined against `settings.grade`/`subject`/`language`.
    103,337 rows, 60% of them Sinhala or Tamil (see the language note
