@@ -63,7 +63,7 @@ the only thing that should need changing.
 .\venv\Scripts\python.exe -m pytest tests\ -v
 ```
 
-148 tests, none of which need the real model or a real server - vectors
+155 tests, none of which need the real model or a real server - vectors
 are hand-made, Postgres and the embedder are faked. Runs in about two
 seconds.
 
@@ -190,11 +190,12 @@ trustworthy.
     "Calculate the PERIMETER of a rectangle 12 cm by 5 cm"
 
 One word apart, same numbers, and the model scores them above 0.9. They
-are not duplicates. Four guards lower a pair's score when a warning
+are not duplicates. Five guards lower a pair's score when a warning
 sign appears: the numbers differ, opposing concepts are used, different
-entities are named, or the grade and subject do not match. Each guard
-returns a readable reason, so the reviewer sees *why* a pair was
-demoted rather than a bare number.
+entities are named, the grade and subject do not match, or a long
+passage is shared verbatim while the actual question asked differs.
+Each guard returns a readable reason, so the reviewer sees *why* a pair
+was demoted rather than a bare number.
 
 **Measured, not assumed**: best achievable F1 without the guard layer is
 0.667; with it, 1.000. On the real bank, at the threshold the sample set
@@ -290,7 +291,7 @@ scripts/
   embed.py                 compute fingerprints
   find_duplicates.py       Stage 1 only, no AI
   check_new.py             one question against the bank
-tests/                     148 tests
+tests/                     155 tests
 data/                      the real database lives here (gitignored -
                            EDSIDER_DB must point at it explicitly)
 ```

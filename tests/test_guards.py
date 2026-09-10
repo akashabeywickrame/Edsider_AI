@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import guards
+from src import dedupe, guards
 
 
 def q(text, grade=None, subject=None):
@@ -213,6 +213,136 @@ def test_missing_metadata_does_not_flag():
     b = q("Describe the water cycle.")
     penalty, reasons = guards.check(a, b)
     assert not any("grade or subject" in r for r in reasons)
+
+
+# ---------- Guard 5: shared passage, different question ----------
+
+_PASSAGE = (
+    "Read the following passage carefully before answering the question "
+    "that follows. Sri Lanka is an island nation in South Asia, known "
+    "for its diverse ecosystems ranging from rainforests to coastal "
+    "wetlands. The country has a long history of agriculture, with tea, "
+    "rubber and coconut forming the backbone of its plantation economy "
+    "for well over a century. In recent decades, the government has "
+    "invested heavily in irrigation projects to support paddy farming "
+    "in the dry zone, while also working to protect remaining forest "
+    "cover from further encroachment."
+)
+
+
+def test_same_long_passage_different_question_is_flagged():
+    """The exact false positive this guard exists for: the passage
+    dominates the raw embedding, but the two questions ask different
+    things about it."""
+    a = q(_PASSAGE + " What is the main theme of this passage?")
+    b = q(_PASSAGE + " What is the author's tone in this passage?")
+    penalty, reasons = guards.check(a, b)
+    assert penalty >= guards.PENALTIES["shared_passage_different_question"]
+    assert any("shares a" in r and "passage" in r for r in reasons)
+
+
+def test_same_long_passage_same_question_is_not_flagged():
+    """A genuine duplicate - the same passage AND the same question -
+    must not be punished just for being long."""
+    a = q(_PASSAGE + " What is the main theme of this passage?")
+    b = q(_PASSAGE + " What is the main theme of this passage?")
+    penalty, reasons = guards.check(a, b)
+    assert penalty == 0.0, f"unexpected penalty: {reasons}"
+
+
+def test_same_long_passage_reworded_question_is_not_flagged():
+    """A paraphrase of the same actual question, about the same passage,
+    is still a duplicate - the residual difference must be small enough
+    to survive."""
+    a = q(_PASSAGE + " What is the main theme of this passage?")
+    b = q(_PASSAGE + " What theme does this passage explore?")
+    penalty, reasons = guards.check(a, b)
+    assert not any("passage" in r for r in reasons)
+
+
+def test_short_shared_wording_does_not_trigger_the_passage_guard():
+    """Two short questions sharing a common phrase are not a passage
+    pair - the guard must stay silent well below its length threshold."""
+    a = q("Calculate the area of a rectangle with length 12 cm and width 5 cm.")
+    b = q("Calculate the perimeter of a rectangle with length 12 cm and width 5 cm.")
+    penalty, reasons = guards.check(a, b)
+    assert not any("passage" in r for r in reasons)
+
+
+def test_two_different_long_passages_are_not_flagged_by_this_guard():
+    """No long block is actually shared, so the guard must not fire just
+    because both texts happen to be long."""
+    a = q(_PASSAGE + " What is the main theme of this passage?")
+    other_passage = (
+        "The water cycle describes how water moves through the Earth's "
+        "atmosphere, surface and underground reservoirs. Evaporation "
+        "from oceans and lakes rises as vapour, which then cools and "
+        "condenses into clouds. When droplets grow heavy enough, they "
+        "fall back to the surface as precipitation, replenishing rivers, "
+        "lakes and groundwater before the cycle begins again."
+    )
+    b = q(other_passage + " What is the main theme of this passage?")
+    penalty, reasons = guards.check(a, b)
+    assert not any("passage" in r for r in reasons)
+
+
+def test_shared_passage_helper_returns_none_below_threshold():
+    assert guards.shared_passage("short text a", "short text b") is None
+
+
+def test_relationship_mcq_tail_is_flagged_even_with_high_word_overlap():
+    """Real pair from assessment #1127 (questions 58317/58328), reported
+    at 99% similar and not flagged: the shared A/B/C/D passage is
+    identical, and the two questions differ only in which relationship
+    they ask about - but "which pair shows the second statement being a
+    RESULT of the first" and "which pair shows NO RELATIONSHIP between
+    the first and second" share enough surrounding words ("which pair
+    shows ... the first and second statement(s)") that word overlap
+    alone called them the same question (0.44 overlap, under the 0.34
+    "differs" floor only because the floor was tuned to a hand-written
+    example, not this real one). The CONTRAST_GROUPS entry for this MCQ
+    format fixes it independently of that overlap check."""
+    passage = (
+        "The following shows pairs of statements under A, B, C, and D. "
+        "Examine the relationship between the first and second "
+        "statements.\n\nA - Respect for Women in Ancient Sri Lanka "
+        "B - Economic Exchange in Ancient Sri Lanka C - Environmental "
+        "Protection Laws in Ancient Sri Lanka D - Ancient Food Habits\n\n"
+        "The opportunity for women to rule, as shown by Queen Chula "
+        "Seewali and Queen Leelawathi, reflects the social respect and "
+        "trust women held in ancient society.\n\nThe use of metal coins "
+        "as a medium of exchange, with regulation by a special officer "
+        "called 'Roopadaka,' indicates the importance of an organized "
+        "economy.\n\nKings, such as Mihindu IV and Udaya III, passed "
+        "laws to protect forests and prevent soil erosion, ensuring "
+        "sustainable environmental practices.\n\nThe consumption of "
+        "locally grown foods like rice, yams, and vegetables, and the "
+        "use of natural spices like coriander and curry leaves, "
+        "highlight the local food habits and emphasis on natural "
+        "resources."
+    )
+    a = q(passage + "\n\nWhich pair shows the second statement being "
+                     "a result of the first?\nA\nB\nC\nD")
+    b = q(passage + "\n\nWhich pair shows no relationship between the "
+                     "first and second statements?\nA\nB\nC\nD")
+    penalty, reasons = guards.check(a, b)
+    assert penalty >= guards.PENALTIES["opposite_concepts"]
+    assert any("a result of" in r and "no relationship between" in r
+               for r in reasons)
+    # Reported live at 99% raw similarity - the penalty must be enough
+    # to drop it out of review entirely, not just off the top of the list.
+    assert 0.99 - penalty < dedupe.REVIEW_THRESHOLD
+
+
+def test_shared_passage_helper_finds_the_residuals():
+    a = _PASSAGE + " What is the main theme of this passage?"
+    b = _PASSAGE + " What is the author's tone in this passage?"
+    result = guards.shared_passage(a, b)
+    assert result is not None
+    size, residual_a, residual_b = result
+    assert size >= guards._MIN_SHARED_PASSAGE_CHARS
+    assert "main theme" in residual_a
+    assert "author's tone" in residual_b
 
 
 # ---------- genuine duplicates must survive untouched ----------

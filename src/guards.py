@@ -17,6 +17,7 @@ reviewer can see WHY a pair was demoted rather than being handed a
 bare number.
 """
 
+import difflib
 import re
 
 from .normalize import normalize
@@ -27,6 +28,7 @@ PENALTIES = {
     "opposite_concepts": 0.40,
     "different_entities": 0.30,
     "metadata_mismatch": 0.15,
+    "shared_passage_different_question": 0.40,
 }
 
 # Groups of terms that are commonly confused but mean different things.
@@ -50,6 +52,17 @@ CONTRAST_GROUPS = [
     {"import", "export"},
     {"profit", "loss"},
     {"increase", "decrease"},
+    # EdSider's "examine the relationship between the first and second
+    # statement" MCQ format (common in history/reasoning papers): the
+    # shared A/B/C/D passage is identical across a whole family of these
+    # questions, and only this closing phrase says which relationship is
+    # being tested. Found because Guard 5's word-overlap check missed a
+    # real pair on assessment #1127 (questions 58317/58328) - "a result
+    # of" and "no relationship between" share enough surrounding words
+    # ("which pair shows ... the first and second statement(s)") that the
+    # overlap ratio alone called them the same question. A literal
+    # phrase match does not have that problem.
+    {"a result of", "no relationship between"},
 ]
 
 # Proper nouns worth comparing explicitly. A question about Sri Lanka
@@ -121,6 +134,86 @@ def find_contrast(text_a, text_b):
             if only_a and only_b:
                 return sorted(only_a)[0], sorted(only_b)[0]
     return None
+
+
+# A shared block below this length is normal overlap in phrasing - two
+# questions both saying "calculate the area of a rectangle" - not a
+# passage, source excerpt or scenario copied into both. Above it, a
+# match this long is almost certainly a deliberate shared block.
+_MIN_SHARED_PASSAGE_CHARS = 200
+
+# The shared block must cover most of the SHORTER text before it counts
+# as "the same passage" rather than one question merely quoting part of
+# the other's wording.
+_PASSAGE_COVERAGE = 0.6
+
+
+def shared_passage(text_a, text_b):
+    """Find a long block of text shared verbatim between two questions -
+    a reading passage, source excerpt or scenario pasted into both - and
+    return what is left once that block is set aside.
+
+    A shared passage can be most of both texts while the actual question
+    differs entirely:
+
+        "Read the passage below ... What is the main theme?"
+        "Read the passage below ... What is the author's tone?"
+
+    These embed almost identically, because the passage dominates the
+    text and the real question is a handful of words at the end. Guards
+    1-4 all read the FULL text and have nothing to find inside a passage
+    neither side wrote - this looks at what is left over once the shared
+    block is removed, which is where the actual question lives.
+
+    Returns (shared_length, residual_a, residual_b), or None if there is
+    no long shared block - true of most pairs, including ordinary
+    rewordings that happen to share a phrase or two.
+    """
+    matcher = difflib.SequenceMatcher(None, text_a, text_b, autojunk=False)
+    match = matcher.find_longest_match(0, len(text_a), 0, len(text_b))
+    if match.size < _MIN_SHARED_PASSAGE_CHARS:
+        return None
+
+    shorter = min(len(text_a), len(text_b))
+    if shorter == 0 or match.size / shorter < _PASSAGE_COVERAGE:
+        return None
+
+    residual_a = (text_a[:match.a] + text_a[match.a + match.size:]).strip()
+    residual_b = (text_b[:match.b] + text_b[match.b + match.size:]).strip()
+    return match.size, residual_a, residual_b
+
+
+# How little of the residual vocabulary two questions may share before
+# they count as asking something different, once stopwords are out of
+# the way. See _residual_differs() for why this is word overlap, not a
+# character ratio.
+_RESIDUAL_OVERLAP_FLOOR = 0.34
+
+
+def _residual_differs(residual_a, residual_b):
+    """Whether what is left after the shared passage points to a
+    genuinely different question, not leftover punctuation or a trivial
+    reword of the same prompt.
+
+    Word-level overlap, not a character ratio - a character ratio over
+    the whole residual is dominated by a frame both questions happen to
+    reuse ("What is the ... this passage?"), which buries the one word
+    pair that actually differs (main theme / author's tone) under a
+    shared prefix and suffix neither side chose. Stripping stopwords the
+    same way candidate_contrast_terms() does leaves only the words that
+    carry the real distinction.
+    """
+    words_a = {w.lower() for w in _CANDIDATE_WORD.findall(residual_a)} - _STOPWORDS
+    words_b = {w.lower() for w in _CANDIDATE_WORD.findall(residual_b)} - _STOPWORDS
+    union = words_a | words_b
+    if not union:
+        # Nothing but stopwords (or nothing at all) outside the shared
+        # block on either side - this is the same text with a passage in
+        # common, not two different questions about it. Firing here
+        # would demote a genuine duplicate that just happens to be long.
+        return False
+    overlap = len(words_a & words_b) / len(union)
+    return overlap < _RESIDUAL_OVERLAP_FLOOR
 
 
 # Words too common to distinguish anything - every question shares them,
@@ -232,6 +325,20 @@ def check(question_a, question_b):
             and normalize(text_a) != normalize(text_b):
         penalty += PENALTIES["metadata_mismatch"]
         reasons.append(f"different grade or subject ({ga}/{sa} vs {gb}/{sb})")
+
+    # Guard 5 - a long passage is shared verbatim, but what is asked
+    # about it differs. This only ever looks past a block long enough to
+    # be a deliberate shared passage rather than ordinary shared wording
+    # - see shared_passage()'s own threshold for what counts.
+    shared = shared_passage(text_a, text_b)
+    if shared is not None:
+        size, residual_a, residual_b = shared
+        if _residual_differs(residual_a, residual_b):
+            penalty += PENALTIES["shared_passage_different_question"]
+            reasons.append(
+                f"shares a {size}-character passage, but the question "
+                "asked differs"
+            )
 
     return penalty, reasons
 

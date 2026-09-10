@@ -256,6 +256,74 @@ def find_within_assessment_duplicates(assessment_groups, use_guards=True,
     return results
 
 
+def find_shared_passage_groups(rows):
+    """Group questions on one paper that share a long passage with each
+    other - informational context for a reviewer, not a detection rule.
+
+    This does NOT change any score, demote any pair, or remove anything
+    from find_within_assessment_duplicates()'s results. It exists for a
+    narrower reason: a paper like the one that prompted it (assessment
+    #1127) can carry a whole family of questions built on one shared
+    A/B/C/D passage - "which pair shows a result of the first", "which
+    pair shows no relationship between the first and second" - and nine
+    times out of ten a reviewer seeing two of them side by side under
+    "REPEAT" has no way to tell, at a glance, that this is a known
+    passage-sharing shape rather than an actual copy-paste mistake. This
+    surfaces that shape so the UI can say so.
+
+    Deliberately NOT based on question_number adjacency ("two consecutive
+    questions") - numbering has gaps (assessment #1127's own pair is Q31
+    and Q33, not Q31/Q32) and, more importantly, two consecutive
+    questions matching because someone genuinely pasted the same block
+    twice is exactly the mistake this whole project exists to catch.
+    Position is corroborating evidence at best; guards.shared_passage()
+    finding an actual shared block is what the grouping is built on.
+
+    `rows` is one assessment's group (e.g. one value from
+    store.questions_in_assessment()'s per-assessment dict) - dict-like
+    rows with at least 'id' and 'text', ideally 'question_number'.
+
+    Returns a list of {"question_ids": [...], "question_numbers": [...]}
+    - one entry per group of 2 or more rows connected by a shared
+    passage (transitively: A-B and B-C shared means A, B, C all group
+    together even if A and C alone fall short of the threshold). Rows
+    with no long shared block with anything else are left out entirely.
+    """
+    rows = list(rows)
+    parent = {r["id"]: r["id"] for r in rows}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            if guards.shared_passage(rows[i]["text"], rows[j]["text"]) is not None:
+                union(rows[i]["id"], rows[j]["id"])
+
+    members = defaultdict(list)
+    for r in rows:
+        members[find(r["id"])].append(r)
+
+    return [
+        {
+            "question_ids": [m["id"] for m in group],
+            "question_numbers": sorted(
+                m["question_number"] for m in group
+                if m.get("question_number") is not None
+            ),
+        }
+        for group in members.values() if len(group) > 1
+    ]
+
+
 def find_cross_passage_duplicates(children, use_guards=True, threshold=0.95,
                                   min_letters=10, max_parents=4):
     """Find a sub-question reused under a DIFFERENT passage/parent - the

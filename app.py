@@ -477,6 +477,24 @@ elif page == "Duplicates within a paper":
         else:
             with st.spinner(f"Checking {len(groups):,} papers..."):
                 results = dedupe.find_within_assessment_duplicates(groups)
+                # Informational only - does not change results or scores.
+                # See dedupe.find_shared_passage_groups() docstring for why
+                # this is content-based (a real shared block) rather than
+                # "consecutive question numbers": numbering has gaps (the
+                # #1127 pair below is Q31/Q33, not Q31/Q32), and two
+                # genuinely copy-pasted consecutive questions would be
+                # exactly the mistake this page exists to catch, not
+                # something to wave through on position alone.
+                passage_groups = {
+                    aid: dedupe.find_shared_passage_groups(rs)
+                    for aid, rs in groups.items()
+                }
+
+            def shared_passage_group(aid, qid):
+                for g in passage_groups.get(aid, []):
+                    if qid in g["question_ids"]:
+                        return g
+                return None
 
             a, b = st.columns(2)
             a.metric("Papers checked", f"{len(groups):,}")
@@ -499,6 +517,19 @@ elif page == "Duplicates within a paper":
                     f"### :red[REPEAT ON ASSESSMENT #{aid}] &nbsp; "
                     f"{pair['score']:.0%} similar"
                 )
+
+                cluster = shared_passage_group(aid, pair["a"])
+                if cluster:
+                    nums = ", ".join(str(n) for n in cluster["question_numbers"])
+                    st.info(
+                        "Shares a long passage with question(s) "
+                        f"{nums or 'unnumbered'} on this paper - looks like "
+                        "a shared-passage question family (the same "
+                        "passage or statement set, a different question "
+                        "asked each time), not necessarily a real "
+                        "duplicate. Check the actual questions below "
+                        "before confirming."
+                    )
 
                 left, right = st.columns(2)
                 for col, q in ((left, qa), (right, qb)):

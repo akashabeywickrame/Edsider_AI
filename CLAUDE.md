@@ -39,9 +39,10 @@ different things score very high.
     "Calculate the AREA of a rectangle 12 cm by 5 cm"      \
     "Calculate the PERIMETER of a rectangle 12 cm by 5 cm" /  score 0.977
 
-They are NOT duplicates. Four guards lower a pair's score when a warning
+They are NOT duplicates. Five guards lower a pair's score when a warning
 sign appears - numbers differ, opposing concepts, different named entities,
-mismatched grade/subject. Each returns a human-readable reason.
+mismatched grade/subject, or a long passage shared verbatim while the
+actual question differs. Each returns a human-readable reason.
 
 ## The key measured finding
 
@@ -81,7 +82,7 @@ service.py              FastAPI service - the check, always on
 src/
   normalize.py          text extraction, normalisation, hashing
   embeddings.py         model wrapper (E5 prefix handling)
-  guards.py             the four guards + contrast-term mining
+  guards.py             the five guards + contrast-term mining
   dedupe.py             full pipeline (whole-bank, within-paper,
                         cross-passage) + thresholds
   store.py              ALL database access - the only file that
@@ -92,7 +93,7 @@ scripts/
   find_duplicates.py    Pass 1 only
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
-tests/                  148 tests
+tests/                  155 tests
 data/                   the real database lives here (gitignored -
                         EDSIDER_DB must point at it explicitly, see
                         "Two databases")
@@ -582,6 +583,109 @@ in alongside this. The default SQLite journal mode blocks a reader
 behind an in-progress writer, which is invisible in a one-shot CLI run
 and a real problem in a process serving requests continuously while a
 decision gets recorded or the poller writes newly imported questions.
+
+## Guard 5 - a passage shared inside one row, not split into parent/child
+
+Cross-passage duplicates (above) assume the passage lives in a
+separate parent row. Plenty of real rows do not use that structure at
+all - a `standalone` row can hold a long reading passage AND the actual
+question together in one `text` field, because whoever entered it
+pasted both into the same box instead of using EdSider's parent/child
+split. Nothing above catches that shape, because `COMPARABLE` already
+treats it as one ordinary standalone question - which is correct; the
+problem is what happens next; once two such rows share the same pasted
+passage, the passage dominates the embedding regardless of what is
+actually asked:
+
+    "Read the passage below ... What is the main theme?"
+    "Read the passage below ... What is the author's tone?"
+
+These are different questions, and scored **0.927 - 0.986** against
+each other on the real bank - inside or above `AUTO_THRESHOLD` (0.92),
+which is exactly "LIKELY DUPLICATE" for a pair that is not one. Guards
+1-4 have nothing to find here: no numbers conflict, no contrast term
+or entity differs, because all of that lives in the identical passage
+both rows share - the guards were reading the SAME words that made the
+raw score high in the first place.
+
+`guards.shared_passage(text_a, text_b)` finds the longest block of text
+the two rows share verbatim (`difflib.SequenceMatcher`), and only acts
+when that block is at least 200 characters and covers most of the
+shorter text - short shared phrasing ("calculate the area of a
+rectangle") is normal and must not trigger this. Guard 5 then looks at
+what is left on each side once that block is set aside, and demotes
+the pair only if the LEFTOVER text is actually about something
+different - compared as stopword-filtered word overlap
+(`_residual_differs`), not a character ratio, because a character ratio
+over the whole leftover is dominated by a frame both sides happen to
+reuse ("What is the ... this passage?") and buries the one distinguishing
+word pair (main theme / author's tone) under a shared prefix and
+suffix neither side chose. If nothing meaningful is left outside the
+shared block on either side, or the leftover text still overlaps
+enough to be a paraphrase of the same question, the guard stays silent
+- the same "absence of evidence is not evidence of difference"
+reasoning every other guard already follows.
+
+Measured against the real bank (16,084 comparable rows, 5,954 of them
+200+ characters - long enough for the guard to even look): among 5,885
+raw pairs scoring 0.90 or higher, Guard 5 alone demoted **27** out of
+the results, every one spot-checked was the same shape - most were
+MCQs sharing an identical answer-options block (A/B/C/D) while asking
+about a different statement or relationship, e.g. two questions both
+listing "A. Started near river valleys / B. Stared developed cities /
+C. Used metals such as copper..." as options but asking different
+things about them. Genuine long duplicates that just happen to be
+long - the same MCQ, stem and options both identical bar a stray blank
+line - were left at their raw 1.000 untouched, confirming the guard
+does not cost real duplicates anything.
+
+**Word overlap alone missed a real pair** - reported live, assessment
+#1127, questions 58317/58328, flagged as 99% similar and not demoted.
+Both share the same 967-character A/B/C/D passage; the residuals are
+"Which pair shows the second statement being a result of the first?"
+and "Which pair shows no relationship between the first and second
+statements?" - genuinely different questions, but they share enough of
+the surrounding sentence ("which pair shows ... the first and second
+statement(s)") that word overlap alone scored 0.44, just above the
+0.34 floor tuned on a hand-written example, not a real one. Rather than
+nudge that floor to fit two data points sitting 0.06 apart - fragile in
+either direction - the fix was a new `CONTRAST_GROUPS` entry,
+`{"a result of", "no relationship between"}`, so Guard 2 catches this
+directly on a literal phrase match instead of a fuzzy ratio. This is a
+recurring EdSider MCQ format ("examine the relationship between the
+first and second statement") across history/reasoning papers, not a
+one-off, so the fix should generalise past this one pair - though only
+these two exact phrases are confirmed against real data; other
+relationship types this format likely also asks about ("contradicts",
+"the same situation as") are not yet in the group because no real
+example of them has been seen, per this project's "measured, not
+assumed" rule.
+
+**A reviewer seeing this pair still needs to know WHY it looked close**,
+even after the contrast fix stops it from being wrongly flagged as a
+duplicate - which is a separate problem from scoring it correctly.
+`dedupe.find_shared_passage_groups(rows)` groups questions on one paper
+that share a long passage with each other (via `guards.shared_passage()`,
+transitively - A sharing with B and B with C groups all three even if A
+and C alone were not compared), and the "Duplicates within a paper" page
+shows it as an info note on any pair that has one. It changes nothing
+about scoring or which pairs are flagged - purely a "here is why these
+look alike" annotation, same spirit as "Also appears on assessment(s)".
+
+The idea behind it was originally "if two CONSECUTIVE questions match
+100%, that is probably a shared passage, so ignore them" - rejected as
+the detection rule itself, deliberately: a real copy-pasted block of
+consecutive questions would look exactly the same, and silently
+excluding that is precisely the zero-tolerance mistake this project
+exists to catch. `find_shared_passage_groups()` uses actual shared text
+instead of position, which also turned out to be the more accurate
+signal on the real pair that prompted it - questions 31 and 33 on
+assessment #1127, not 31 and 32, are the ones that actually share the
+passage. Run against the real paper: it correctly found all FOUR
+questions in the family (31, 32, 33, 34 - ids 58317, 58320, 58328,
+58335), not just the two originally reported, confirming the shared
+block is what ties them together rather than any two of them happening
+to sit next to each other.
 
 **What "usable as a service" still needs**, roughly in order:
 

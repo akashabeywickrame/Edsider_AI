@@ -243,6 +243,104 @@ def test_default_threshold_is_high_to_match_the_real_bank():
     assert defaults["threshold"].default == 0.95
 
 
+# ------------------------------- shared-passage grouping (informational)
+
+_PASSAGE = (
+    "The following shows pairs of statements under A, B, C, and D. "
+    "Examine the relationship between the first and second statements.\n\n"
+    "A - Respect for Women in Ancient Sri Lanka B - Economic Exchange in "
+    "Ancient Sri Lanka C - Environmental Protection Laws in Ancient Sri "
+    "Lanka D - Ancient Food Habits\n\nThe opportunity for women to rule, "
+    "as shown by Queen Chula Seewali and Queen Leelawathi, reflects the "
+    "social respect and trust women held in ancient society.\n\nThe use "
+    "of metal coins as a medium of exchange, with regulation by a "
+    "special officer called 'Roopadaka,' indicates the importance of an "
+    "organized economy.\n\nKings, such as Mihindu IV and Udaya III, "
+    "passed laws to protect forests and prevent soil erosion, ensuring "
+    "sustainable environmental practices."
+)
+
+
+def paper_q(qid, tail, number):
+    return {"id": qid, "text": _PASSAGE + " " + tail,
+            "question_number": number}
+
+
+def test_two_questions_sharing_a_passage_are_grouped():
+    """The real shape from assessment #1127: Q31 and Q33 (not adjacent
+    numbers) both built on the same passage, asking different things."""
+    rows = [
+        paper_q("58317", "Which pair shows a result of the first?", 31),
+        paper_q("58328", "Which pair shows no relationship between "
+                          "the first and second statements?", 33),
+    ]
+    groups = dedupe.find_shared_passage_groups(rows)
+    assert len(groups) == 1
+    assert set(groups[0]["question_ids"]) == {"58317", "58328"}
+    assert groups[0]["question_numbers"] == [31, 33]
+
+
+def test_grouping_is_transitive_across_more_than_two_questions():
+    """A, B and C all share the same passage - even if some pair among
+    them individually falls short, sharing through a third still groups
+    all three, not just the pair that was compared directly."""
+    rows = [
+        paper_q("A", "Which pair shows a result of the first?", 1),
+        paper_q("B", "Which pair shows no relationship between the "
+                     "first and second?", 2),
+        paper_q("C", "Which pair contradicts the first statement?", 3),
+    ]
+    groups = dedupe.find_shared_passage_groups(rows)
+    assert len(groups) == 1
+    assert set(groups[0]["question_ids"]) == {"A", "B", "C"}
+
+
+def test_unrelated_questions_are_not_grouped():
+    rows = [
+        {"id": "X1", "text": "What is the capital of Sri Lanka?",
+         "question_number": 1},
+        {"id": "X2", "text": "Name the longest river in Sri Lanka.",
+         "question_number": 2},
+    ]
+    assert dedupe.find_shared_passage_groups(rows) == []
+
+
+def test_a_question_with_no_shared_passage_is_left_out_of_every_group():
+    """A group only reports rows that actually connect to something -
+    a lone question on the same paper as a passage-sharing pair is not
+    itself part of the family."""
+    rows = [
+        paper_q("58317", "Which pair shows a result of the first?", 31),
+        paper_q("58328", "Which pair shows no relationship between "
+                          "the first and second statements?", 33),
+        {"id": "OTHER", "text": "Name the capital of Japan.",
+         "question_number": 32},
+    ]
+    groups = dedupe.find_shared_passage_groups(rows)
+    assert len(groups) == 1
+    assert "OTHER" not in groups[0]["question_ids"]
+
+
+def test_grouping_does_not_change_the_duplicate_results_it_annotates():
+    """Purely informational - find_within_assessment_duplicates() must
+    keep flagging (or not flagging) exactly what it already did. The
+    contrast-group fix for this exact pair (see test_guards.py) is what
+    keeps it out of the results; grouping only adds context on top."""
+    paper = [
+        paper_q("58317", "Which pair shows a result of the first?", 31),
+        paper_q("58328", "Which pair shows no relationship between "
+                          "the first and second statements?", 33),
+    ]
+    for row in paper:
+        row["vector"] = [1.0, 0.0, 0.0]
+
+    with_groups = dedupe.find_shared_passage_groups(paper)
+    results = dedupe.find_within_assessment_duplicates({"P1127": paper})
+
+    assert len(with_groups) == 1
+    assert results == []
+
+
 # -------------------------------------------------- cross-passage checks
 
 def child(qid, text, vector, parent_id):
