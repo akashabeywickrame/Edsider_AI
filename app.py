@@ -102,14 +102,27 @@ st.sidebar.title("EdSider AI")
 # refuses to guess a database on its own (see store.py's DB_PATH
 # comment). If nothing has been configured yet but a bank exists on
 # disk, open the first one found rather than leave DB_PATH as None.
-banks = sorted(p.name for p in (ROOT / "data").glob("*.db"))
+#
+# The bank EDSIDER_DB names comes first, wherever it is. On a server it is
+# usually not under data/ at all - startup.sh serves a copy from local
+# disk - and looking only in data/ reported "no database found" right
+# next to a perfectly good one.
+bank_paths = {}
+if os.environ.get("EDSIDER_DB") and Path(os.environ["EDSIDER_DB"]).is_file():
+    configured = Path(os.environ["EDSIDER_DB"])
+    bank_paths[configured.name] = configured
+for p in sorted((ROOT / "data").glob("*.db")):
+    bank_paths.setdefault(p.name, p)
+banks = list(bank_paths)
+
 if banks and store.DB_PATH is None:
-    store.use_database(ROOT / "data" / banks[0])
+    store.use_database(bank_paths[banks[0]])
 
 if not banks:
     st.title("EdSider AI")
     st.error(
-        "No database found under `data/*.db`. Build one first:\n\n"
+        "No database found - neither `EDSIDER_DB` nor `data/*.db` points "
+        "at one. Build one first:\n\n"
         "```\n$env:EDSIDER_DB = \"data/edsider_real.db\"\n"
         "python scripts/sync.py --full\n"
         "python scripts/embed.py --language English\n```"
@@ -122,7 +135,7 @@ chosen = st.sidebar.selectbox(
     index=banks.index(current) if current in banks else 0,
 )
 if chosen != store.DB_PATH.name:
-    store.use_database(ROOT / "data" / chosen)
+    store.use_database(bank_paths[chosen])
     st.rerun()
 
 page = st.sidebar.radio(

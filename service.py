@@ -21,13 +21,15 @@ Then browse to http://localhost:8000/docs for a form to try it by hand,
 or POST to /check. See README.md for the request and response shape.
 """
 
+import os
+import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
@@ -113,6 +115,28 @@ class CheckResponse(BaseModel):
 
 # ---------------------------------------------------------------- routes
 
+def require_api_key(x_api_key: Optional[str] = Header(None)):
+    """Refuse a request without the right X-API-Key header - when a key
+    is configured.
+
+    The service answers from EdSider's whole question bank, and /reload
+    makes it re-read that bank; neither belongs open to anyone who can
+    reach the host. The key is read from EDSIDER_API_KEY - an app setting
+    on the server, never in the code - and EdSider's own backend sends it.
+    With no key set (a laptop, the tests) everything stays open, exactly
+    as before. /health is never gated: the host's uptime probe cannot
+    send a header.
+    """
+    expected = os.environ.get("EDSIDER_API_KEY")
+    if not expected:
+        return
+    # compare_digest, not ==, so response timing does not reveal how much
+    # of a guessed key was right.
+    if not x_api_key or not secrets.compare_digest(
+            x_api_key.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(401, "Missing or wrong X-API-Key header.")
+
+
 @app.get("/health")
 def health():
     """Is it up, and what is it actually serving against.
@@ -128,7 +152,7 @@ def health():
     }
 
 
-@app.post("/reload")
+@app.post("/reload", dependencies=[Depends(require_api_key)])
 def reload_index():
     """Pick up questions imported since this process started.
 
@@ -143,7 +167,8 @@ def reload_index():
             "added": after - before}
 
 
-@app.post("/check", response_model=CheckResponse)
+@app.post("/check", response_model=CheckResponse,
+          dependencies=[Depends(require_api_key)])
 def check(req: CheckRequest):
     if state["embedder"] is None or state["index"] is None:
         raise HTTPException(503, "Still loading the model - try again shortly.")

@@ -101,7 +101,7 @@ scripts/
   find_duplicates.py    Pass 1 only
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
-tests/                  228 tests
+tests/                  231 tests
 data/                   the real database lives here (gitignored -
                         EDSIDER_DB must point at it explicitly, see
                         "Two databases")
@@ -983,6 +983,48 @@ the uploaded file itself, not only `raw_text`, so an extractor fix (like
 OCR arriving) can be picked up without asking for the file again;
 move `intake_questions` toward the same shape as `questions` so
 promotion is a straight copy.
+
+## Running on Azure App Service - what this repo does for it
+
+Deploying is someone else's job - an Azure DevOps pipeline zip-deploys
+to a Linux Web App (`Eds-dev-ai-api`). These are the parts that had to
+live in this repo, because a pipeline cannot guess them:
+
+- **`startup.sh` is the startup command** - `bash startup.sh` for the
+  API, `bash startup.sh ui` for the review app. Left to itself App
+  Service picks `app.py` and expects a Flask or Django `app` in it; ours
+  is Streamlit, and the API is `service.py`. The script first copies the
+  database from `EDSIDER_DB_SOURCE` (default `/home/data/edsider_real.db`,
+  App Service's persistent storage, a network share) to `EDSIDER_DB`
+  (default `/tmp/edsider_real.db`, local disk), `-wal` file included,
+  because SQLite's WAL mode is not reliable on a network share. Writes
+  land in the copy and are lost on restart - acceptable for
+  pre-production, not for production, which moves to PostgreSQL.
+- **`requirements.txt` pins `torch==2.4.1+cpu`** from PyTorch's CPU
+  index. Unpinned, `sentence-transformers` pulls the default Linux build,
+  several GB of CUDA libraries on a server with no GPU - and App Service
+  installs exactly what that file says.
+- **`EDSIDER_API_KEY`.** When set, `/check` and `/reload` require a
+  matching `X-API-Key` header (`service.require_api_key`, compared with
+  `secrets.compare_digest`). Unset, the service is open as before, so
+  local runs and the tests are unchanged. `/health` is never gated - an
+  uptime probe cannot send headers. `/docs` still loads, but its calls
+  need the key; restrict it at the host if it should not be public.
+- **`app.py` uses `EDSIDER_DB`.** It used to list only `data/*.db`, so a
+  database anywhere else - `/tmp` on the server - showed "No database
+  found" next to a perfectly good `EDSIDER_DB`.
+- **`.gitattributes` keeps `*.sh` at LF.** This repo is edited on
+  Windows, and a CRLF `startup.sh` fails under bash before its first line.
+
+Not verifiable from here, to confirm on the first deployment: the
+pipeline targets Python 3.11 while this project has only run on 3.8;
+App Service's own build (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`)
+installing torch from the CPU index; the model's first download (about
+1 GB - cache it by pointing `HF_HOME` under `/home`) against the startup
+time limit; and memory, which needs a plan with several GB. Tesseract
+cannot be installed on a zip-deployed App Service, so there the review
+app's OCR reports scanned pages and pictures as "not read" - typed PDFs
+and Word files are unaffected; full OCR needs a custom container.
 
 **What "usable as a service" still needs**, roughly in order:
 

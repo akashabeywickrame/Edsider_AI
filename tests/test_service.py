@@ -53,6 +53,33 @@ BANK = [
 ]
 
 
+def test_no_api_key_configured_leaves_the_service_open(monkeypatch):
+    """A laptop or the test suite sets no key - nothing changes there."""
+    monkeypatch.delenv("EDSIDER_API_KEY", raising=False)
+    service.require_api_key(None)
+
+
+def test_a_configured_api_key_must_be_sent_and_match(monkeypatch):
+    monkeypatch.setenv("EDSIDER_API_KEY", "s3cret-key")
+    for sent in (None, "", "wrong-key", "s3cret-key-and-more"):
+        with pytest.raises(HTTPException) as err:
+            service.require_api_key(sent)
+        assert err.value.status_code == 401
+    service.require_api_key("s3cret-key")
+
+
+def test_check_and_reload_need_the_key_but_health_does_not():
+    """The host's uptime probe cannot send a header, so /health stays
+    open; the two routes that read or reload the bank do not."""
+    gated = set()
+    for route in service.app.routes:
+        dependant = getattr(route, "dependant", None)
+        if dependant and any(d.call is service.require_api_key
+                             for d in dependant.dependencies):
+            gated.add(route.path)
+    assert gated == {"/check", "/reload"}
+
+
 @pytest.fixture
 def sample_db(tmp_path):
     """A throwaway database, seeded and pointed at by store.DB_PATH, so

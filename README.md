@@ -117,6 +117,15 @@ OWN database and rebuilds the in-memory index, without restarting the
 process - it does not talk to EdSider. `GET /docs` is a form for trying
 `/check` by hand in the browser.
 
+With `EDSIDER_API_KEY` set in the environment, `/check` and `/reload`
+require that key back as a header - `-H "X-API-Key: <key>"` - and answer
+401 without it. `/health` stays open for uptime probes. With no key set,
+as on a laptop, nothing changes.
+
+On a Linux server, `bash startup.sh` starts the API, and `bash startup.sh
+ui` the review app, after copying the database to local disk - see
+"Running on Azure App Service" in CLAUDE.md.
+
 ## Keeping it in sync
 
 `scripts/sync.py` queries EdSider's own PostgreSQL with a read-only

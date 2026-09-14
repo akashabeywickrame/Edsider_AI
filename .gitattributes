@@ -1,0 +1,4 @@
+# Shell scripts run under bash on Linux hosts (startup.sh on Azure App
+# Service). Checked out with Windows line endings, bash fails on the
+# stray carriage returns before running a single line.
+*.sh text eol=lf
