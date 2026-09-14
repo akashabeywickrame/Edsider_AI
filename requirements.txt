@@ -7,3 +7,15 @@ fastapi>=0.100
 uvicorn[standard]>=0.23
 psycopg2-binary>=2.9
 python-dotenv>=1.0
+
+# Paper intake (src/intake/). Local-only extraction - no text leaves the
+# machine. pytesseract also needs the Tesseract program, which pip cannot
+# install - on Windows `winget install UB-Mannheim.TesseractOCR` (found
+# automatically in Program Files, or set TESSERACT_CMD), plus sin/tam
+# .traineddata in its tessdata folder for Sinhala and Tamil papers.
+# Without it, scanned pages and pictures are reported as "not read" and
+# the rest of the paper is still extracted.
+pdfplumber>=0.11
+python-docx>=1.1
+pytesseract>=0.3.10
+Pillow>=10.0

@@ -63,7 +63,7 @@ the only thing that should need changing.
 .\venv\Scripts\python.exe -m pytest tests\ -v
 ```
 
-155 tests, none of which need the real model or a real server - vectors
+193 tests, none of which need the real model or a real server - vectors
 are hand-made, Postgres and the embedder are faked. Runs in about two
 seconds.
 
@@ -252,7 +252,7 @@ usually zero, because the hash settles it.
 
 ## Interface
 
-Five views:
+Six views:
 
 - **Check a new question** — paste a draft, get a verdict before it is
   added. The same three passes as the script, in the browser.
@@ -269,6 +269,13 @@ Five views:
   Finds *"How do green plants make their own food?"* when you search
   for photosynthesis.
 - **Question bank** — the full table, filterable by subject and grade.
+- **Paper intake** — upload a question paper (PDF, Word, or an image of
+  a handwritten one). Its questions are extracted with grade / subject /
+  marks, you correct whatever the extractor got wrong, then that batch
+  is checked for repeats within itself before any of it joins the bank.
+  Extraction is local-only and rough on handwriting, so the review step
+  is not optional. ("Project 2" from the proposal - still stops at the
+  duplicate check; promoting the reviewed questions is not built yet.)
 
 **Nothing is merged or deleted automatically.** The system suggests; a
 person decides. Every decision is written to the `decisions` table.
@@ -279,19 +286,22 @@ person decides. Every decision is written to the `decisions` table.
 app.py                     Streamlit interface
 service.py                 FastAPI service - the check, always on
 src/
-  normalize.py             text extraction, normalisation, hashing
-  embeddings.py            the model wrapper
-  guards.py                the four safety checks + contrast-term mining
-  dedupe.py                the full pipeline (whole-bank, within-paper,
-                           cross-passage)
+  normalize.py             text extraction, normalisation, hashing (shared)
   store.py                 all database access
+  dedupe/                  the matching engine (passes 1-3)
+    embeddings.py          the model wrapper
+    guards.py              the five safety checks + contrast-term mining
+    pipeline.py            whole-bank, within-paper, cross-passage sweeps
+  intake/                  paper intake (Project 2)
+    extract.py             upload -> text -> draft questions
+    review.py              within-batch duplicate check
 scripts/
   import_edsider.py        load a real EdSider export (CSV or JSON)
   sync.py                  pull directly from EdSider's own Postgres
   embed.py                 compute fingerprints
   find_duplicates.py       Stage 1 only, no AI
   check_new.py             one question against the bank
-tests/                     155 tests
+tests/                     193 tests
 data/                      the real database lives here (gitignored -
                            EDSIDER_DB must point at it explicitly)
 ```

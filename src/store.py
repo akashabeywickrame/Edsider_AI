@@ -111,6 +111,53 @@ CREATE TABLE IF NOT EXISTS question_assessments (
 
 CREATE INDEX IF NOT EXISTS idx_qa_assessment ON question_assessments(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_qa_question   ON question_assessments(question_id);
+
+-- Paper intake (src/intake/). One row per uploaded file (a PDF, Word
+-- doc or image of a question paper). The extracted questions live in
+-- intake_questions, still as DRAFTS - nothing here has been through the
+-- bank's own checks, and none of it is in `questions` yet. This is a
+-- staging area a reviewer works through before any of it is promoted.
+CREATE TABLE IF NOT EXISTS intake_documents (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename      TEXT NOT NULL,
+    file_type     TEXT,               -- 'pdf' | 'docx' | 'image' | 'other'
+    extractor     TEXT,               -- which path produced the text, or why none did
+    uploaded_by   TEXT,
+    paper_grade   TEXT,               -- paper-level, set once, inherited by each draft
+    paper_subject TEXT,
+    notes         TEXT,
+    -- The full text the extractor read, kept verbatim. Lets a document be
+    -- re-split later - with a different split style, or by a fixed
+    -- extractor - without asking for the original file again, and lets a
+    -- reviewer see what was actually read when a split goes wrong.
+    raw_text      TEXT,
+    split_style   TEXT,
+    -- 'extracted'  first pass done, nobody has looked yet
+    -- 'in_review'  a reviewer has started editing
+    -- 'checked'    within-batch duplicate check has been run
+    status        TEXT NOT NULL DEFAULT 'extracted',
+    uploaded_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS intake_questions (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id      INTEGER NOT NULL REFERENCES intake_documents(id),
+    seq              INTEGER NOT NULL,   -- order within the document
+    question_number  TEXT,               -- as printed on the paper ("31", "12(a)")
+    text             TEXT,
+    grade            TEXT,
+    subject          TEXT,
+    marks            INTEGER,
+    topic            TEXT,
+    answer           TEXT,
+    -- 'ok' | 'low'. 'low' means the extractor is least sure here (no
+    -- marks found, or almost no text) - where a reviewer should look first.
+    extraction_confidence TEXT DEFAULT 'ok',
+    reviewed         INTEGER NOT NULL DEFAULT 0,  -- a person has confirmed/edited this row
+    created_at       TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_intake_q_doc ON intake_questions(document_id);
 """
 
 
@@ -173,6 +220,17 @@ MIGRATIONS = [
     # guards.CONTRAST_GROUPS. Never read automatically by anything -
     # a person reviews it first.
     ("decisions", "candidate_contrast_terms", "TEXT"),
+    # Added once papers uploaded under an earlier extractor needed
+    # re-splitting without being re-uploaded (see intake_documents).
+    ("intake_documents", "raw_text", "TEXT"),
+    ("intake_documents", "split_style", "TEXT"),
+    # A paper in parts - Part I MCQ, Part II structured - see
+    # intake.extract.structure(). `sections` is the JSON list of parts
+    # (label, heading, kind, instructions), `section` the label of the
+    # part each draft belongs to.
+    ("intake_documents", "paper_title", "TEXT"),
+    ("intake_documents", "sections", "TEXT"),
+    ("intake_questions", "section", "TEXT"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -589,3 +647,159 @@ def assessments_for_question(conn, question_id):
            WHERE question_id = ? ORDER BY assessment_id""",
         (question_id,),
     ).fetchall()
+
+
+# ------------------------------------------------------- paper intake
+#
+# Draft questions extracted from an uploaded paper, before a person has
+# checked them and before anything is promoted into `questions`. Kept
+# here because store.py is the only module that touches the database -
+# the intake package (src/intake/) calls these, it does not open its
+# own connection.
+
+def create_intake_document(conn, filename, file_type=None, extractor=None,
+                           uploaded_by=None, paper_grade=None,
+                           paper_subject=None, raw_text=None,
+                           split_style=None, paper_title=None,
+                           sections=None):
+    """Record one uploaded file. Returns its new id.
+
+    `sections` is the paper's list of parts from
+    intake.extract.structure(), kept as JSON - read it back with
+    intake_sections().
+    """
+    cur = conn.execute(
+        """INSERT INTO intake_documents
+           (filename, file_type, extractor, uploaded_by, paper_grade,
+            paper_subject, raw_text, split_style, paper_title, sections)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (filename, file_type, extractor, uploaded_by, paper_grade,
+         paper_subject, raw_text, split_style, paper_title,
+         json.dumps(sections) if sections is not None else None),
+    )
+    return cur.lastrowid
+
+
+def intake_sections(doc):
+    """An uploaded paper's parts, or [] for one read before papers were
+    split into parts. `doc` is an intake_documents row or a dict of one."""
+    raw = doc["sections"] if "sections" in doc.keys() else None
+    return json.loads(raw) if raw else []
+
+
+def add_intake_question(conn, document_id, seq, text, question_number=None,
+                        grade=None, subject=None, marks=None, topic=None,
+                        answer=None, extraction_confidence="ok",
+                        section=None):
+    conn.execute(
+        """INSERT INTO intake_questions
+           (document_id, seq, question_number, text, grade, subject,
+            marks, topic, answer, extraction_confidence, section)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (document_id, seq, question_number, text, grade, subject, marks,
+         topic, answer, extraction_confidence, section),
+    )
+
+
+def add_extracted_questions(conn, document_id, drafts,
+                            fallback_grade=None, fallback_subject=None):
+    """Bulk-insert the output of intake.extract()['questions'].
+
+    Each draft's own grade/subject wins; the paper-level values fill in
+    where the extractor found nothing.
+    """
+    for d in drafts:
+        add_intake_question(
+            conn, document_id, d["seq"], d.get("text", ""),
+            question_number=d.get("question_number"),
+            grade=d.get("grade") or fallback_grade,
+            subject=d.get("subject") or fallback_subject,
+            marks=d.get("marks"),
+            topic=d.get("topic"),
+            answer=d.get("answer"),
+            extraction_confidence=d.get("extraction_confidence", "ok"),
+            section=d.get("section"),
+        )
+
+
+def intake_documents(conn):
+    return conn.execute(
+        "SELECT * FROM intake_documents ORDER BY id DESC"
+    ).fetchall()
+
+
+def get_intake_document(conn, doc_id):
+    return conn.execute(
+        "SELECT * FROM intake_documents WHERE id = ?", (doc_id,)
+    ).fetchone()
+
+
+def intake_questions(conn, doc_id):
+    return conn.execute(
+        "SELECT * FROM intake_questions WHERE document_id = ? ORDER BY seq",
+        (doc_id,),
+    ).fetchall()
+
+
+_INTAKE_Q_EDITABLE = {
+    "question_number", "text", "grade", "subject", "marks", "topic",
+    "answer", "reviewed", "extraction_confidence", "section",
+}
+
+
+def update_intake_question(conn, q_id, **fields):
+    """Apply a reviewer's edits. Only the columns a reviewer may change
+    are accepted; anything else raises rather than being silently dropped."""
+    bad = set(fields) - _INTAKE_Q_EDITABLE
+    if bad:
+        raise ValueError(f"not an editable intake_questions column: {sorted(bad)}")
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(
+        f"UPDATE intake_questions SET {cols} WHERE id = ?",
+        (*fields.values(), q_id),
+    )
+
+
+def delete_intake_question(conn, q_id):
+    """A spurious extraction - a heading read as a question, a page
+    number - that a reviewer drops entirely."""
+    conn.execute("DELETE FROM intake_questions WHERE id = ?", (q_id,))
+
+
+def replace_intake_questions(conn, doc_id, drafts,
+                             fallback_grade=None, fallback_subject=None):
+    """Throw away a document's drafts and re-add them from a fresh
+    segmentation.
+
+    Used when a paper is re-split - a different split style, or the same
+    paper run through a fixed extractor. Destructive by design: the
+    previous drafts came from a segmentation the reviewer has just
+    rejected, and keeping them would mean reconciling two different sets
+    of boundaries over the same text. Any edits already made to those
+    drafts go with them, so the UI asks first.
+    """
+    conn.execute("DELETE FROM intake_questions WHERE document_id = ?", (doc_id,))
+    add_extracted_questions(conn, doc_id, drafts,
+                            fallback_grade=fallback_grade,
+                            fallback_subject=fallback_subject)
+
+
+_INTAKE_DOC_EDITABLE = {"paper_grade", "paper_subject", "notes", "status",
+                        "raw_text", "split_style", "paper_title", "sections"}
+
+
+def update_intake_document(conn, doc_id, **fields):
+    bad = set(fields) - _INTAKE_DOC_EDITABLE
+    if bad:
+        raise ValueError(f"not an editable intake_documents column: {sorted(bad)}")
+    if not fields:
+        return
+    if fields.get("sections") is not None and not isinstance(fields["sections"], str):
+        fields["sections"] = json.dumps(fields["sections"])
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(
+        f"UPDATE intake_documents SET {cols} WHERE id = ?",
+        (*fields.values(), doc_id),
+    )

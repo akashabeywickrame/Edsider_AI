@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src import store, dedupe
-from src.embeddings import Embedder, DEFAULT_MODEL
+from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.normalize import content_hash, extract_text, has_attachments
 
 # Populated once by load_state(), not per request - that is the entire

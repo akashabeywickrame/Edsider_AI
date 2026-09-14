@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import store, dedupe
-from src.embeddings import DEFAULT_MODEL
+from src.dedupe.embeddings import DEFAULT_MODEL
 from src.normalize import content_hash, extract_text, has_attachments
 
 LINE = "-" * 70
@@ -138,7 +138,7 @@ def main():
         print("\nNo fingerprints in the bank. Run scripts/embed.py first.\n")
         return
 
-    from src.embeddings import Embedder
+    from src.dedupe.embeddings import Embedder
     embedder = Embedder()
     # passage, not query: the bank was embedded as passages, and a
     # duplicate check compares like with like. The query prefix belongs

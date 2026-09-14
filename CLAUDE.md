@@ -76,24 +76,32 @@ need.
 ## Layout
 
 ```
-app.py                  Streamlit UI (5 pages, guard on/off toggle)
+app.py                  Streamlit UI (6 pages, guard on/off toggle)
 service.py              FastAPI service - the check, always on
                         (model + fingerprints load once, at startup)
 src/
-  normalize.py          text extraction, normalisation, hashing
-  embeddings.py         model wrapper (E5 prefix handling)
-  guards.py             the five guards + contrast-term mining
-  dedupe.py             full pipeline (whole-bank, within-paper,
-                        cross-passage) + thresholds
+  normalize.py          text extraction, normalisation, hashing - SHARED
+                        infrastructure, not part of either feature
   store.py              ALL database access - the only file that
                         changes when moving to PostgreSQL + pgvector
+  dedupe/               the matching engine (passes 1-3)
+    embeddings.py       model wrapper (E5 prefix handling)
+    guards.py           the five guards + contrast-term mining
+    pipeline.py         whole-bank, within-paper, cross-passage sweeps
+                        + thresholds  (re-exported, so `from src import
+                        dedupe; dedupe.find_pairs(...)` is unchanged)
+  intake/              paper intake, "Project 2" - upload a paper,
+    extract.py          extract its questions, review/correct them,
+    review.py           then check that batch for repeats. Local-only
+                        extraction (pdfplumber / python-docx / Tesseract).
+                        Depends on src/dedupe/, never the reverse.
 scripts/
   import_edsider.py     load a real EdSider export (CSV or JSON)
   embed.py              compute fingerprints
   find_duplicates.py    Pass 1 only
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
-tests/                  155 tests
+tests/                  228 tests
 data/                   the real database lives here (gitignored -
                         EDSIDER_DB must point at it explicitly, see
                         "Two databases")
@@ -686,6 +694,295 @@ questions in the family (31, 32, 33, 34 - ids 58317, 58320, 58328,
 58335), not just the two originally reported, confirming the shared
 block is what ties them together rather than any two of them happening
 to sit next to each other.
+
+## Paper intake - upload a paper, extract its questions (Project 2)
+
+`src/intake/` is the start of "Project 2" from the proposal: a teacher
+uploads a question paper (PDF, Word, or an image of a handwritten one),
+its questions are pulled out with their grade / subject / marks, a
+person corrects whatever the extractor got wrong, and then that batch
+is checked for repeats within itself before any of it is allowed near
+the bank. It is a separate package from `src/dedupe/` on purpose - it
+*uses* the matching engine (the last step) but is not part of it -
+and it does not touch the `questions` table at all: extracted questions
+live in `intake_documents` / `intake_questions` as drafts until someone
+promotes them (that promotion step, and pushing back to EdSider, is not
+built yet - the page stops at the duplicate check).
+
+**Extraction is deliberately local-only** (the decision, made
+knowingly): `pdfplumber` for a PDF text layer, `python-docx` for Word,
+`pytesseract` for images and scans. No text leaves the machine, same
+as the embedding model. The cost is that handwriting recognition is
+weak - which is exactly why the review step is not optional. If a
+format's library (or the Tesseract binary, which pip cannot install)
+is missing, `extract()` does not raise: the document comes back with a
+single low-confidence draft holding whatever text there was, for
+manual entry, and the `extractor` field records what happened.
+
+**The extractor's two layers:**
+
+- `read_pdf` / `read_docx` / `ocr_image` pull raw text. Lazy imports,
+  so importing the module never fails for a missing optional library.
+- `segment()` and `detect_paper_meta()` are pure text rules and where
+  the heuristics (and the tests) live. `segment()` splits on a
+  left-margin question number in every form real extracted text
+  produces - `5.`  `5)`  `5 .`  `(5)`  `05.`  `Q5`  `Q.5`
+  `Question 5`  `Question 5:`  `5.What` (no space)  `5.` alone on its
+  line - the first version only matched `5. ` with a trailing space and
+  a real paper fell straight through to the whole-text fallback. It
+  **strips the printed number** (it is `question_number`, not question
+  text - leaving it in broke exact-match de-duplication and made the
+  numbers guard fire on `3.` vs `7.` rather than on anything asked),
+  rejects a number that repeats or goes backwards (an MCQ option `(1)`
+  after question 5, a `1990.` in prose - a real number only counts up),
+  rejects a number directly followed by `marks` (a `(20) marks` total
+  is not question 20), and pulls marks from the last
+  parenthesised/bracketed `(N marks)` in the body. No number pattern at
+  all -> one low-confidence draft with the whole text, and the review
+  page says so and offers "Add a question" to enter them by hand.
+- `extraction_confidence` is `'low'` only when there is almost no text.
+  It used to also fire on missing marks, until a real 50-question MCQ
+  paper - which prints no per-question marks anywhere, as MCQ papers
+  don't - came back with a low-confidence warning on all 50. Absence of
+  marks says nothing about extraction quality.
+
+**Measured on two real uploads, and this is the ceiling of the
+local-only approach:**
+
+| paper | split by number | split by "Question" |
+|---|---|---|
+| Grade 13 Biosystem Technology (50 MCQs) | **50** | 1 |
+| Grade 13 Combined Maths (worked solutions) | 5 | **17** |
+
+The first paper numbers questions `01.Interpretes...` with no space
+after the dot; the original regex demanded a trailing space, so it
+matched nothing and the whole 18,000-character paper came back as one
+draft. That is fixed. The second paper is the harder lesson: it is a
+worked-solutions/marking-scheme document whose SOLUTION STEPS are
+numbered ("1. Initial Velocity Components", "2. Finding the Vertical
+Velocity"), which is textually indistinguishable from a numbered
+question - splitting it by number finds five solution steps and no
+questions. **No rule can separate those two cases**, so `segment()`
+takes a `style` (`SPLIT_STYLES`) and the reviewer picks it, rather than
+the extractor guessing and being confidently wrong.
+
+**`raw_text` on `intake_documents`** holds the full text the extractor
+read. It exists because both papers above were stuck: they had been
+uploaded under the older, broken extractor, and there was no way to
+pick up the fix short of re-uploading the file. The page can now re-run
+`segment()` on the stored text under a different style, show a live
+count of what each style would find before committing, and display the
+raw text so a reviewer can see what was actually read.
+`store.replace_intake_questions()` does the swap and is destructive by
+design - the previous boundaries are the ones being rejected.
+
+**`review.check_batch(drafts, embedder)`** is the duplicate check at
+the end. One uploaded paper's questions ARE "one assessment", so this
+is the same problem as `find_within_assessment_duplicates()` and reuses
+`dedupe.find_pairs()` with the same measured `threshold=0.95`. It takes
+an injected embedder (a fake in tests, same pattern as
+`test_check_new.py`), runs Pass 1 (identical normalised text) and Pass
+2 + guards, and never lists a pair in `similar_pairs` that is already
+an `exact_group`.
+
+**The restructure that came with it:** `src/dedupe.py`,
+`src/guards.py`, `src/embeddings.py` moved into `src/dedupe/`
+(`pipeline.py`, `guards.py`, `embeddings.py`), so the two features sit
+side by side rather than intermixed. `src/normalize.py` did **not**
+move - it is shared text infrastructure (import, sync, store and intake
+all use it), not part of the matching engine. `src/dedupe/__init__.py`
+re-exports the pipeline's public names, so every existing
+`from src import dedupe; dedupe.find_pairs(...)` call site is unchanged;
+only direct `from src.embeddings import ...` / `from src import guards`
+imports had to be repointed at `src.dedupe.*`.
+
+**The review page (`app.py`, "Paper intake")** is per-question, not a
+data grid: grade and subject are set once for the whole paper (they do
+not vary question to question - only marks do), then each question is
+its own bordered card with a full-height text box, a marks input, a
+Reviewed tick and a Remove button, with an "Add a question" expander
+for anything the extractor missed or a paper that would not split. The
+duplicate check is gated on every question being ticked Reviewed -
+running it on text nobody has corrected is meaningless.
+
+**Pictures, scans and equations - where most of a real paper actually
+is.** The first extractor read almost nothing from the real uploads, for
+four separate reasons, each measured on real files before fixing:
+
+- *OCR was decided per document, not per page.* It only ran if the whole
+  PDF had under 20 characters. The Grade 13 model papers have a typed
+  cover and then ~25 pages whose only text is the page number ("9") and
+  whose questions are pictures (~50% of each page) - so OCR never ran and
+  the questions were silently lost. `_pdf_page_route()` now decides per
+  page: `text` (layer is the page), `page` (under 20 non-space chars, or
+  an unmapped `(cid:N)` glyph - render at 300 dpi and OCR the lot), or
+  `pictures` (real text plus pictures - keep the exact text layer, OCR
+  each picture and slot its text in at the height it sits on the page,
+  so a pasted question lands between its neighbours, not at the end).
+  On the six real PDFs to hand, the typed Combined Maths papers route
+  33 of 34 pages to `text` (the other has one picture); the picture/scan
+  papers route every page to OCR.
+- *A scanned PDF crashed.* The fallback handed the `.pdf` file itself to
+  Pillow, which cannot open a PDF, and that error was not caught. Pages
+  are now rendered with pdfplumber's `to_image()` (pypdfium2, already a
+  pdfplumber dependency - no poppler needed).
+- *Word dropped every equation, table and picture.* python-docx's
+  `paragraph.text` only reads plain runs. The real Combined Maths .docx
+  papers hold 106-214 OMML equations each: "80 x 1/sqrt2 = 40 sqrt2" came
+  out as "80 x  = 40 sqrt2", "V = sqrt(v^2 - u^2)" as "V = ". `read_docx`
+  now walks the body XML in order: `_omml()` renders equations in linear
+  form (a/b, x^2, v_x, sqrt(...)), tables become one `A | B` line per
+  row, and pictures are OCR'd in place (`[image]` if they hold no text,
+  `[image - not read]` if OCR is unavailable). Each real paper gained
+  1,300-2,000 characters of previously invisible maths.
+- *The "ti" ligature read as `(cid:415)`* ("mathema(cid:415)cs"). Mapped;
+  any other unmapped glyph sends that page to OCR rather than guessing.
+
+OCR itself: the paper's language is picked at upload (`OCR_LANGS` -
+eng/sin/tam, one at a time, never all three); images are EXIF-rotated,
+transparent screenshots flattened onto white (converted naively, they
+turn black-on-black), and small ones upscaled up to 4x. `extract()`
+takes an injected `ocr` callable, so the tests prove routing and
+placement with a fake, not with Tesseract. It never raises now - a
+corrupt file comes back `failed (...)` - and `was_incomplete()` drives a
+warning on the review page, so a half-read paper cannot pass for a
+short one. Tesseract is found on PATH, via `TESSERACT_CMD`, or in the
+standard Windows install folders (the UB-Mannheim installer does not
+add itself to PATH, and a non-admin winget install lands in
+`%LOCALAPPDATA%\Programs\Tesseract-OCR`). Language data for `sin` and
+`tam` does not come with it - it was added by hand from
+github.com/tesseract-ocr/tessdata into that folder's `tessdata`.
+
+**OCR quality, measured with Tesseract 5.4 on the real uploads - what it
+can and cannot do:**
+
+- *Printed questions pasted in as pictures: works.* Grade 13 Model Pure
+  paper, 27 pages, every question a picture: 24 seconds, 19 questions
+  split by "Question", wording fully readable ("Using the principle of
+  mathematical induction, prove that...", "A thin wire of length l is
+  bent to form the perimeter of a sector..."). Before this, the same
+  paper yielded page numbers and nothing else.
+- *Pasted, resized screenshots: the "distortion" was not the problem -
+  Word's picture seams were.* Benchmarked on the real Grade 13 Applied
+  paper against 19 passages typed by hand from the paper (question stems,
+  a light-grey line, an italic note, a condensed-font question), scored
+  as character error rate. Whole page rendered at 300 dpi: **2.0%**
+  (1.0% counting letters only); 400 dpi: no better; each picture's own
+  embedded pixels upscaled 2-4x, with or without sharpening: **7.0%**,
+  worse; re-scaling each picture's width to whichever version Tesseract
+  was most confident in: no change (7.0%), the picked widths jumping
+  around from picture to picture. The squeezed-looking Part 2 question
+  read at 0.0% from a whole render. What broke text was that Word's PDF
+  export stores a tall picture as two halves meeting exactly (222.1pt,
+  same column), and a line on the seam, cropped per half, came out as
+  noise - 60% error per half, 1.9% whole. Only the `pictures` route
+  crops per picture, so `_merge_touching()` now joins touching halves
+  first: that paper's full extraction went from 3.1% to **2.0%**, the
+  seam line from 22.6% to 1.9%. What still fails is maths notation,
+  below. The benchmark scripts were throwaway; the ground-truth
+  passages are not in the repo.
+- *Maths notation comes back damaged* - "∈ Z+" as "€ Z~", "x²" as "x?",
+  "θ" as "@", fractions flattened onto one line. The words survive, the
+  symbols do not; that is the reviewer's correction to make, and why the
+  review step stays mandatory.
+- *Handwriting: does not work, and no setting fixes it.* Grade 12
+  Applied term paper - phone photos of handwritten answers on ruled
+  paper, 720x1009 px. The default pass returned **0 characters**; 16
+  combinations (autocontrast, sharpening, binarising, ruled-line
+  removal x page-segmentation modes 3/4/6/11) produced at best
+  "Diselacneiand fs s + --H" for "Displacement (s) = H". Tesseract is
+  trained on print. An OCR'd page that comes back under 20 characters is
+  now reported as "not read", so it triggers the review-page warning
+  instead of passing for an empty page. Reading handwriting needs a
+  different engine - a local handwriting model, a cloud OCR service,
+  or a vision-capable LLM - and all but the first break the local-only
+  decision above, so that is a decision to make, not a setting to tune.
+
+**A paper in parts - Part I MCQ, Part II structured, then a marking
+scheme.** The real Grade 12 GIT first-term paper (intake upload #9) is a
+header, "General Information Technology I" (40 MCQs "1." with options
+"(1)"-"(4)"), "General Information Technology II" (five questions
+"(01)"-"(05)" with parts "(1)", "(2)", "(a)"), then a MARKING SCHEME for
+both. Read as one flat list it came back as **54 "questions" for 45 real
+ones**: options (2)-(4) of question 1 became questions 2-4, Part II was
+split on its parts, and the answer key ("Q1: (2) Q2: (3)...") became
+eight more. `extract.structure()` now returns the parts and the questions
+in them (`segment()` is its questions alone, for old callers):
+
+- *Headings, line by line* (`_heading`): "Part I", "Part 2", "Section A",
+  "Paper II", sub-parts "Part II – B" (the Biosystem paper), a subject
+  name plus a roman numeral ("General Information Technology II" - only
+  when the words really name a subject, so "...World War II" is not one),
+  "Essay questions". Rejected, each from a real line: "Part 1 of the
+  experiment..." (continues in lower case), anything with "|" (the
+  Combined Maths .docx header "Paper – 1 | Part 2 Questions with
+  Answers"), and a bare "Answer" (that paper labels every worked
+  solution "Answer").
+- *One numbering format per part.* Bracket style and zero-padding are
+  each run on their own; the winner counts up the most with the fewest
+  restarts - options and parts restart at 1 under every question - and a
+  format that numbers only one thing never wins (the Combined Maths
+  .docx's "1. 2. 3." solution steps otherwise handed it to a stray
+  number, 2 questions found).
+- *The marking scheme is answers, never questions.* Everything from
+  "MARKING SCHEME" / "Answer key" / "Answers" on: "Q1: (2)" fills the MCQ
+  part's `answer`, a "Question (01)" block fills the structured part's -
+  only when exactly one part of that kind exists, so it cannot guess.
+- *The rest:* questions before any heading, when a later "Part 2"
+  exists, are "Part 1"; a heading with only instructions under it folds
+  into the next part; a part title repeated on every page does not split
+  it; "Each question carries 15 marks" is each question's mark, not the
+  last "[2]" inside it; kind comes from the heading or instructions
+  ("pick one of the alternatives"), else from the questions - options
+  and no marks, or marks - where "a) Explain..." is a part, not an option
+  (Biosystem's Part II-B was labelled multiple choice until that rule).
+- *Grade, subject, title.* The review page's grade and subject lists come
+  from the bank, which stores grades as `G06`-`G13` - the "G-something"
+  a reviewer saw - and a detected "13" or "Combined Mathematics" matched
+  nothing there, so both showed blank. `detect_paper_meta()` now returns
+  the bank's own codes and subject names (aliases: "GIT", "C.maths",
+  "Bio System Technolgy" spelled as the bank spells it; "English Medium"
+  is not a subject), plus a title ("First Term Examination"), falling
+  back to the filename ("GIT_Gr12_FirstTT" -> G12, General Information
+  Technology, First Term Test). The app passes the upload's real name -
+  it extracts a temp copy whose name says nothing. `grade_label()` shows
+  `G12` as "Grade 12".
+
+Re-split measured on every real upload:
+
+| paper | split by number | split by "Question" |
+|---|---|---|
+| GIT Grade 12 | **Part I 40 MCQ + Part II 5 structured (15 each), 45 of 45 with answers** | 2 |
+| Biosystem Grade 13 | Part I 50, II-A 4, II-B 6 | 3 |
+| Combined Maths .docx | 12 | **Part 1 10 + Part 2 7** |
+| Combined Maths PDF (OCR) | 6 | Part 1 8 + Part 2 7 |
+
+Stored as `intake_documents.paper_title`, `intake_documents.sections`
+(JSON, read with `store.intake_sections()`) and
+`intake_questions.section`. The review page shows the paper as one large
+title (subject - Grade 12 - title, all editable), a large header per part
+with its kind, question count, marks each and instructions, an answer box
+on every question, and names questions "Part II Q01" in the duplicate
+check, since both parts have a question 1. Papers uploaded earlier keep
+their old flat drafts until re-split from "Split it differently", which
+now also refreshes their parts, grade, subject and title. Known limits:
+answers are not attached when a paper has two structured parts (the
+Biosystem II-A/II-B case - which part a "Question (01)" block belongs to
+is not written down), and a repeated page-top part title stays inside
+the question text it interrupts.
+
+**Still to do here:** promote reviewed drafts into the bank (and back
+to EdSider); decide how handwritten papers are read, and whether maths
+notation needs a maths-aware reader (see above); split picture-question
+papers properly - on the Grade 13 Applied paper "Question" finds 15 of
+17 (two pictures have no "Question" header) and numbers find 9 (the
+numbered solution steps inside the pictures break the count-up rule),
+while the paper's own typed "1." "2." in the text layer are exact and
+are what the split should key on; keep
+the uploaded file itself, not only `raw_text`, so an extractor fix (like
+OCR arriving) can be picked up without asking for the file again;
+move `intake_questions` toward the same shape as `questions` so
+promotion is a straight copy.
 
 **What "usable as a service" still needs**, roughly in order:
 

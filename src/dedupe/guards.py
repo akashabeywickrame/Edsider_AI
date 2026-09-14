@@ -20,7 +20,7 @@ bare number.
 import difflib
 import re
 
-from .normalize import normalize
+from ..normalize import normalize
 
 # How much each warning sign lowers a pair's similarity score.
 PENALTIES = {
@@ -31,13 +31,15 @@ PENALTIES = {
     "shared_passage_different_question": 0.40,
 }
 
-# Groups of terms that are commonly confused but mean different things.
-# If two questions each use a DIFFERENT term from the same group, they
-# are almost certainly testing different concepts.
-#
-# This list is hand-written for now. At scale it should be learned from
-# the decision log: when reviewers repeatedly reject a flagged pair,
-# look at which words differ between them.
+""" Groups of terms that are commonly confused but mean different things.
+If two questions each use a DIFFERENT term from the same group, they
+are almost certainly testing different concepts.
+
+This list is hand-written for now. At scale it should be learned from
+the decision log: when reviewers repeatedly reject a flagged pair,
+look at which words differ between them. 
+"""
+
 CONTRAST_GROUPS = [
     {"area", "perimeter", "circumference"},
     {"volume", "surface area"},
