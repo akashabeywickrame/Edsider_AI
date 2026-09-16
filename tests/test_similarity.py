@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.embeddings import cosine_similarity, similarity_matrix
+from src.dedupe.embeddings import cosine_similarity, similarity_matrix
 
 
 def unit(v):

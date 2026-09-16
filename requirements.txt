@@ -1,5 +1,17 @@
 pytest>=7.0
 numpy>=1.24
+
+# The CPU build of torch, pinned here rather than installed by hand.
+# Left unpinned, sentence-transformers pulls the default build, which on
+# Linux bundles several GB of CUDA libraries - a server with no GPU pays
+# for all of it in build time and disk, and Azure App Service installs
+# exactly what this file says. 2.4.1 is the version the project runs
+# and is tested on. macOS has no "+cpu" build; its plain wheel is
+# CPU-only already.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu; sys_platform != "darwin"
+torch==2.4.1; sys_platform == "darwin"
+
 sentence-transformers>=2.2
 streamlit>=1.30
 pandas>=2.0
@@ -7,3 +19,15 @@ fastapi>=0.100
 uvicorn[standard]>=0.23
 psycopg2-binary>=2.9
 python-dotenv>=1.0
+
+# Paper intake (src/intake/). Local-only extraction - no text leaves the
+# machine. pytesseract also needs the Tesseract program, which pip cannot
+# install - on Windows `winget install UB-Mannheim.TesseractOCR` (found
+# automatically in Program Files, or set TESSERACT_CMD), plus sin/tam
+# .traineddata in its tessdata folder for Sinhala and Tamil papers.
+# Without it, scanned pages and pictures are reported as "not read" and
+# the rest of the paper is still extracted.
+pdfplumber>=0.11
+python-docx>=1.1
+pytesseract>=0.3.10
+Pillow>=10.0

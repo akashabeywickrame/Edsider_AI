@@ -10,7 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import dedupe, guards
+from src import dedupe
+from src.dedupe import guards
 
 
 def q(text, grade=None, subject=None):

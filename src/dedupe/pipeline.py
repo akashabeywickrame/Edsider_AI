@@ -15,7 +15,7 @@ import numpy as np
 
 from . import guards
 from .embeddings import similarity_matrix
-from .normalize import normalize
+from ..normalize import normalize
 
 _LETTERS = re.compile(r"[A-Za-z]")
 

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import store
-from src.embeddings import Embedder, DEFAULT_MODEL
+from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 
 
 def main():
