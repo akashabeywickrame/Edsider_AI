@@ -7,7 +7,7 @@ pool:
 
 variables:
   # Links to your variable group (provides $(pythonVersion))
-  - group: es-ai-qa
+  - group: es-ai-dev
 
 steps:
 - task: UsePythonVersion@0
