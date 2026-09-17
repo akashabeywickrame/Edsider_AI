@@ -1,6 +1,6 @@
 # CI Pipeline - EdSider AI Build & Test
 trigger:
-  - tharuka-es-ai-dev-2
+  - main
 
 
 pool:
