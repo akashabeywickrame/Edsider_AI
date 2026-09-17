@@ -12,8 +12,17 @@ numpy>=1.24
 torch==2.4.1+cpu; sys_platform != "darwin"
 torch==2.4.1; sys_platform == "darwin"
 
-sentence-transformers>=2.2
-streamlit>=1.30
+# Pinned to the exact versions the project is tested on, and not left
+# open-ended: the server (Python 3.11) otherwise installs the newest
+# releases, while this laptop (Python 3.8) cannot, so the two quietly run
+# different code. That is how the first deployment broke - it got
+# sentence-transformers 6 and transformers 5.17, which needs torch 2.5,
+# against the pinned torch 2.4.1; transformers then treats torch as
+# missing and fails to import ("name 'nn' is not defined"). Upgrade these
+# together, and only after the tests pass on the new versions.
+sentence-transformers==3.2.1
+transformers==4.46.3
+streamlit==1.40.1
 pandas>=2.0
 fastapi>=0.100
 uvicorn[standard]>=0.23
