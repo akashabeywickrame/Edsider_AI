@@ -1,0 +1,52 @@
+# CI Pipeline - EdSider AI Build & Test
+trigger:
+  - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # Links to your variable group (provides $(pythonVersion))
+  - group: es-ai-qa
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(pythonVersion)'
+  displayName: 'Use Python $(pythonVersion)'
+
+- script: |
+    python -m pip install --upgrade pip
+    
+    # 1. Clear pip cache to maximize agent disk space
+    pip cache purge || true
+    
+    # 2. Install CPU-only PyTorch (~200MB instead of 5GB CUDA)
+    pip install --no-cache-dir --target="./.python_packages/lib/site-packages" torch --index-url https://download.pytorch.org/whl/cpu
+    
+    # 3. Install remaining requirements into .python_packages
+    pip install --no-cache-dir --upgrade --target="./.python_packages/lib/site-packages" -r requirements.txt
+    
+    # 4. Export paths so Python and pytest find the packages
+    export PYTHONPATH="$(pwd)/.python_packages/lib/site-packages:$PYTHONPATH"
+    export PATH="$(pwd)/.python_packages/lib/site-packages/bin:$PATH"
+    
+    # 5. Run test suite
+    python -m pytest tests/ -v
+  displayName: 'Install CPU Dependencies & Run Tests'
+
+- task: ArchiveFiles@2
+  displayName: 'Archive Project Files & Packages'
+  inputs:
+    rootFolderOrFile: '$(System.DefaultWorkingDirectory)'
+    includeRootFolder: false
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+    replaceExistingArchive: true
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact: drop'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+    ArtifactName: 'drop'
+    publishLocation: 'Container'
