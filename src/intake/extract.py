@@ -318,6 +318,157 @@ def _question_word_starts(text, start=0, end=None):
     ]
 
 
+# ------------------------------------------------------- sub-questions
+#
+# A structured question is a stem plus its parts, and each part is what a
+# teacher actually marks and answers:
+#
+#   (01) (1) A school library uses a computerized system ...
+#        (a) Define the term "system" as used in computing. [2]
+#        (b) Draw a fully labeled block diagram ...          [5]
+#
+# Read as one draft that is a single box with a single answer, which is
+# neither how it is marked nor how EdSider stores it - their bank holds a
+# parent row with the shared stimulus and one child row per part (see
+# CLAUDE.md, "A question is not always a row"). So a question is split
+# into a stem and its parts, recursively, and each part carries its own
+# marks and its own answer.
+
+#
+# A bare number at the left margin ("1." "2.") is NOT a part marker: it is
+# the paper's own question numbering, and on a worked-solutions document
+# it is the numbered solution steps - the ambiguity SPLIT_STYLES exists
+# for. Digits count only in brackets, "(1) (2)", which is how the real
+# Grade 12 GIT paper numbers the parts inside its structured questions.
+_SUB_MARKER = re.compile(
+    r"^[ \t]*(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|\d{1,2})\)"
+    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z])(?P<close>[.)]))"
+    r"[ \t]*(?=\S)",
+    re.MULTILINE,
+)
+
+_ROMAN_SEQUENCE = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
+
+# How deep to go. Three levels covers every real paper seen - question,
+# its parts, and the parts' own sub-parts ("(d) ... (i) (ii) (iii)").
+MAX_SUB_DEPTH = 2
+
+# A part shorter than this, with no marks of its own, is an MCQ option or
+# a list item rather than a question to be answered separately. Measured
+# against the real papers: the shortest real part is "(a) Define the term
+# 'system' as used in computing. [2]" at 48 characters; MCQ options on
+# the same paper run 3 to 30.
+_MIN_PART_CHARS = 35
+
+
+def _tag_kind(tag):
+    """Whether a marker reads as a number, a roman numeral or a letter.
+
+    "i" is both a letter and roman one, and nothing in the marker itself
+    settles it - the sequence does, which is why this returns both
+    readings and _sub_starts() tries each."""
+    if tag.isdigit():
+        return ["digit"]
+    lower = tag.lower()
+    kinds = []
+    if lower in _ROMAN_SEQUENCE:
+        kinds.append("roman")
+    if len(tag) == 1 and tag.isalpha():
+        kinds.append("alpha")
+    return kinds
+
+
+def _expected(kind, index):
+    """The marker a counting-up sequence of this kind has at `index`."""
+    if kind == "digit":
+        return str(index + 1)
+    if kind == "roman":
+        return _ROMAN_SEQUENCE[index] if index < len(_ROMAN_SEQUENCE) else None
+    return chr(ord("a") + index) if index < 26 else None
+
+
+def _sub_starts(body):
+    """(position, end of marker, printed marker) for one question's parts.
+
+    Every style is tried on its own - bracketed or not, and read as
+    letters, roman numerals or numbers - and the style that counts up the
+    furthest wins, the same reasoning as _number_starts(): a real part
+    list counts a, b, c while anything else (a stray "e.g.", a number
+    inside the text) does not continue.
+    """
+    found = []
+    for m in _SUB_MARKER.finditer(body):
+        tag = m.group("btag") or m.group("tag")
+        bracketed = m.group("btag") is not None
+        style = (bracketed, m.group("close") or ")")
+        found.append((m.start(), m.end(), tag, style))
+
+    best, best_score = [], None
+    styles = {s for _, _, _, s in found}
+    for style in styles:
+        for kind in ("alpha", "roman", "digit"):
+            run, index = [], 0
+            for pos, end, tag, this_style in found:
+                if this_style != style or kind not in _tag_kind(tag):
+                    continue
+                if tag.lower() != _expected(kind, index):
+                    continue
+                run.append((pos, end, tag))
+                index += 1
+            # One marker is not a list - a lone "(a)" inside a sentence
+            # must not turn a question into two.
+            if len(run) < 2:
+                continue
+            # The OUTER list is the one that starts first, not the one
+            # with the most entries: the real Grade 12 GIT question (01)
+            # is "(1) ... (a)(b)(c)(d) ... (2) ... (a)(b)", where the
+            # inner letters outnumber the outer numbers 6 to 2. Picking
+            # the longer run split it at the letters and hung "(2)"'s own
+            # parts under "(d)". Length only breaks a tie.
+            score = (-run[0][0], len(run))
+            if best_score is None or score > best_score:
+                best, best_score = run, score
+    return best
+
+
+def _split_parts(body, depth=0):
+    """A question body -> (stem, [part, ...]), each part the same shape.
+
+    The stem is what comes before the first part - the shared scenario or
+    diagram reference every part depends on. Parts nest: a part with its
+    own "(i) (ii)" list is split again, down to MAX_SUB_DEPTH.
+
+    Returns ("the whole body", []) when there is nothing to split, so a
+    plain question is unaffected.
+    """
+    if depth >= MAX_SUB_DEPTH:
+        return body.strip(), []
+
+    starts = _sub_starts(body)
+    if not starts:
+        return body.strip(), []
+
+    pieces = []
+    for i, (pos, end, tag) in enumerate(starts):
+        stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
+        pieces.append((tag, body[end:stop].strip()))
+
+    # An MCQ's options and a list of choices look exactly like a part
+    # list. What tells them apart is that a part is a question in its own
+    # right: it has marks of its own, or enough text to be answered.
+    real = [p for _, p in pieces
+            if len(p) >= _MIN_PART_CHARS or _find_marks(p)]
+    if len(real) < 2:
+        return body.strip(), []
+
+    parts = []
+    for tag, piece in pieces:
+        inner_stem, inner_parts = _split_parts(piece, depth + 1)
+        parts.append({"tag": tag, "text": inner_stem, "marks": _find_marks(piece),
+                      "parts": inner_parts})
+    return body[:starts[0][0]].strip(), parts
+
+
 # ------------------------------------------------------ paper structure
 #
 # A real upload is rarely one flat run of questions. The real Grade 12 GIT
@@ -395,6 +546,39 @@ _ANSWER_BLOCK = re.compile(
     r"^[ \t]*question[ \t]*\(?[ \t]*(\d{1,3})[ \t]*\)?(?![ \t]*[:.=\-][ \t]*\()",
     re.MULTILINE | re.IGNORECASE,
 )
+
+
+# A marking scheme labels each part's answer the way the paper labels the
+# part - "(1)(a) Definition of a System [2 marks]" under "Question (01)".
+# One to three bracketed tags, nothing else on the label but a title, so
+# an answer line that merely opens with "(2 marks - 1 for ...)" is not one.
+_ANSWER_PART = re.compile(
+    r"^[ \t]*(?P<tags>(?:\([ \t]*[0-9A-Za-z]{1,4}[ \t]*\)){1,3})"
+    r"(?![ \t]*[0-9]*[ \t]*marks?\b)(?P<rest>.*)$",
+    re.MULTILINE,
+)
+
+
+def _split_answer_by_part(body):
+    """One question's worked answer -> (what belongs to the question,
+    {"(1)(a)": that part's answer}).
+
+    A structured question is marked part by part, and now that each part
+    is its own draft with its own answer box, its answer belongs in that
+    box rather than in one wall of text on the question. Anything before
+    the first part label stays on the question itself.
+    """
+    labels = list(_ANSWER_PART.finditer(body))
+    if not labels:
+        return body.strip(), {}
+
+    parts = {}
+    for i, m in enumerate(labels):
+        stop = labels[i + 1].start() if i + 1 < len(labels) else len(body)
+        tags = re.sub(r"[ \t]", "", m.group("tags"))
+        text = (m.group("rest") + body[m.end():stop]).strip()
+        parts.setdefault(tags, text)
+    return body[:labels[0].start()].strip(), parts
 
 
 def _kind_hint(text):
@@ -500,9 +684,59 @@ def _attach_answers(answers, drafts, sections):
             # Drop the block's own "Question (01) [15 marks]" line.
             body = block.split("\n", 1)[1].strip() if "\n" in block else ""
             worked.setdefault(int(m.group(1)), body)
+        under = {}
         for d in drafts:
-            if d["section"] == other[0] and worked.get(number(d)):
+            if d.get("parent_seq"):
+                under.setdefault(d["parent_seq"], []).append(d)
+
+        def descendants(d):
+            out = []
+            for child in under.get(d["seq"], []):
+                out.append(child)
+                out.extend(descendants(child))
+            return out
+
+        for d in drafts:
+            if d["section"] != other[0] or not worked.get(number(d)):
+                continue
+            head, per_part = _split_answer_by_part(worked[number(d)])
+            kids = descendants(d)
+            if not (kids and per_part):
                 d["answer"] = worked[number(d)]
+                continue
+            # The scheme labels a part "(1)(a)"; the draft's own number is
+            # the question's printed number plus that same suffix.
+            d["answer"] = head or None
+            printed = d["question_number"] or ""
+            for kid in kids:
+                suffix = (kid["question_number"] or "")[len(printed):]
+                if per_part.get(suffix):
+                    kid["answer"] = per_part[suffix]
+
+
+def _emit_parts(drafts, parts, parent_seq, prefix, section, depth=1):
+    """Add one question's parts to `drafts`, in reading order.
+
+    Stored flat - one draft per part, each naming its parent's seq -
+    rather than nested inside the parent, because that is the shape the
+    review page renders, the shape the duplicate check reads, and the
+    shape EdSider's own bank uses (a parent row plus child rows).
+    """
+    for part in parts:
+        number = f"{prefix}({part['tag']})" if prefix else f"({part['tag']})"
+        seq = len(drafts) + 1
+        drafts.append({
+            "seq": seq,
+            "question_number": number,
+            "text": part["text"],
+            "marks": part["marks"],
+            "section": section,
+            "answer": None,
+            "depth": depth,
+            "parent_seq": parent_seq,
+            "extraction_confidence": _confidence(part["text"], part["marks"]),
+        })
+        _emit_parts(drafts, part["parts"], seq, number, section, depth + 1)
 
 
 def structure(text, style=DEFAULT_SPLIT_STYLE):
@@ -578,6 +812,8 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
             "marks": None,
             "section": None,
             "answer": None,
+            "depth": 0,
+            "parent_seq": None,
             "extraction_confidence": "low",
         }]}
 
@@ -620,16 +856,29 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
             # "Each question carries 15 marks" is the question's mark; the
             # last "[2]" inside it is only its final part's.
             marks = each or _find_marks(body)
+            # An MCQ is never split: its options are a list at the left
+            # margin that looks exactly like a part list, and an option is
+            # not a question with an answer of its own.
+            stem, parts_tree = ((body, []) if kind == "mcq"
+                                else _split_parts(body))
+            parent_seq = len(drafts) + 1
             drafts.append({
-                "seq": len(drafts) + 1,
+                "seq": parent_seq,
                 "question_number": raw,
-                "text": body,
+                "text": stem,
                 "marks": marks,
                 "section": sp["label"],
                 "answer": None,
-                "extraction_confidence": (_confidence(body, marks)
-                                          if raw is not None else "low"),
+                "depth": 0,
+                "parent_seq": None,
+                # A question that was split holds the shared stem, which
+                # is legitimately short (sometimes empty) - that is not
+                # the extractor struggling, so it is not low confidence.
+                "extraction_confidence": (
+                    "ok" if parts_tree
+                    else (_confidence(body, marks) if raw is not None else "low")),
             })
+            _emit_parts(drafts, parts_tree, parent_seq, raw or "", sp["label"])
         parts.append({
             "label": sp["label"],
             "heading": sp["heading"],

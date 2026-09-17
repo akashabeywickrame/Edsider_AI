@@ -142,11 +142,11 @@ def health():
     """Is it up, and what is it actually serving against.
 
     Reachable before startup finishes loading, and even before EDSIDER_DB
-    was set at all - store.DB_PATH is None until then, not a crash.
+    was set at all - store.DSN is None until then, not a crash.
     """
     return {
         "status": "ok" if state["embedder"] is not None else "loading",
-        "database": store.DB_PATH.name if store.DB_PATH else None,
+        "database": store.display_name(),
         "comparable_questions": len(state["rows"]) if state["rows"] is not None else 0,
         "model": state["model_name"],
     }

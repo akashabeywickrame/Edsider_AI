@@ -19,15 +19,22 @@ at this scale.
 
 ## Getting real data in
 
-There is no sample bank any more, and no default database — `EDSIDER_DB`
-must be set to a real `.db` file before anything runs, or every script
-refuses with a clear error rather than silently guessing:
+Storage is PostgreSQL. There is no sample bank and no default database —
+`EDSIDER_DB` must name one, or every script refuses with a clear error
+rather than silently guessing. Put it in `.env` (gitignored; `store.py`
+reads it itself, so no terminal setup is needed):
 
 ```
-$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
+EDSIDER_DB=host=... port=5432 dbname=edsider_ai user=... password='...'
+EDSIDER_TEST_DB=host=127.0.0.1 port=5432 dbname=edsider_ai_test user=postgres password='...'
 ```
 
-Two ways to fill that file, both feeding the same importer logic:
+Use this keyword form rather than a `postgresql://` URL: a password
+containing `@`, `:` or `/` breaks the URL form. `.env.example` has both
+lines. An existing SQLite bank moves across with
+`python scripts\migrate_to_postgres.py data\edsider_real.db`.
+
+Two ways to fill the database, both feeding the same importer logic:
 
 **A CSV export**, produced by hand from EdSider's own database (see
 `scripts/import_edsider.py`'s docstring for the export SQL):
@@ -83,7 +90,6 @@ and the bank's fingerprints once, keeps them in memory, and answers
 requests over HTTP:
 
 ```
-$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
 .\venv\Scripts\uvicorn.exe service:app --host 0.0.0.0 --port 8000
 ```
 
@@ -310,22 +316,23 @@ scripts/
   embed.py                 compute fingerprints
   find_duplicates.py       Stage 1 only, no AI
   check_new.py             one question against the bank
-tests/                     193 tests
-data/                      the real database lives here (gitignored -
-                           EDSIDER_DB must point at it explicitly)
+tests/                     247 tests, against a real PostgreSQL
+                           (each test in a throwaway schema)
 ```
 
 ## Design notes
 
-**`store.py` is the only module that touches the database.** Moving to
-PostgreSQL with pgvector means rewriting that one file. Nothing else
-knows or cares what is underneath.
+**`store.py` is the only module that touches the database.** That is
+what made the move from SQLite to PostgreSQL one file's work: every
+table and query changed there, and nothing else in the application did.
+Fingerprints are stored as pgvector where the server allows the
+extension, and as `bytea` where it does not.
 
 **No default database.** `EDSIDER_DB` must be set, or `store.connect()`
 refuses to run. There used to be a 30-question sample bank to silently
-fall back to; falling back to nothing at all now would mean SQLite
-quietly creating a brand new empty database and every check reporting
-"no duplicates" for everything, with no warning - worse than an error.
+fall back to; falling back to nothing at all now would mean every check
+reporting "no duplicates" against an empty database, with no warning -
+worse than an error.
 
 **Unicode normalisation is not decoration.** In Sinhala and Tamil the
 same visible character can have more than one byte representation, and

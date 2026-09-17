@@ -18,14 +18,6 @@ from src import store
 from src.normalize import content_hash
 
 
-@pytest.fixture
-def local_db(tmp_path):
-    original = store.DB_PATH
-    store.use_database(tmp_path / "store_test.db")
-    yield
-    store.use_database(original)
-
-
 def seed(conn, qid, text, language):
     store.save(conn, {"id": qid, "text": text, "language": language,
                       "content_hash": content_hash(text)})
@@ -37,21 +29,21 @@ def test_connect_refuses_to_run_with_no_database_configured():
     """There is no sample bank to fall back to any more - silently
     creating a brand new empty database at a guessed path would be
     worse than the old fallback, not safer, so connect() must refuse."""
-    original = store.DB_PATH
+    original, schema = store.DSN, store.SCHEMA_NAME
     try:
         store.use_database(None)
         with pytest.raises(RuntimeError, match="EDSIDER_DB"):
             store.connect()
     finally:
-        store.use_database(original)
+        store.use_database(original, schema=schema)
 
 
 def test_use_database_none_resets_cleanly(local_db):
-    """A caller that saves DB_PATH before switching, then restores it,
-    must be able to pass None straight back through - the state DB_PATH
+    """A caller that saves DSN before switching, then restores it,
+    must be able to pass None straight back through - the state DSN
     starts in when EDSIDER_DB was never set."""
     assert store.use_database(None) is None
-    assert store.DB_PATH is None
+    assert store.DSN is None
 
 
 def test_language_filter_only_returns_that_language(local_db):
@@ -128,6 +120,65 @@ def test_record_decision_leaves_contrast_terms_null_when_not_given(local_db):
             "WHERE question_a='Q1' AND question_b='Q2'"
         ).fetchone()
     assert row["candidate_contrast_terms"] is None
+
+
+def test_record_decision_leaves_contrast_terms_null_when_both_lists_are_empty(local_db):
+    """Two identical texts give ([], []) - a non-empty tuple, but no
+    words were captured, so nothing should be stored."""
+    with store.connect() as conn:
+        store.record_decision(conn, "Q1", "Q2", "distinct", "reviewer",
+                              candidate_contrast_terms=([], []))
+        row = conn.execute(
+            "SELECT candidate_contrast_terms FROM decisions").fetchone()
+    assert row["candidate_contrast_terms"] is None
+
+
+def test_current_decisions_keeps_the_latest_verdict_per_pair_in_either_order(local_db):
+    with store.connect() as conn:
+        store.record_decision(conn, "Q1", "Q2", "duplicate", "reviewer")
+        store.record_decision(conn, "Q2", "Q1", "distinct", "reviewer")
+        store.record_decision(conn, "Q3", "Q4", "skipped", "reviewer")
+        decided = store.current_decisions(conn)
+    assert set(decided) == {("Q1", "Q2")}
+    assert decided[store.pair_key("Q2", "Q1")]["verdict"] == "distinct"
+
+
+def test_list_decisions_carries_question_text_and_contrast_words(local_db):
+    with store.connect() as conn:
+        seed(conn, "Q1", "Calculate the area of a rectangle", "English")
+        seed(conn, "Q2", "Calculate the perimeter of a rectangle", "English")
+        seed(conn, "Q3", "Name a planet", "English")
+        store.record_decision(conn, "Q1", "Q2", "distinct", "reviewer", 0.97,
+                              candidate_contrast_terms=(["area"], ["perimeter"]))
+        store.record_decision(conn, "Q1", "Q3", "duplicate", "reviewer", 0.96)
+        everything = store.list_decisions(conn)
+        distinct = store.list_decisions(conn, verdict="distinct")
+    assert [d["question_b"] for d in everything] == ["Q3", "Q2"]  # newest first
+    assert len(distinct) == 1
+    d = distinct[0]
+    assert d["text_a"] == "Calculate the area of a rectangle"
+    assert d["text_b"] == "Calculate the perimeter of a rectangle"
+    assert (d["only_in_a"], d["only_in_b"]) == (["area"], ["perimeter"])
+
+
+def test_undo_decision_sends_the_pair_back_for_review(local_db):
+    with store.connect() as conn:
+        store.record_decision(conn, "Q1", "Q2", "duplicate", "reviewer")
+        store.record_decision(conn, "Q2", "Q1", "distinct", "reviewer")
+        store.record_decision(conn, "Q3", "Q4", "duplicate", "reviewer")
+        removed = store.undo_decision(conn, "Q2", "Q1")
+        decided = store.current_decisions(conn)
+    assert removed == 2
+    assert set(decided) == {("Q3", "Q4")}
+
+
+def test_table_schema_shows_migrated_columns(local_db):
+    with store.connect() as conn:
+        sql = store.table_schema(conn, "decisions")
+        missing = store.table_schema(conn, "no_such_table")
+    assert sql.startswith("CREATE TABLE decisions")
+    assert "candidate_contrast_terms" in sql
+    assert missing is None
 
 
 # ----------------------------------------- question <-> assessment links
@@ -294,3 +345,123 @@ def test_embedding_english_leaves_other_languages_uncomparable(local_db):
         comparable = store.comparable_questions(conn, "fake-model")
     ids = {r["id"] for r in comparable}
     assert ids == {"E1"}
+
+
+# ------------------------------------------- pool, cache and batch reads
+#
+# Written after the move to a remote server, where opening a connection
+# costs seconds and fingerprints download at about 1 MB/s. Each of these
+# proves a speed-up did not change what comes back.
+
+def _pid(conn):
+    return conn.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+
+
+def test_a_returned_connection_is_reused(local_db):
+    with store.connect() as conn:
+        first = _pid(conn)
+    with store.connect() as conn:
+        assert _pid(conn) == first
+
+
+def test_a_pooled_connection_the_server_dropped_is_replaced(local_db):
+    """A connection can sit in the pool looking open after the server has
+    closed it. The next caller must get a working one, not an error."""
+    import psycopg2
+
+    with store.connect() as conn:
+        dead = _pid(conn)
+    killer = psycopg2.connect(store.DSN)
+    killer.autocommit = True
+    try:
+        killer.cursor().execute("SELECT pg_terminate_backend(%s)", (dead,))
+    finally:
+        killer.close()
+
+    with store.connect() as conn:
+        assert conn.execute("SELECT 1 AS one").fetchone()["one"] == 1
+        assert _pid(conn) != dead
+
+
+def test_each_pooled_connection_uses_the_configured_schema(local_db):
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT current_schema() AS s").fetchone()["s"] == store.SCHEMA_NAME
+
+
+def _seed_embedded(conn, qid, text, vector):
+    seed(conn, qid, text, "English")
+    store.save_embedding(conn, content_hash(text), "fake-model", vector)
+
+
+def test_fingerprints_are_served_from_the_disk_cache(local_db, tmp_path):
+    """Loaded once, a fingerprint comes from local disk after that - even
+    in a new process with nothing in memory."""
+    store.CACHE_DIR = tmp_path
+    text = "Describe the function of the mitochondria."
+    with store.connect() as conn:
+        _seed_embedded(conn, "C1", text, [0.25, 0.5, 0.75])
+        first = store.comparable_questions(conn, "fake-model")
+    assert list((tmp_path).glob("vectors-*.npz"))
+
+    # Change the stored numbers behind the cache's back, then start as a
+    # new process would - memory empty, disk file present.
+    with store.connect() as conn:
+        conn.execute("UPDATE embeddings SET vector = ? WHERE content_hash = ?",
+                     (store.encode_vector([9.0, 9.0, 9.0]), content_hash(text)))
+    store.forget_cached_vectors()
+    with store.connect() as conn:
+        again = store.comparable_questions(conn, "fake-model")
+
+    assert list(first[0]["vector"]) == [0.25, 0.5, 0.75]
+    assert list(again[0]["vector"]) == [0.25, 0.5, 0.75]
+
+
+def test_re_embedding_a_text_replaces_its_cached_fingerprint(local_db, tmp_path):
+    store.CACHE_DIR = tmp_path
+    text = "Name the largest planet in the solar system."
+    with store.connect() as conn:
+        _seed_embedded(conn, "C2", text, [1.0, 0.0])
+        store.comparable_questions(conn, "fake-model")
+        store.save_embedding(conn, content_hash(text), "fake-model", [0.0, 1.0])
+        after = store.comparable_questions(conn, "fake-model")
+    store.forget_cached_vectors()
+    with store.connect() as conn:
+        from_disk = store.comparable_questions(conn, "fake-model")
+
+    assert list(after[0]["vector"]) == [0.0, 1.0]
+    assert list(from_disk[0]["vector"]) == [0.0, 1.0]
+
+
+def test_all_papers_in_one_query_match_one_paper_at_a_time(local_db):
+    with store.connect() as conn:
+        for i, text in enumerate(["What is photosynthesis?",
+                                  "Define respiration in plants.",
+                                  "What is a food chain?"]):
+            _seed_embedded(conn, f"P{i}", text, [float(i), 1.0])
+        store.save_assessment_link(conn, 1, "A1", "P0", question_number=2)
+        store.save_assessment_link(conn, 2, "A1", "P1", question_number=1)
+        store.save_assessment_link(conn, 3, "A2", "P1", question_number=1)
+        store.save_assessment_link(conn, 4, "A2", "P2", question_number=2)
+
+        together = store.questions_in_assessments(conn, "fake-model")
+        one_by_one = {a: store.questions_in_assessment(conn, a, "fake-model")
+                      for a in ("A1", "A2")}
+
+    for paper in ("A1", "A2"):
+        assert ([(r["id"], r["question_number"]) for r in together[paper]]
+                == [(r["id"], r["question_number"]) for r in one_by_one[paper]])
+        assert all("assessment_id" not in r for r in together[paper])
+    assert [r["id"] for r in together["A1"]] == ["P1", "P0"]  # question order
+
+
+def test_assessment_links_cover_every_question_at_once(local_db):
+    with store.connect() as conn:
+        store.save_assessment_link(conn, 1, "A1", "Q1", question_number=3)
+        store.save_assessment_link(conn, 2, "A2", "Q1", question_number=7)
+        store.save_assessment_link(conn, 3, "A2", "Q2", question_number=1)
+        links = store.assessment_links(conn)
+        single = [dict(r) for r in store.assessments_for_question(conn, "Q1")]
+
+    assert links["Q1"] == single
+    assert links["Q2"] == [{"assessment_id": "A2", "question_number": 1}]

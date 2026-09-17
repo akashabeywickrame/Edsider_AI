@@ -81,11 +81,9 @@ def test_check_and_reload_need_the_key_but_health_does_not():
 
 
 @pytest.fixture
-def sample_db(tmp_path):
-    """A throwaway database, seeded and pointed at by store.DB_PATH, so
-    these tests never touch the project's real databases."""
-    original = store.DB_PATH
-    store.use_database(tmp_path / "service_test.db")
+def sample_db(local_db):
+    """The shared throwaway schema (see conftest.py), seeded - so these
+    tests never touch the project's real bank."""
     with store.connect() as conn:
         for row in BANK:
             store.save(conn, {
@@ -95,7 +93,6 @@ def sample_db(tmp_path):
             store.save_embedding(conn, content_hash(row["text"]),
                                  service.DEFAULT_MODEL, row["vector"])
     yield
-    store.use_database(original)
 
 
 @pytest.fixture
@@ -105,8 +102,9 @@ def loaded(sample_db):
     with store.connect() as conn:
         rows = [dict(r) for r in
                 store.comparable_questions(conn, service.DEFAULT_MODEL)]
-    vectors = {r["text"]: np.asarray(json.loads(r["vector"]))
-               for r in rows}
+    # store hands back a list of floats now, whichever way the database
+    # stores them (pgvector or bytea) - no JSON to parse any more.
+    vectors = {r["text"]: np.asarray(r["vector"]) for r in rows}
     service.state["embedder"] = FakeEmbedder(vectors)
     service.state["rows"] = rows
     service.state["index"] = dedupe.VectorIndex(rows)
@@ -130,7 +128,7 @@ def test_health_after_load_reports_the_bank_size(loaded):
     body = health()
     assert body["status"] == "ok"
     assert body["comparable_questions"] == len(BANK)
-    assert body["database"] == store.DB_PATH.name
+    assert body["database"] == store.display_name()
 
 
 # ------------------------------------------------------------- pass 1

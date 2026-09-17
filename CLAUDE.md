@@ -82,8 +82,8 @@ service.py              FastAPI service - the check, always on
 src/
   normalize.py          text extraction, normalisation, hashing - SHARED
                         infrastructure, not part of either feature
-  store.py              ALL database access - the only file that
-                        changes when moving to PostgreSQL + pgvector
+  store.py              ALL database access (PostgreSQL) - the only
+                        module that knows what storage is underneath
   dedupe/               the matching engine (passes 1-3)
     embeddings.py       model wrapper (E5 prefix handling)
     guards.py           the five guards + contrast-term mining
@@ -101,10 +101,11 @@ scripts/
   find_duplicates.py    Pass 1 only
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
-tests/                  231 tests
-data/                   the real database lives here (gitignored -
-                        EDSIDER_DB must point at it explicitly, see
-                        "Two databases")
+  migrate_to_postgres.py  one-off: copy an old SQLite bank into PostgreSQL
+tests/                  247 tests, each in a throwaway PostgreSQL schema
+                        (conftest.py)
+data/                   the old SQLite bank, kept only as the migration
+                        source (gitignored)
 ```
 
 ## Running it
@@ -116,11 +117,17 @@ python -m venv venv
 
 .\venv\Scripts\python.exe -m pytest tests\ -v
 
-$env:EDSIDER_DB = "data/edsider_real.db"
 .\venv\Scripts\python.exe scripts\import_edsider.py path\to\export.csv
 .\venv\Scripts\python.exe scripts\embed.py --language English
 .\venv\Scripts\streamlit.exe run app.py
 ```
+
+Storage is **PostgreSQL** (see "One database technology" below).
+`EDSIDER_DB` is a connection string and lives in `.env`, which
+`store.py` loads itself - there is no `$env:` line to repeat in every
+terminal, and the password stays out of shell history. `EDSIDER_TEST_DB`
+points the test suite at a database it may create and drop schemas in.
+Both are in `.env.example`.
 
 `embed.py` downloads the model on first run, then caches it. There is no
 default database any more - `EDSIDER_DB` must be set before any script
@@ -246,7 +253,8 @@ table instead (see "Known limitations").
 
 Sweep scale, measured: the whole 128-million-pair matmul takes **1.6
 seconds** once `VectorIndex` holds float32. Candidates above 0.97 / 0.95 /
-0.92 are 2,222 / 5,735 / 25,670; after guards, 1,455 / 2,873 / 8,546.
+0.92 are 2,222 / 5,735 / 25,670; after guards, 1,455 / 2,873 / 8,546. (Measured on 15,998 comparable rows, before Guard 5. On today's 16,084
+with every guard: 5,932 pairs at 0.95 without guards, 3,045 with.)
 
 ## Known limitations
 
@@ -303,6 +311,31 @@ seconds** once `VectorIndex` holds float32. Candidates above 0.97 / 0.95 /
   wrong for a save-time hook. In EdSider it becomes an endpoint holding a
   warm model, and the score bands move behind an API rather than a print.
 
+## Reviewed decisions - one verdict per pair, never shown twice
+
+Every "Confirm duplicate" / "Not a duplicate" click still inserts its own
+`decisions` row - history is kept, a changed mind is a new row - but the
+review pages now read `store.current_decisions()`, the newest verdict per
+pair keyed by `store.pair_key()` (sorted ids, so A-B and B-A are one
+pair). A pair with a verdict is hidden on "Find duplicates" and
+"Duplicates within a paper" (a checkbox shows it again, labelled with its
+verdict), because the same sweep returns the same pairs every visit and a
+reviewer was re-reading pairs already decided. "Skip" saves nothing - a
+skip is not a verdict - and hides the pair for the session only. A
+verdict reruns the page, so the pair leaves the list at once, with a
+confirmation naming the contrasting words captured.
+
+The "Reviewed decisions" page lists the current verdicts with both
+questions' text and the captured words, downloads them as CSV, shows the
+table's real `CREATE TABLE` (`store.table_schema()`, migrated columns
+included), explains how `candidate_contrast_terms()` picks words with a
+live two-box demo, and has an Undo per pair (`store.undo_decision()`,
+which deletes that pair's rows in either order - leaving an older one
+would resurface the pair under a verdict just taken back). Empty
+`([], [])` contrast terms are now stored as NULL, not `"[[], []]"`.
+`decided_by` is still the literal "reviewer" - a real name needs a
+sign-in (Easy Auth on Azure).
+
 ## The one-question check
 
 `scripts/check_new.py` and `dedupe.check_one()` are the shape EdSider
@@ -336,15 +369,15 @@ answer key to sweep against without a labelled set; there is no
 decisions-table-based replacement yet - see "Known limitations").
 
 That leaves one database, but the discipline that motivated keeping two
-apart still matters, in a stricter form now: `store.DB_PATH` reads
+apart still matters, in a stricter form now: `store.DSN` reads
 `EDSIDER_DB`, and **there is no default any more**:
 
 ```
-$env:EDSIDER_DB = "d:\EdsiderAI\data\edsider_real.db"
+EDSIDER_DB=host=... port=5432 dbname=edsider_ai user=... password='...'
 .\venv\Scripts\python.exe scripts\import_edsider.py edsider_questions.csv
 ```
 
-Unset, `DB_PATH` is `None`, and `store.connect()` raises immediately
+Unset, `DSN` is `None`, and `store.connect()` raises immediately
 with a message naming `EDSIDER_DB`, rather than silently creating a
 brand new empty database at a guessed path - which would be a worse
 failure than the old one: every check would silently report "no
@@ -352,15 +385,125 @@ duplicates found" for everything, with no error and no visible sign
 anything was wrong. The old sample-bank fallback was at least visibly a
 demo; a silently-empty real bank is not.
 
-The app still names the open database in the sidebar and offers a
-selector over every `data/*.db`, for whenever more than one real bank
-exists side by side (a staging copy, say) - `store.use_database()` is
-the only supported way to repoint storage at runtime, and remains so.
+The app names the open database in the sidebar. The selector over every
+`data/*.db` went with SQLite - a PostgreSQL database is configured, not
+discovered by looking in a folder - and a second bank (a staging copy)
+is now a different `EDSIDER_DB`, or a different `EDSIDER_SCHEMA` on the
+same server. `store.use_database(dsn, schema=...)` is still the only
+supported way to repoint storage at runtime.
 
 The duplicates page defaults to a threshold of **0.95** on a bank over a
 thousand questions rather than the old sample-tuned 0.85, and renders the
 top 50 pairs. At 0.85 the real bank returns 1.46 million pairs, which is
 neither reviewable nor renderable.
+
+## One database technology - PostgreSQL, not SQLite
+
+EdSider runs PostgreSQL, and their team did not want one application
+carrying two database technologies. This is the move `store.py` was
+written to make: every table, every query and every connection changed,
+and nothing outside that one module did.
+
+- **The seam held.** All the SQL was already in `store.py`, so the
+  application's other 3,000-odd lines needed nothing beyond renaming
+  `DB_PATH` to `DSN` (a connection string, not a file) and asking
+  `store.display_name()` what to show. `Connection`, a thin wrapper,
+  keeps sqlite3's `conn.execute(sql, params)` shape over psycopg2 -
+  which is cursors all the way down - and translates `?` to `%s`.
+- **What SQL had to change:** identity columns for `AUTOINCREMENT`,
+  `RETURNING id` for `lastrowid`, `ON CONFLICT DO UPDATE` for `INSERT OR
+  REPLACE`, `string_agg` for `GROUP_CONCAT`, `HAVING COUNT(*)` where an
+  alias was allowed before, real `TIMESTAMPTZ` columns, and `ALTER TABLE
+  ... ADD COLUMN IF NOT EXISTS` in place of reading `PRAGMA table_info`
+  first.
+- **Fingerprints are pgvector where it is allowed, `bytea` where it is
+  not.** Both hold the same float32 numbers and cut the bank from 600 MB
+  to about 110 MB - SQLite held each vector as ~17 KB of JSON text, 519
+  MB in total, which also had to be parsed back on every load. pgvector
+  additionally allows the index that would end the O(n^2) sweep, so it
+  is preferred; an existing `embeddings` table decides its own format,
+  because changing a column type under live rows is a migration, not a
+  startup guess. EdSider's Azure server offers pgvector 0.8.2 but has
+  not allow-listed it (`azure.extensions`), so it is `bytea` there for
+  now.
+- **Setting up a connection happens outside a transaction**, and that is
+  not a detail: PostgreSQL rolls back DDL and even `SET` when a statement
+  fails, so the pgvector probe - which is *expected* to fail where the
+  extension is not allowed - took `CREATE SCHEMA` and the `search_path`
+  down with it, and the next statement reported "no schema has been
+  selected". The schema itself is then applied in one transaction, one
+  disk flush; statement by statement it cost a quarter of a second per
+  `ALTER TABLE` on every connection.
+- **`EDSIDER_SCHEMA`** picks a schema. That is how the tests get
+  isolation: each one works in `t_<random>`, created and dropped around
+  it (`tests/conftest.py`), on a database the suite creates if it is
+  missing. The old per-test SQLite file in `tmp_path` has no equivalent -
+  and tests that run against a different database than production prove
+  less than they look like they do.
+- **`store.py` loads `.env` itself.** A connection string is a
+  credential; it belongs in a gitignored file rather than in a `$env:`
+  line repeated in every terminal. An explicitly set environment
+  variable still wins.
+- **`scripts/migrate_to_postgres.py`** moves an existing SQLite bank
+  across: columns matched by name, batched inserts, every fingerprint
+  re-encoded, and the identity sequences reset afterwards - the step
+  that is easy to forget and shows up later as a duplicate key error. It
+  reads the old file read-only and is safe to re-run.
+- **What this fixed for free:** `startup.sh` no longer copies a database
+  to `/tmp`, so reviewers' decisions and uploaded papers on the server
+  are no longer lost on every restart. That limitation was SQLite's.
+
+Still open: the extension allow-list above, and a role that owns only
+`edsider_ai` - the connection string currently names the server
+administrator, which can read and write every database on that server.
+
+**Then the app took minutes to load, and none of it was the queries.**
+Measured from this laptop to EdSider's Azure server: opening a connection
+costs 2.5 s, every statement about 0.35 s, and the fingerprints download
+at about 1 MB/s. Code written against SQLite on local disk, where all
+three are free, spent them freely:
+
+| | before | after |
+|---|---|---|
+| first connection (schema check) | 58.8 s | 3.5 s |
+| each further connection | 2.5 s | 0.00 s |
+| load the bank (16,084 questions + 49 MB of fingerprints) | 95 s | 9.7 s |
+| every paper's questions, within-paper page | ~15 min | 7 s |
+| "also appears on assessment" notes | 0.37 s each | 3 s for all |
+
+- **A connection pool** (`store._Pool`), not psycopg2's: that one keeps a
+  returned connection only while fewer than `minconn` are idle, and opens
+  `minconn` up front - 2.5 s each. Ours opens lazily, keeps up to 8,
+  checks one with a round trip only after a minute idle, and sets the
+  schema with a `-c search_path` connection option so a pooled connection
+  can never be handed out pointing at the wrong one.
+- **The schema is checked, not re-applied.** One catalogue query; running
+  the DDL took 58 s on every start for a schema that had not changed.
+- **Fingerprints are cached on local disk** (`data/cache/`, gitignored,
+  `EDSIDER_CACHE_DIR` to move it). A fingerprint never changes for a
+  given text and model, so each is downloaded once and only new ones are
+  fetched after that; the database stays the only source of truth and
+  deleting the cache costs one slow start. The first start after this
+  took 157 s to fill it. `save_embedding()` drops a re-embedded text's
+  entry; the tests set `CACHE_DIR = None` so made-up vectors never reach
+  the real file.
+- **One query instead of one per item:** `questions_in_assessments()` and
+  `assessment_links()` replaced 1,960 and ~100 round trips.
+- **The app holds the bank** with `cache_resource` for 30 minutes (it was
+  `cache_data` with a 5-second lifetime - a 95-second reload every few
+  clicks) and builds `VectorIndex` once, which `check_one`, `search` and
+  `find_pairs` all accept instead of re-stacking 16,084 rows per call.
+  "Reload from database" in the sidebar clears the bank but not the
+  embedding model.
+
+Verified equivalent, not assumed: today's code on the old SQLite file and
+on PostgreSQL gives the same 16,084 rows, fingerprints identical to the
+last digit, and the same 3,045 whole-bank pairs at 0.95 with identical
+scores; 182 within-paper repeats on 650 papers, as before. Every page
+renders against the live database: app start 12.6 s, "Find duplicates"
+11.3 s first visit and 1.3 s after. Deployed in the same Azure region as
+the database, round trips drop from ~350 ms to a few, and most of what
+remains goes with them.
 
 ## The live service
 
@@ -586,11 +729,12 @@ place rather than filtered out after. Not done yet because it would
 mean a second re-embed of the already-embedded real children; worth
 doing the next time this needs a full re-sync anyway.
 
-**WAL mode** (`PRAGMA journal_mode=WAL`, set in `store.connect()`) went
-in alongside this. The default SQLite journal mode blocks a reader
-behind an in-progress writer, which is invisible in a one-shot CLI run
-and a real problem in a process serving requests continuously while a
-decision gets recorded or the poller writes newly imported questions.
+**WAL mode** (`PRAGMA journal_mode=WAL`) went in alongside this, back
+when storage was SQLite, whose default journal blocks a reader behind an
+in-progress writer - invisible in a one-shot CLI run, a real problem in a
+process serving requests while a decision is recorded. PostgreSQL has
+never had that problem (readers are never blocked by writers), so the
+pragma went with the move and nothing replaced it.
 
 ## Guard 5 - a passage shared inside one row, not split into parent/child
 
@@ -694,6 +838,23 @@ questions in the family (31, 32, 33, 34 - ids 58317, 58320, 58328,
 58335), not just the two originally reported, confirming the shared
 block is what ties them together rather than any two of them happening
 to sit next to each other.
+
+**Passage grouping made the within-paper page take 3.5 minutes.** It
+ran `difflib` on every pair of questions on all 650 papers - 211 seconds
+of the page, repeated on every click, since nothing was cached - to
+annotate 182 pairs. Three fixes, none changing a result:
+`shared_passage()` first checks whether any of text_a's back-to-back
+100-character chunks occurs in text_b (a shared block of 200+ must
+contain one whole, wherever it starts), which rules out almost every
+pair before `difflib` runs - on 8,052 real long pairs across 60 papers,
+identical output to the old code; grouping runs only on the 105 papers
+that have a repeat (0.85s); and `app.py` caches the page's results
+(`paper_repeats`) and holds the 274 MB of paper rows with
+`cache_resource`, because `cache_data` copied them on every rerun.
+Measured on the real bank: first visit 15s, a click afterwards 1-3s.
+Most of the remaining first-visit time is
+`find_within_assessment_duplicates()` itself - parsing each paper's
+vectors from JSON and running guards.
 
 ## Paper intake - upload a paper, extract its questions (Project 2)
 
@@ -971,6 +1132,64 @@ Biosystem II-A/II-B case - which part a "Question (01)" block belongs to
 is not written down), and a repeated page-top part title stays inside
 the question text it interrupts.
 
+**A question and its parts.** A structured question is a stem plus the
+parts a teacher actually marks - the real GIT question (01) is "(1) A
+school library uses a computerized system ... (a) Define the term
+'system' [2] (b) Draw a fully labeled block diagram [5] ... (2) Consider
+the following scenario ... (a) ... (b) ...". Read as one draft it was one
+box with one answer, which is neither how it is marked nor how EdSider
+stores it (parent row with the shared stimulus, one child row per part).
+`extract._split_parts()` now splits each question recursively, to
+`MAX_SUB_DEPTH` (2 levels below the question), and each part is a draft
+of its own with its own marks, answer box and Reviewed tick. Drafts stay
+flat, each naming its `parent_seq` (the parent's seq within the document,
+not a row id, so a whole paper inserts in one pass and a re-split rebuilds
+the same links) and its `depth`; the review page indents them under the
+question, and the parent's own box holds the shared stem, labelled as
+such. `store.delete_intake_question()` takes a question's parts with it.
+The rules, each from a real paper:
+
+- *The outer list is the one that starts first, not the longest.* In
+  question (01) the inner letters outnumber the outer numbers 6 to 2, so
+  "longest run wins" split at the letters and hung "(2)"'s own parts
+  under "(d)". Length only breaks a tie.
+- *A bare "1." at the margin is never a part.* It is the paper's own
+  question numbering, and on a worked-solutions document it is the
+  numbered SOLUTION STEPS - the ambiguity `SPLIT_STYLES` exists for.
+  Digits count only bracketed, "(1) (2)", as the GIT paper prints them.
+- *An MCQ is never split.* Its options are a left-margin list shaped
+  exactly like a part list, and an option is not separately answered.
+- *Two markers minimum, and a part must look like a question* - at least
+  35 characters or marks of its own (the shortest real part is 48
+  characters; MCQ options on the same paper run 3 to 30). A lone "(a)"
+  in a sentence splits nothing.
+- *"i" is both a letter and roman one*, and only the sequence settles it,
+  so each reading is tried and the one that counts up wins.
+
+Measured on the real uploads: GIT Grade 12, 45 questions and 39 parts;
+GIT A/L model paper, 45 and 36; Biosystem Grade 13, 60 and 53. The
+duplicate check compares the parts and skips a stem, which on its own
+("Consider the following scenario:") matches everything and means
+nothing.
+
+**The marking scheme is split the same way.** It labels each part's
+answer exactly as the paper labels the part - "Question (01) [15 marks]"
+then "(1)(a) Definition of a System [2 marks] ..." - and a draft's own
+number is the question's number plus that same suffix, so
+`_split_answer_by_part()` matches them directly. Anything before the
+first label stays on the question; a scheme with no part labels at all
+still lands whole on the question, as before; a part the scheme says
+nothing about keeps an empty box. On the real GIT paper, 29 of Part II's
+44 drafts come back with their own answer. The label pattern deliberately
+ignores "(2 marks - 1 for ...)", which opens a line in the same shape.
+
+**"Add a question" can add a PART**, picking the question (or part) it
+belongs to, and names it the way the paper would - the question's number
+plus the next letter after its existing parts ("01(c)"). The review page
+orders drafts by their position in the tree rather than by seq, so a part
+added later still renders under its own question instead of at the end of
+the paper.
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question
@@ -993,13 +1212,12 @@ live in this repo, because a pipeline cannot guess them:
 - **`startup.sh` is the startup command** - `bash startup.sh` for the
   API, `bash startup.sh ui` for the review app. Left to itself App
   Service picks `app.py` and expects a Flask or Django `app` in it; ours
-  is Streamlit, and the API is `service.py`. The script first copies the
-  database from `EDSIDER_DB_SOURCE` (default `/home/data/edsider_real.db`,
-  App Service's persistent storage, a network share) to `EDSIDER_DB`
-  (default `/tmp/edsider_real.db`, local disk), `-wal` file included,
-  because SQLite's WAL mode is not reliable on a network share. Writes
-  land in the copy and are lost on restart - acceptable for
-  pre-production, not for production, which moves to PostgreSQL.
+  is Streamlit, and the API is `service.py`. It no longer copies a
+  database anywhere: `EDSIDER_DB` is a PostgreSQL connection string and
+  both processes read the same live database. The SQLite version copied
+  `/home/data/edsider_real.db` (persistent storage, a network share, where
+  WAL is not reliable) to `/tmp` and served from the copy, which meant
+  every reviewer decision was lost on restart. That is gone with SQLite.
 - **`requirements.txt` pins `torch==2.4.1+cpu`** from PyTorch's CPU
   index. Unpinned, `sentence-transformers` pulls the default Linux build,
   several GB of CUDA libraries on a server with no GPU - and App Service
@@ -1010,9 +1228,14 @@ live in this repo, because a pipeline cannot guess them:
   local runs and the tests are unchanged. `/health` is never gated - an
   uptime probe cannot send headers. `/docs` still loads, but its calls
   need the key; restrict it at the host if it should not be public.
-- **`app.py` uses `EDSIDER_DB`.** It used to list only `data/*.db`, so a
-  database anywhere else - `/tmp` on the server - showed "No database
-  found" next to a perfectly good `EDSIDER_DB`.
+- **`app.py` uses `EDSIDER_DB`** - one configured database, named in the
+  sidebar, with a clear error when it is unset or unreachable. It used to
+  list `data/*.db` and report "No database found" next to a perfectly
+  good `EDSIDER_DB` pointing elsewhere; a PostgreSQL database cannot be
+  found by looking in a folder at all.
+- **The App Service needs network access to the database server.** On
+  Azure PostgreSQL that means a firewall rule for the web app's outbound
+  addresses, or the two on the same virtual network.
 - **`.gitattributes` keeps `*.sh` at LF.** This repo is edited on
   Windows, and a CRLF `startup.sh` fails under bash before its first line.
 
@@ -1056,7 +1279,8 @@ and Word files are unaffected; full OCR needs a custom container.
    - the contrast list, the entity list - is still English-only text
    and has not been proven, or even looked at, for either script.
 6. Mine the contrast list from the bank instead of hand-writing it.
-7. Move to PostgreSQL + pgvector - deferred until concurrent *write*
-   volume actually needs it; WAL mode covers the read-heavy service
-   traffic for now, and `store.py` stays the only file that changes
-   when this happens.
+7. PostgreSQL - **done**, see "One database technology" above. What is
+   left of it: pgvector allow-listed on the Azure server (the column is
+   `bytea` until then), a role owning only `edsider_ai` instead of the
+   server administrator, and the ANN index that pgvector makes possible,
+   which is the real answer to the O(n^2) sweep.

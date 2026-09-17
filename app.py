@@ -27,14 +27,41 @@ st.set_page_config(page_title="EdSider AI", layout="wide")
 
 # ---------------------------------------------------------------- data
 
-# Keyed on the database name so switching banks invalidates the cache
-# rather than showing the previous one's questions.
-@st.cache_data(ttl=5)
+# Everything below is keyed on the database name, so a different bank is
+# a different cache entry rather than the previous one's questions.
+#
+# How long the app trusts what it has loaded. The bank changes when
+# sync.py or embed.py runs, not while someone is reviewing; the sidebar's
+# "Reload from database" is there for the moment it has.
+BANK_TTL = 30 * 60
+
+
+@st.cache_resource(ttl=BANK_TTL, show_spinner="Loading the question bank...")
 def load_rows(db_name):
+    """The comparable, fingerprinted bank, loaded once and shared.
+
+    This was cache_data with a 5-second lifetime - harmless on SQLite, but
+    against the Azure server it meant re-downloading 16,084 questions and
+    49 MB of fingerprints (95 s) every few clicks, and copying all of it
+    into every rerun on top. cache_resource hands every rerun the same
+    list; nothing on any page modifies it.
+    """
     with store.connect() as conn:
         rows = store.comparable_questions(conn, DEFAULT_MODEL)
         total = store.count(conn)
-    return [dict(r) for r in rows], total
+    return rows, total
+
+
+@st.cache_resource(ttl=BANK_TTL)
+def load_index(db_name):
+    """The bank's fingerprints as one matrix, built once.
+
+    check_one, search and find_pairs each build this themselves when
+    handed plain rows - stacking 16,084 fingerprints on every search and
+    every duplicate check. Handed the index, they reuse it.
+    """
+    rows, _ = load_rows(db_name)
+    return dedupe.VectorIndex(rows)
 
 
 @st.cache_resource
@@ -46,38 +73,67 @@ def get_embedder():
 @st.cache_data(ttl=300)
 def sweep(db_name, threshold, use_guards):
     """A full sweep is expensive on a real bank - cache it per setting."""
-    rows, _ = load_rows(db_name)
-    return dedupe.find_pairs(rows, use_guards=use_guards, threshold=threshold)
+    return dedupe.find_pairs(load_index(db_name), use_guards=use_guards,
+                             threshold=threshold)
 
 
-@st.cache_data(ttl=15)
+@st.cache_resource(ttl=BANK_TTL, show_spinner="Loading the papers...")
 def load_assessment_groups(db_name):
     """Comparable, fingerprinted questions grouped by the paper they're
     on. Only groups of more than one question can possibly contain a
     within-paper repeat, so smaller ones are dropped here rather than
-    compared for nothing."""
+    compared for nothing.
+
+    cache_resource, not cache_data: cache_data hands every rerun its own
+    copy, and on the real bank these groups are 274 MB of rows - a
+    second of copying on every click. Nothing on the page modifies the
+    rows, so one shared copy is safe."""
+    # One query for every paper. It was one query per paper - 1,960 round
+    # trips, a quarter of an hour against the Azure server.
     with store.connect() as conn:
-        ids = store.assessment_ids(conn)
-        groups = {
-            aid: [dict(r) for r in
-                 store.questions_in_assessment(conn, aid, DEFAULT_MODEL)]
-            for aid in ids
-        }
+        groups = store.questions_in_assessments(conn, DEFAULT_MODEL)
     return {aid: rs for aid, rs in groups.items() if len(rs) > 1}
 
 
-@st.cache_data(ttl=15)
-def other_assessments(db_name, qid):
-    """Which papers a question appears on - informational context, not a
-    flag. The same question on two different papers is normal; it is
-    only a problem when it repeats on the SAME paper (see the
-    'Duplicates within a paper' page)."""
+@st.cache_data(ttl=300, max_entries=20)
+def paper_repeats(group_key, _groups):
+    """Repeats on each paper, and the shared-passage notes for them.
+
+    Cached because every click on the page - a verdict, a checkbox, a
+    filter - reruns the script, and this is seconds of work on the real
+    bank. `group_key` names exactly which questions on which papers are
+    being compared (database and filters included), so a different
+    filter is a different entry; `_groups` itself is not hashed, which is
+    what the leading underscore tells Streamlit. Reviewed pairs are
+    removed after this, by split_reviewed(), so a verdict still takes
+    effect on the next rerun without waiting for the cache.
+    """
+    results = dedupe.find_within_assessment_duplicates(_groups)
+    # Informational only - does not change results or scores. See
+    # dedupe.find_shared_passage_groups() for why this is content-based
+    # (a real shared block) rather than "consecutive question numbers".
+    # Only papers with a repeat get a note, so only they are grouped.
+    papers_hit = {p["assessment_id"] for p in results}
+    passage_groups = {aid: dedupe.find_shared_passage_groups(_groups[aid])
+                      for aid in papers_hit}
+    return results, passage_groups
+
+
+@st.cache_resource(ttl=BANK_TTL)
+def all_assessment_links(db_name):
+    """Which papers each question appears on - informational context,
+    not a flag. The same question on two different papers is normal; it
+    is only a problem when it repeats on the SAME paper (see the
+    'Duplicates within a paper' page).
+
+    Loaded for the whole bank at once: asking per question was 100 round
+    trips for one page of 50 pairs."""
     with store.connect() as conn:
-        return [dict(r) for r in store.assessments_for_question(conn, qid)]
+        return store.assessment_links(conn)
 
 
 def assessment_caption(qid):
-    links = other_assessments(store.DB_PATH.name, qid)
+    links = all_assessment_links(store.display_name()).get(qid)
     if not links:
         return
     where = ", ".join(f"#{l['assessment_id']}" for l in links)
@@ -93,69 +149,176 @@ def title_caption(q):
         st.caption(f"Title: {title}")
 
 
+# ------------------------------------------------------------ decisions
+
+def split_reviewed(pairs, show_reviewed):
+    """Drop pairs that already have a verdict, so a reviewer is not
+    shown the same pair again on every visit.
+
+    Returns (pairs to show, how many were already reviewed, how many
+    were skipped this session). A reviewed pair is kept only when asked
+    for, carrying its verdict so the page can say so."""
+    with store.connect() as conn:
+        decided = store.current_decisions(conn)
+    skipped = st.session_state.get("skipped_pairs", set())
+    visible, n_reviewed, n_skipped = [], 0, 0
+    for p in pairs:
+        key = store.pair_key(p["a"], p["b"])
+        if key in decided:
+            n_reviewed += 1
+            if show_reviewed:
+                visible.append({**p, "decision": decided[key]})
+        elif key in skipped:
+            n_skipped += 1
+        else:
+            visible.append(p)
+    return visible, n_reviewed, n_skipped
+
+
+def verdict_word(verdict):
+    return {"duplicate": "Duplicate", "distinct": "Not a duplicate"}.get(
+        verdict, verdict)
+
+
+def show_last_decision():
+    """A verdict reruns the page so its pair leaves the list at once;
+    without this the reviewer would see the pair vanish with no sign it
+    was saved, or what words were captured."""
+    msg = st.session_state.pop("last_decision", None)
+    if not msg:
+        return
+    st.toast(msg["text"])
+    st.success(msg["text"] + " It is listed on the **Reviewed decisions** page.")
+    only_a, only_b = msg.get("terms") or ([], [])
+    if only_a or only_b:
+        st.caption(
+            "Contrasting words captured - only in the first question: "
+            f"{', '.join(only_a[:10]) or '(none)'}; only in the second: "
+            f"{', '.join(only_b[:10]) or '(none)'}"
+        )
+
+
+def decision_note(pair):
+    d = pair.get("decision")
+    if d:
+        st.info(
+            f"Already reviewed: **{verdict_word(d['verdict'])}**, by "
+            f"{d['decided_by']} at {d['decided_at']}. Choosing again "
+            "replaces that verdict."
+        )
+
+
+def decision_buttons(pair, qa, qb, key, guard_flags):
+    """Confirm / Not a duplicate / Skip for one flagged pair.
+
+    A verdict is saved and the page reruns, so the pair disappears from
+    the list straight away. Skip saves nothing - a skip is not a verdict
+    - and only hides the pair until the app is reopened."""
+    label = f"{pair['a']} vs {pair['b']}"
+    d1, d2, d3, _ = st.columns([1, 1, 1, 3])
+    if d1.button("Confirm duplicate", key=f"dup_{key}"):
+        with store.connect() as conn:
+            store.record_decision(
+                conn, pair["a"], pair["b"], "duplicate", "reviewer",
+                pair["score"], guard_flags,
+            )
+        st.session_state["last_decision"] = {
+            "text": f"{label} saved as a duplicate."}
+        st.rerun()
+    if d2.button("Not a duplicate", key=f"not_{key}"):
+        # The system flagged these as similar - whatever vocabulary
+        # differs between them is a candidate reason why they are not
+        # the same question, worth capturing for later guard tuning even
+        # though nothing acts on it automatically.
+        only_a, only_b = guards.candidate_contrast_terms(qa["text"], qb["text"])
+        with store.connect() as conn:
+            store.record_decision(
+                conn, pair["a"], pair["b"], "distinct", "reviewer",
+                pair["score"], guard_flags,
+                candidate_contrast_terms=(only_a, only_b),
+            )
+        st.session_state["last_decision"] = {
+            "text": f"{label} saved as not a duplicate.",
+            "terms": (only_a, only_b)}
+        st.rerun()
+    if d3.button("Skip", key=f"skip_{key}"):
+        st.session_state.setdefault("skipped_pairs", set()).add(
+            store.pair_key(pair["a"], pair["b"]))
+        st.rerun()
+
+
 # ------------------------------------------------------------- sidebar
 
 st.sidebar.title("EdSider AI")
 
-# Which bank is open has to be visible and switchable - launching
-# without EDSIDER_DB set should not be a crash just because store.py
-# refuses to guess a database on its own (see store.py's DB_PATH
-# comment). If nothing has been configured yet but a bank exists on
-# disk, open the first one found rather than leave DB_PATH as None.
-#
-# The bank EDSIDER_DB names comes first, wherever it is. On a server it is
-# usually not under data/ at all - startup.sh serves a copy from local
-# disk - and looking only in data/ reported "no database found" right
-# next to a perfectly good one.
-bank_paths = {}
-if os.environ.get("EDSIDER_DB") and Path(os.environ["EDSIDER_DB"]).is_file():
-    configured = Path(os.environ["EDSIDER_DB"])
-    bank_paths[configured.name] = configured
-for p in sorted((ROOT / "data").glob("*.db")):
-    bank_paths.setdefault(p.name, p)
-banks = list(bank_paths)
-
-if banks and store.DB_PATH is None:
-    store.use_database(bank_paths[banks[0]])
-
-if not banks:
+# One bank, named by EDSIDER_DB - a PostgreSQL connection string. The
+# selector over data/*.db went with SQLite: a PostgreSQL database is not
+# something to discover by looking in a folder, and a server is
+# configured, not browsed. A different bank (a staging copy) is a
+# different EDSIDER_DB, or a different EDSIDER_SCHEMA on the same server.
+if store.DSN is None:
     st.title("EdSider AI")
     st.error(
-        "No database found - neither `EDSIDER_DB` nor `data/*.db` points "
-        "at one. Build one first:\n\n"
-        "```\n$env:EDSIDER_DB = \"data/edsider_real.db\"\n"
+        "No database configured. Set `EDSIDER_DB` to a PostgreSQL "
+        "connection string and restart:\n\n"
+        "```\n$env:EDSIDER_DB = "
+        "\"postgresql://edsider_ai:PASSWORD@localhost:5432/edsider_ai\"\n"
         "python scripts/sync.py --full\n"
-        "python scripts/embed.py --language English\n```"
+        "python scripts/embed.py --language English\n```\n\n"
+        "`.env.example` shows the settings; `.env` itself is gitignored."
     )
     st.stop()
 
-current = store.DB_PATH.name
-chosen = st.sidebar.selectbox(
-    "Question bank", banks,
-    index=banks.index(current) if current in banks else 0,
-)
-if chosen != store.DB_PATH.name:
-    store.use_database(bank_paths[chosen])
-    st.rerun()
+@st.cache_resource(ttl=60, show_spinner="Connecting to the database...")
+def database_problem(db_name):
+    """None when the database answers, else why not. Checked once a
+    minute rather than on every click: each check is a round trip, and a
+    click already makes the ones it needs."""
+    try:
+        with store.connect():
+            return None
+    except Exception as unreachable:  # noqa: BLE001 - shown to the reviewer
+        return str(unreachable)
+
+
+problem = database_problem(store.display_name())
+if problem:
+    database_problem.clear()  # try again on the next click, not in a minute
+    st.title("EdSider AI")
+    st.error(
+        f"Cannot reach the database named by `EDSIDER_DB`:\n\n"
+        f"```\n{problem}\n```"
+    )
+    st.stop()
 
 page = st.sidebar.radio(
     "View",
     ["Check a new question", "Find duplicates", "Duplicates within a paper",
-     "Search by meaning", "Question bank", "Paper intake"],
+     "Reviewed decisions", "Search by meaning", "Question bank",
+     "Paper intake"],
 )
 
-rows, total_questions = load_rows(store.DB_PATH.name)
+rows, total_questions = load_rows(store.display_name())
 
 st.sidebar.divider()
-st.sidebar.caption(f"Database: {store.DB_PATH.name}")
+st.sidebar.caption(f"Database: {store.display_name()}")
 st.sidebar.caption(f"{total_questions:,} questions loaded")
 st.sidebar.caption(f"{len(rows):,} comparable, with fingerprints")
 st.sidebar.caption(f"Model: {DEFAULT_MODEL.split('/')[-1]}")
+# The bank is held for BANK_TTL; this is for right after sync.py or
+# embed.py has added questions and someone wants them now.
+if st.sidebar.button("Reload from database", use_container_width=True):
+    # The bank only - not the embedding model, which is the same model
+    # whatever the database holds and takes the longest to load again.
+    for cached in (load_rows, load_index, load_assessment_groups,
+                   all_assessment_links, sweep, paper_repeats):
+        cached.clear()
+    st.rerun()
 
 if not rows:
     st.title("EdSider AI")
     st.error(
-        f"**{store.DB_PATH.name}** holds {total_questions:,} questions but "
+        f"**{store.display_name()}** holds {total_questions:,} questions but "
         "none of them have fingerprints yet.\n\n"
         "Either pick another bank in the sidebar, or build them:\n\n"
         "```\npython scripts/embed.py\n```"
@@ -230,7 +393,8 @@ if page == "Check a new question":
                     "subject": subject or None,
                 }
                 matches = dedupe.check_one(
-                    candidate, rows, use_guards=check_guards
+                    candidate, load_index(store.display_name()),
+                    use_guards=check_guards,
                 )
 
             flagged = [m for m in matches
@@ -316,8 +480,8 @@ elif page == "Find duplicates":
         )
 
     with st.spinner(f"Comparing {len(rows):,} questions..."):
-        with_guards = sweep(store.DB_PATH.name, threshold, True)
-        without_guards = sweep(store.DB_PATH.name, threshold, False)
+        with_guards = sweep(store.display_name(), threshold, True)
+        without_guards = sweep(store.display_name(), threshold, False)
 
     # -- the comparison that matters --
     a, b, c = st.columns(3)
@@ -338,19 +502,34 @@ elif page == "Find duplicates":
     results = with_guards if use_guards else without_guards
     by_id = {r["id"]: r for r in rows}
 
+    show_reviewed = st.checkbox(
+        "Also show pairs already reviewed", value=False,
+        help="Reviewed pairs are hidden so the same pair is not reviewed "
+             "twice. Every verdict is on the Reviewed decisions page.")
+    pending, n_reviewed, n_skipped = split_reviewed(results, show_reviewed)
+    show_last_decision()
+    if n_reviewed or n_skipped:
+        st.caption(
+            f"{n_reviewed:,} already reviewed "
+            f"({'shown' if show_reviewed else 'hidden'}), "
+            f"{n_skipped:,} skipped this session."
+        )
+
     if not results:
         st.success("No possible duplicates found at this threshold.")
+    elif not pending:
+        st.success("Every flagged pair at this threshold has been reviewed.")
 
     # Rendering thousands of pairs makes the page unusable. Highest
     # scores first, so the top of the list is where a reviewer starts.
     SHOW = 50
-    if len(results) > SHOW:
+    if len(pending) > SHOW:
         st.caption(
-            f"Showing the {SHOW} highest-scoring of {len(results):,} pairs. "
+            f"Showing the {SHOW} highest-scoring of {len(pending):,} pairs. "
             "Raise the threshold to narrow this down."
         )
 
-    for pair in results[:SHOW]:
+    for pair in pending[:SHOW]:
         qa, qb = by_id[pair["a"]], by_id[pair["b"]]
 
         colour = {
@@ -363,6 +542,8 @@ elif page == "Find duplicates":
             f"### :{colour}[{pair['verdict']}] &nbsp; "
             f"{pair['score']:.0%} similar"
         )
+
+        decision_note(pair)
 
         left, right = st.columns(2)
         for col, q in ((left, qa), (right, qb)):
@@ -384,35 +565,8 @@ elif page == "Find duplicates":
                 + "\n".join(f"- {r}" for r in pair["reasons"])
             )
 
-        d1, d2, d3, _ = st.columns([1, 1, 1, 3])
-        key = f"{pair['a']}_{pair['b']}"
-        if d1.button("Confirm duplicate", key=f"dup_{key}"):
-            with store.connect() as conn:
-                store.record_decision(
-                    conn, pair["a"], pair["b"], "duplicate", "reviewer",
-                    pair["score"], "; ".join(pair["reasons"]),
-                )
-            st.success("Recorded as duplicate.")
-        if d2.button("Not a duplicate", key=f"not_{key}"):
-            # The system flagged these as similar - whatever vocabulary
-            # differs between them is a candidate reason why they are
-            # not the same question, worth capturing for later guard
-            # tuning even though nothing acts on it automatically.
-            only_a, only_b = guards.candidate_contrast_terms(qa["text"], qb["text"])
-            with store.connect() as conn:
-                store.record_decision(
-                    conn, pair["a"], pair["b"], "distinct", "reviewer",
-                    pair["score"], "; ".join(pair["reasons"]),
-                    candidate_contrast_terms=(only_a, only_b),
-                )
-            st.success("Recorded as distinct.")
-            if only_a or only_b:
-                st.caption(
-                    f"Captured as a candidate distinguishing pair: "
-                    f"{', '.join(only_a[:5]) or '(none)'} vs "
-                    f"{', '.join(only_b[:5]) or '(none)'}"
-                )
-        d3.button("Skip", key=f"skip_{key}")
+        decision_buttons(pair, qa, qb, f"{pair['a']}_{pair['b']}",
+                         "; ".join(pair["reasons"]))
 
         st.divider()
 
@@ -433,7 +587,7 @@ elif page == "Duplicates within a paper":
         "'Also appears on assessment(s)' note on the other pages for that."
     )
 
-    groups_all = load_assessment_groups(store.DB_PATH.name)
+    groups_all = load_assessment_groups(store.display_name())
 
     if not groups_all:
         st.info(
@@ -493,20 +647,11 @@ elif page == "Duplicates within a paper":
                 "these filters."
             )
         else:
+            group_key = (store.display_name(), tuple(
+                (aid, tuple(r["id"] for r in rs))
+                for aid, rs in groups.items()))
             with st.spinner(f"Checking {len(groups):,} papers..."):
-                results = dedupe.find_within_assessment_duplicates(groups)
-                # Informational only - does not change results or scores.
-                # See dedupe.find_shared_passage_groups() docstring for why
-                # this is content-based (a real shared block) rather than
-                # "consecutive question numbers": numbering has gaps (the
-                # #1127 pair below is Q31/Q33, not Q31/Q32), and two
-                # genuinely copy-pasted consecutive questions would be
-                # exactly the mistake this page exists to catch, not
-                # something to wave through on position alone.
-                passage_groups = {
-                    aid: dedupe.find_shared_passage_groups(rs)
-                    for aid, rs in groups.items()
-                }
+                results, passage_groups = paper_repeats(group_key, groups)
 
             def shared_passage_group(aid, qid):
                 for g in passage_groups.get(aid, []):
@@ -514,19 +659,31 @@ elif page == "Duplicates within a paper":
                         return g
                 return None
 
-            a, b = st.columns(2)
+            show_reviewed = st.checkbox(
+                "Also show pairs already reviewed", value=False,
+                help="Reviewed pairs are hidden so the same pair is not "
+                     "reviewed twice. Every verdict is on the Reviewed "
+                     "decisions page.")
+            pending, n_reviewed, n_skipped = split_reviewed(
+                results, show_reviewed)
+
+            a, b, c = st.columns(3)
             a.metric("Papers checked", f"{len(groups):,}")
             b.metric("Repeats found", f"{len(results):,}")
+            c.metric("Still to review", f"{len(results) - n_reviewed:,}")
 
             st.divider()
+            show_last_decision()
 
             if not results:
                 st.success("No paper repeats a question.")
+            elif not pending:
+                st.success("Every repeat found has been reviewed.")
 
             by_assessment = {aid: {r["id"]: r for r in rs}
                              for aid, rs in groups.items()}
 
-            for pair in results:
+            for pair in pending:
                 aid = pair["assessment_id"]
                 by_id = by_assessment[aid]
                 qa, qb = by_id[pair["a"]], by_id[pair["b"]]
@@ -535,6 +692,8 @@ elif page == "Duplicates within a paper":
                     f"### :red[REPEAT ON ASSESSMENT #{aid}] &nbsp; "
                     f"{pair['score']:.0%} similar"
                 )
+
+                decision_note(pair)
 
                 cluster = shared_passage_group(aid, pair["a"])
                 if cluster:
@@ -569,34 +728,163 @@ elif page == "Duplicates within a paper":
                             f"{q['topic'] or 'untagged'}"
                         )
 
-                d1, d2, d3, _ = st.columns([1, 1, 1, 3])
-                key = f"paper_{aid}_{pair['a']}_{pair['b']}"
-                if d1.button("Confirm duplicate", key=f"dup_{key}"):
-                    with store.connect() as conn:
-                        store.record_decision(
-                            conn, pair["a"], pair["b"], "duplicate", "reviewer",
-                            pair["score"], "within-assessment repeat",
-                        )
-                    st.success("Recorded as duplicate.")
-                if d2.button("Not a duplicate", key=f"not_{key}"):
-                    only_a, only_b = guards.candidate_contrast_terms(
-                        qa["text"], qb["text"])
-                    with store.connect() as conn:
-                        store.record_decision(
-                            conn, pair["a"], pair["b"], "distinct", "reviewer",
-                            pair["score"], "within-assessment repeat",
-                            candidate_contrast_terms=(only_a, only_b),
-                        )
-                    st.success("Recorded as distinct.")
-                    if only_a or only_b:
-                        st.caption(
-                            f"Captured as a candidate distinguishing pair: "
-                            f"{', '.join(only_a[:5]) or '(none)'} vs "
-                            f"{', '.join(only_b[:5]) or '(none)'}"
-                        )
-                d3.button("Skip", key=f"skip_{key}")
+                decision_buttons(pair, qa, qb,
+                                 f"paper_{aid}_{pair['a']}_{pair['b']}",
+                                 "within-assessment repeat")
 
                 st.divider()
+
+# --------------------------------------------------- reviewed decisions
+
+elif page == "Reviewed decisions":
+    st.title("Reviewed decisions")
+    st.caption(
+        "Every verdict given on the Find duplicates and Duplicates within "
+        "a paper pages. A reviewed pair is hidden on those pages so it is "
+        "not reviewed again; undo it here to send it back."
+    )
+
+    undone = st.session_state.pop("undo_message", None)
+    if undone:
+        st.success(undone)
+
+    with store.connect() as conn:
+        decisions = store.list_decisions(conn)
+        schema = store.table_schema(conn, "decisions")
+
+    n_dup = sum(d["verdict"] == "duplicate" for d in decisions)
+    n_distinct = sum(d["verdict"] == "distinct" for d in decisions)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Pairs reviewed", f"{len(decisions):,}")
+    m2.metric("Duplicate", f"{n_dup:,}")
+    m3.metric("Not a duplicate", f"{n_distinct:,}")
+
+    with st.expander("How this table is built"):
+        st.markdown(
+            "1. **Find duplicates** or **Duplicates within a paper** shows "
+            "a flagged pair.\n"
+            "2. **Confirm duplicate** or **Not a duplicate** adds one row "
+            "to the `decisions` table: both question ids, the score shown, "
+            "the safety-check notes, the verdict, who and when.\n"
+            "3. **Not a duplicate** also stores the *contrasting words* - "
+            "see the next section.\n"
+            "4. Every click is a new row, so a changed mind leaves a "
+            "history; the newest row for a pair is its verdict, and that "
+            "pair is hidden on the review pages from then on.\n"
+            "5. **Skip** saves nothing. It hides the pair until the app is "
+            "reopened.\n"
+            "6. **Undo** below deletes the pair's rows, and it shows up "
+            "for review again.\n\n"
+            "`store.py` creates the table the first time the app opens a "
+            "database. This is its definition, read from the database "
+            "itself:"
+        )
+        st.code(schema or "(no decisions table yet)", language="sql")
+        st.caption(
+            f"The database is `{store.display_name()}`. To browse it outside "
+            "the app, connect to it with pgAdmin or `psql` and read the "
+            "`decisions` table there."
+        )
+
+    with st.expander("How the contrasting words are picked - try it"):
+        st.markdown(
+            "When a pair is marked **Not a duplicate**, the system saves "
+            "the words that could explain the difference:\n\n"
+            "1. Take every word of 3 or more letters from each question, "
+            "in lower case (numbers and symbols are left out - the "
+            "numbers check covers those).\n"
+            "2. Drop common words that never tell two questions apart "
+            "(listed below).\n"
+            "3. Keep the words found only in the first question, and the "
+            "words found only in the second.\n\n"
+            "Nothing uses these automatically. Words that keep turning "
+            "up across many rejected pairs - *area* vs *perimeter* - are "
+            "the ones a person can later add to the safety checks' "
+            "opposite-concepts list."
+        )
+        st.caption("Common words ignored: "
+                   + ", ".join(sorted(guards._STOPWORDS)))
+        t1, t2 = st.columns(2)
+        try_a = t1.text_area(
+            "First question",
+            "Calculate the area of a rectangle 12 cm by 5 cm")
+        try_b = t2.text_area(
+            "Second question",
+            "Calculate the perimeter of a rectangle 12 cm by 5 cm")
+        only_a, only_b = guards.candidate_contrast_terms(try_a, try_b)
+        t1.markdown("**Only in the first:** " + (", ".join(only_a) or "(none)"))
+        t2.markdown("**Only in the second:** " + (", ".join(only_b) or "(none)"))
+        known = guards.find_contrast(try_a, try_b)
+        if known:
+            st.info(
+                f"The safety checks already know **{known[0]}** vs "
+                f"**{known[1]}** - this pair would be demoted "
+                "automatically.")
+
+    st.divider()
+
+    if not decisions:
+        st.info(
+            "No decisions yet. Review pairs on Find duplicates or "
+            "Duplicates within a paper and they appear here.")
+        st.stop()
+
+    shown = st.radio("Show", ["All", "Duplicate", "Not a duplicate"],
+                     horizontal=True)
+    wanted = {"All": None, "Duplicate": "duplicate",
+              "Not a duplicate": "distinct"}[shown]
+    listed = [d for d in decisions if wanted is None or d["verdict"] == wanted]
+
+    table = pd.DataFrame([{
+        "Decided at": d["decided_at"],
+        "Verdict": verdict_word(d["verdict"]),
+        "Score": d["similarity"],
+        "Question A": d["question_a"],
+        "Question A text": d["text_a"],
+        "Question B": d["question_b"],
+        "Question B text": d["text_b"],
+        "Words only in A": ", ".join(d["only_in_a"]),
+        "Words only in B": ", ".join(d["only_in_b"]),
+        "Safety-check notes": d["guard_flags"],
+        "Decided by": d["decided_by"],
+    } for d in listed])
+    st.dataframe(
+        table, use_container_width=True, hide_index=True,
+        column_config={"Score": st.column_config.NumberColumn(format="%.3f")},
+    )
+    st.download_button(
+        "Download as CSV", table.to_csv(index=False).encode("utf-8"),
+        file_name="decisions.csv", mime="text/csv")
+
+    st.subheader("Check or undo a decision")
+    SHOW = 100
+    if len(listed) > SHOW:
+        st.caption(f"The {SHOW} most recent of {len(listed):,}.")
+    for d in listed[:SHOW]:
+        score = f"{d['similarity']:.0%}" if d["similarity"] is not None else "-"
+        with st.expander(
+                f"{verdict_word(d['verdict'])} - {d['question_a']} vs "
+                f"{d['question_b']} - {score} similar"):
+            left, right = st.columns(2)
+            for col, qid, text, words in (
+                    (left, d["question_a"], d["text_a"], d["only_in_a"]),
+                    (right, d["question_b"], d["text_b"], d["only_in_b"])):
+                with col:
+                    st.markdown(f"**{qid}**")
+                    st.write(text or "(this question is not in this bank)")
+                    if d["verdict"] == "distinct":
+                        st.caption("Words only in this question: "
+                                   + (", ".join(words) or "(none)"))
+            if d["guard_flags"]:
+                st.caption(f"Safety-check notes: {d['guard_flags']}")
+            st.caption(f"Decided by {d['decided_by']} at {d['decided_at']}")
+            if st.button("Undo - send back for review", key=f"undo_{d['id']}"):
+                with store.connect() as conn:
+                    store.undo_decision(conn, d["question_a"], d["question_b"])
+                st.session_state["undo_message"] = (
+                    f"{d['question_a']} vs {d['question_b']} sent back for "
+                    "review.")
+                st.rerun()
 
 # ---------------------------------------------------- search by meaning
 
@@ -625,7 +913,8 @@ elif page == "Search by meaning":
         with st.spinner("Searching..."):
             embedder = get_embedder()
             qvec = embedder.encode(query, is_query=True)[0]
-            hits = dedupe.search(qvec, rows, top_k=5)
+            hits = dedupe.search(qvec, load_index(store.display_name()),
+                                 top_k=5)
 
         st.divider()
         for hit in hits:
@@ -872,20 +1161,39 @@ elif page == "Paper intake":
     # Parts in paper order, questions in order within each part - so a
     # question added by hand to Part I shows under Part I, not at the end.
     part_order = {s["label"]: n for n, s in enumerate(sections)}
+    by_seq = {d["seq"]: d for d in drafts}
+
+    def tree_path(d):
+        """A draft's position as the seq of each question above it, so a
+        part added by hand sorts under its own question rather than at
+        the end of the paper (the extractor's own parts already follow
+        their question by seq, but a later one has a higher seq)."""
+        keys, cur = [], d
+        while cur is not None and len(keys) <= intake_extract.MAX_SUB_DEPTH + 1:
+            keys.append(cur["seq"])
+            cur = by_seq.get(cur.get("parent_seq"))
+        return tuple(reversed(keys))
+
     drafts.sort(key=lambda d: (part_order.get(d.get("section"), len(part_order)),
-                               d["seq"]))
+                               tree_path(d)))
     by_label = {s["label"]: s for s in sections}
+    # Which drafts are a question WITH parts - their own text is the
+    # shared stem rather than a question to answer on its own.
+    parents_of = {d["parent_seq"] for d in drafts if d.get("parent_seq")}
     shown = None
     for i, d in enumerate(drafts):
         if d.get("section") and d["section"] != shown:
             shown = d["section"]
             part = by_label.get(shown, {})
             st.header(shown)
+            here = [x for x in drafts if x.get("section") == shown]
+            n_questions = sum(1 for x in here if not (x.get("depth") or 0))
+            n_parts = len(here) - n_questions
             about = [
                 part.get("heading") if part.get("heading") != shown else None,
                 intake_extract.KIND_LABELS.get(part.get("kind")),
-                f"{sum(1 for x in drafts if x.get('section') == shown)} "
-                "question(s)",
+                f"{n_questions} question(s)",
+                f"{n_parts} part(s)" if n_parts else None,
                 f"{part['marks_each']} marks each"
                 if part.get("marks_each") else None,
             ]
@@ -894,10 +1202,24 @@ elif page == "Paper intake":
                 with st.expander("Instructions for this part"):
                     st.text(part["instructions"])
 
-        with st.container(border=True):
+        # A question's parts sit indented under it, each with its own
+        # text, marks and answer - that is how the paper marks them, and
+        # how EdSider stores them (a parent row plus child rows).
+        depth = d.get("depth") or 0
+        if depth:
+            _, body = st.columns([0.06 * depth, 1])
+            card = body.container(border=True)
+        else:
+            card = st.container(border=True)
+
+        with card:
             head, rm = st.columns([5, 1])
-            label = (f"Question {d['question_number']}" if d["question_number"]
-                     else f"Question {i + 1} (no number found)")
+            if depth:
+                label = f"Part {d['question_number']}"
+            else:
+                label = (f"Question {d['question_number']}"
+                         if d["question_number"]
+                         else f"Question {i + 1} (no number found)")
             if d["extraction_confidence"] == "low":
                 label += "  -  low confidence"
             head.markdown(f"**{label}**")
@@ -907,10 +1229,18 @@ elif page == "Paper intake":
                     store.delete_intake_question(conn, d["id"])
                 st.rerun()
 
+            if d["seq"] in parents_of:
+                st.caption(
+                    "Shared text for the parts below - the scenario or "
+                    "diagram they all refer to. Each part is answered "
+                    "separately."
+                )
             st.text_area(
                 "Question text", value=d["text"] or "",
-                key=f"iq_{d['id']}_text", height=140,
+                key=f"iq_{d['id']}_text", height=110 if depth else 140,
                 label_visibility="collapsed",
+                placeholder="No shared text - the parts below are the question"
+                if d["seq"] in parents_of else None,
             )
             m1, m2, _ = st.columns([1, 1, 3])
             m1.number_input(
@@ -950,6 +1280,24 @@ elif page == "Paper intake":
         part_labels = [s["label"] for s in sections if s["label"]]
         if part_labels:
             st.selectbox("Part", part_labels, key="iq_new_section")
+
+        # A part of an existing question, not only a question of its own -
+        # the same nesting the extractor produces, for a part it missed.
+        def parent_label(seq):
+            if seq is None:
+                return "A question on its own"
+            p = by_seq[seq]
+            name = (f"part {p['question_number']}" if p.get("depth")
+                    else f"question {p['question_number'] or p['seq']}")
+            return f"A part of {name}"
+
+        st.selectbox(
+            "Add it as", [None] + [d["seq"] for d in drafts
+                                   if (d.get("depth") or 0)
+                                   < intake_extract.MAX_SUB_DEPTH],
+            format_func=parent_label, key="iq_new_parent",
+            help="A part gets its own text, marks and answer, indented "
+                 "under the question it belongs to.")
         st.text_input("Number (optional)", key="iq_new_number")
         st.text_area("Question text", key="iq_new_text", height=120)
         st.number_input("Marks", min_value=0, max_value=100, step=1, value=0,
@@ -959,16 +1307,28 @@ elif page == "Paper intake":
             if not new_text:
                 st.warning("Enter the question text first.")
             else:
+                parent = by_seq.get(st.session_state.get("iq_new_parent"))
+                number = st.session_state["iq_new_number"].strip() or None
+                if parent and not number:
+                    # Name it the way the paper would: the question's own
+                    # number and the next letter after its existing parts.
+                    siblings = sum(1 for d in drafts
+                                   if d.get("parent_seq") == parent["seq"])
+                    number = (f"{parent['question_number'] or ''}"
+                              f"({chr(ord('a') + siblings)})")
                 with store.connect() as conn:
                     seq = max((d["seq"] for d in drafts), default=0) + 1
                     m = st.session_state["iq_new_marks"]
                     store.add_intake_question(
                         conn, doc_id, seq, new_text,
-                        question_number=st.session_state["iq_new_number"] or None,
+                        question_number=number,
                         grade=doc["paper_grade"], subject=doc["paper_subject"],
                         marks=int(m) if m else None,
-                        section=(st.session_state["iq_new_section"]
-                                 if part_labels else None),
+                        section=(parent["section"] if parent else
+                                 (st.session_state["iq_new_section"]
+                                  if part_labels else None)),
+                        parent_seq=parent["seq"] if parent else None,
+                        depth=((parent.get("depth") or 0) + 1) if parent else 0,
                     )
                 st.rerun()
 
@@ -988,7 +1348,14 @@ elif page == "Paper intake":
 
     if st.button("Check for duplicates", disabled=not all_reviewed):
         with store.connect() as conn:
-            fresh = [dict(q) for q in store.intake_questions(conn, doc_id)]
+            everything = [dict(q) for q in store.intake_questions(conn, doc_id)]
+        # A question WITH parts holds only their shared stem ("Consider
+        # the following scenario: ..."), and the parts are the questions
+        # actually asked. Comparing a stem against the bank finds nothing
+        # useful and buries the real comparisons.
+        stems = {d["parent_seq"] for d in everything if d.get("parent_seq")}
+        fresh = [d for d in everything
+                 if d["seq"] not in stems and (d["text"] or "").strip()]
         with st.spinner("Embedding and comparing..."):
             out = intake_review.check_batch(fresh, get_embedder())
         with store.connect() as conn:
