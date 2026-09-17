@@ -1,6 +1,7 @@
 # CI Pipeline - EdSider AI Build & Test
 trigger:
-  - main
+  - tharuka-es-ai-dev-2
+
 
 pool:
   vmImage: 'ubuntu-latest'
