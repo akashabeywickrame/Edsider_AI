@@ -101,21 +101,29 @@ def link_row(assessment_question_id, assessment_id, question_id,
     }
 
 
-@pytest.fixture
-def local_db(tmp_path):
-    original = store.DB_PATH
-    store.use_database(tmp_path / "sync_test.db")
-    yield
-    store.use_database(original)
-
-
 def run_sync(monkeypatch, fake_pg, argv=()):
     # Patched at the psycopg2.connect level, not sync._pg_connect - so
     # _pg_connect()'s own logic (the read-only session, the required-env
     # check) actually runs and is what these tests are exercising.
     for var in ("PG_HOST", "PG_PORT", "PG_DB", "PG_USER", "PG_PASSWORD"):
         monkeypatch.setenv(var, "test")
-    monkeypatch.setattr(psycopg2, "connect", lambda **kw: fake_pg)
+
+    real_connect = psycopg2.connect
+
+    def fake_connect(*args, **kwargs):
+        """Only EdSider's database is faked.
+
+        Our own store is PostgreSQL now and goes through the same
+        psycopg2.connect, so a blanket replacement cut the test off from
+        the database it is supposed to be writing into. The two calls are
+        told apart by their shape: sync.py passes EdSider's credentials
+        as keyword arguments, store.py passes one connection string.
+        """
+        if args:
+            return real_connect(*args, **kwargs)
+        return fake_pg
+
+    monkeypatch.setattr(psycopg2, "connect", fake_connect)
     monkeypatch.setattr(sys, "argv", ["sync.py", *argv])
     sync.main()
 

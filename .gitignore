@@ -4,6 +4,10 @@ __pycache__/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+# Compressed copies made for uploading a bank to a server
+# (scripts/prepare_upload_db.py) - same real data, same rule.
+data/*.db.gz
+data/*.db.zip
 .pytest_cache/
 
 # Real EdSider exports. Their question bank is not ours to commit.
@@ -21,3 +25,7 @@ edsider_questions.csv.pub
 # Timestamped safety-net copies of a real database, taken before a risky
 # operation (see CLAUDE.md). Real data, and large - never committed.
 data/*.bak*
+
+# Local copy of the bank's fingerprints (store._cached_vectors) - derived
+# from the database, rebuilt on demand, and 50 MB of real data.
+data/cache/

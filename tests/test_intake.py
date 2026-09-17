@@ -239,6 +239,8 @@ _TWO_PART_PAPER = (
     "(b) Draw a fully labeled block diagram of a computer system. [5]\n"
     "(2) Consider the following scenario:\n"
     "(a) Identify ONE example of data and ONE example of information. [2]\n"
+    "(b) Name and briefly describe any FOUR attributes of quality "
+    "information. [2]\n"
     "(02) (1) Nimal is studying number systems in his GIT class.\n"
     "(a) Convert the decimal number 53 into binary.\n"
     "[3]\n"
@@ -259,7 +261,20 @@ _TWO_PART_PAPER = (
 
 
 def _part(parsed, label):
-    return [q for q in parsed["questions"] if q["section"] == label]
+    """A part's questions - its own, not the parts inside them, which are
+    drafts in their own right now (see _split_parts)."""
+    return [q for q in parsed["questions"]
+            if q["section"] == label and not q["depth"]]
+
+
+def _under(parsed, question):
+    """The drafts nested under one question, in reading order."""
+    seqs, out = {question["seq"]}, []
+    for q in parsed["questions"]:
+        if q["parent_seq"] in seqs:
+            seqs.add(q["seq"])
+            out.append(q)
+    return out
 
 
 def test_a_two_part_paper_comes_back_as_its_two_parts():
@@ -275,11 +290,105 @@ def test_a_two_part_paper_comes_back_as_its_two_parts():
     assert [q["question_number"] for q in part1] == ["1", "2"]
     assert "(4) Any machine" in part1[0]["text"]
     assert [q["question_number"] for q in part2] == ["01", "02"]
-    # A question's numbered parts stay inside it.
-    assert "(2) Consider the following scenario" in part2[0]["text"]
     # "Each question carries 15 marks", not the last part's "[2]".
     assert [q["marks"] for q in part2] == [15, 15]
-    assert [q["seq"] for q in parsed["questions"]] == [1, 2, 3, 4]
+    assert [q["seq"] for q in parsed["questions"]] == list(
+        range(1, len(parsed["questions"]) + 1))
+
+
+def test_a_structured_question_is_split_into_its_parts():
+    """The real GIT question (01) is a stem, two numbered parts, and
+    lettered parts under those - each with its own marks, and each the
+    thing a teacher actually marks and answers. Read as one draft it was
+    a single box with a single answer."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    q01 = _part(parsed, "Part II")[0]
+    parts = _under(parsed, q01)
+
+    assert [(p["question_number"], p["depth"]) for p in parts] == [
+        ("01(1)", 1),
+        ("01(1)(a)", 2),
+        ("01(1)(b)", 2),
+        ("01(2)", 1),
+        ("01(2)(a)", 2),
+        ("01(2)(b)", 2),
+    ]
+    # The stem stays with the part it introduces, not with its own parts.
+    assert parts[0]["text"].startswith("A school library")
+    assert parts[1]["text"].startswith("Define the term")
+    # Every part points at the draft it sits under.
+    by_number = {p["question_number"]: p for p in parts}
+    assert by_number["01(1)(a)"]["parent_seq"] == by_number["01(1)"]["seq"]
+    assert by_number["01(1)"]["parent_seq"] == q01["seq"]
+
+
+def test_each_part_carries_its_own_marks():
+    parsed = extract.structure(_TWO_PART_PAPER)
+    parts = _under(parsed, _part(parsed, "Part II")[0])
+    marks = {p["question_number"]: p["marks"] for p in parts}
+    assert marks["01(1)(a)"] == 2
+    assert marks["01(1)(b)"] == 5
+
+
+def test_mcq_options_are_never_split_into_parts():
+    """Options are a numbered list at the left margin, exactly like a
+    part list, but an option is not a question with an answer of its
+    own."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    for q in _part(parsed, "Part I"):
+        assert _under(parsed, q) == []
+    assert "(4) Any machine" in _part(parsed, "Part I")[0]["text"]
+
+
+def test_roman_numbered_parts_are_split():
+    text = (
+        "1. A farmer grows two crops on the same land.\n"
+        "(i) Explain what is meant by intercropping in this context. [3]\n"
+        "(ii) State two advantages of the practice for the farmer. [4]\n"
+        "(iii) Describe one problem the farmer may face with it. [3]\n"
+    )
+    drafts = extract.segment(text)
+    assert [(d["question_number"], d["depth"], d["marks"]) for d in drafts] == [
+        ("1", 0, 3),
+        ("1(i)", 1, 3),
+        ("1(ii)", 1, 4),
+        ("1(iii)", 1, 3),
+    ]
+    assert drafts[0]["text"] == "A farmer grows two crops on the same land."
+
+
+def test_lettered_parts_without_brackets_are_split():
+    text = (
+        "1. Study the diagram of the water cycle shown above.\n"
+        "a. Name the process that turns water into vapour and say where it "
+        "happens. [2]\n"
+        "b. Explain why the water returns to the ground as rain. [3]\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == ["1", "1(a)", "1(b)"]
+
+
+def test_a_single_marker_does_not_split_a_question():
+    """One "(a)" inside a sentence is not a part list."""
+    text = "1. In figure (a) above, state the name of the labelled part. [2]\n"
+    drafts = extract.segment(text)
+    assert len(drafts) == 1
+    assert drafts[0]["depth"] == 0
+
+
+def test_numbered_solution_steps_are_not_parts():
+    """A bare "1." at the margin is the paper's own numbering - on a
+    worked-solutions document, the solution steps. Only bracketed digits
+    count as parts, as the real GIT paper prints them."""
+    text = (
+        "Question 1\n"
+        "A ball is thrown at 20 m/s at an angle of 30 degrees.\n"
+        "1. Initial velocity components are found by resolving the vector.\n"
+        "2. Finding the vertical velocity at the highest point of flight.\n"
+    )
+    drafts = extract.segment(text, style="question_word")
+    assert len(drafts) == 1
+    assert "Initial velocity components" in drafts[0]["text"]
 
 
 def test_the_marking_scheme_becomes_answers_not_questions():
@@ -290,8 +399,50 @@ def test_the_marking_scheme_becomes_answers_not_questions():
 
     part1, part2 = _part(parsed, "Part I"), _part(parsed, "Part II")
     assert [q["answer"] for q in part1] == ["(2)", "(2)"]
-    assert part2[0]["answer"].startswith("(1)(a) Definition of a System")
+    # The scheme marks a structured question part by part, and each part
+    # is now its own draft with its own answer box - see the next test.
+    by_number = {q["question_number"]: q for q in _under(parsed, part2[0])}
+    assert by_number["01(1)(a)"]["answer"].startswith(
+        "Definition of a System")
+    # Question 02 has one marker at each level, so it is not split at all
+    # (one marker is not a list) and keeps its whole worked answer.
+    assert _under(parsed, part2[1]) == []
     assert "110101" in part2[1]["answer"]
+
+
+def test_a_worked_answer_is_split_across_the_parts_it_marks():
+    """"Question (01) ... (1)(a) Definition of a System [2 marks] ..." -
+    the scheme labels each part's answer the way the paper labels the
+    part, so it lands in that part's box rather than in one wall of text
+    on the question."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    q01 = _part(parsed, "Part II")[0]
+    parts = {p["question_number"]: p for p in _under(parsed, q01)}
+
+    assert q01["answer"] is None          # nothing before the first label
+    assert parts["01(1)(a)"]["answer"] == (
+        "Definition of a System [2 marks]\n"
+        "A system is an organized collection of interacting components.")
+    # A part the scheme says nothing about keeps an empty box.
+    assert parts["01(1)(b)"]["answer"] is None
+
+
+def test_a_worked_answer_with_no_part_labels_stays_on_the_question():
+    paper = (
+        "Structured Questions\n"
+        "(01) Explain how a computer stores a character in memory.\n"
+        "(02) Describe two uses of a spreadsheet in a school office.\n"
+        "MARKING SCHEME\n"
+        "Question (01) [10 marks]\n"
+        "Each character is stored as a binary code such as ASCII.\n"
+        "Question (02) [10 marks]\n"
+        "Recording marks, and preparing the timetable.\n"
+    )
+    drafts = extract.segment(paper)
+    assert [d["answer"] for d in drafts] == [
+        "Each character is stored as a binary code such as ASCII.",
+        "Recording marks, and preparing the timetable.",
+    ]
 
 
 def test_a_parts_heading_and_instructions_stay_with_it():
@@ -835,14 +986,6 @@ def test_check_batch_skips_blank_drafts():
 
 # ---------------------------------------------------------- storage
 
-@pytest.fixture
-def local_db(tmp_path):
-    original = store.DB_PATH
-    store.use_database(tmp_path / "intake_test.db")
-    yield
-    store.use_database(original)
-
-
 def test_document_and_draft_round_trip(local_db):
     with store.connect() as conn:
         doc_id = store.create_intake_document(
@@ -948,10 +1091,31 @@ def test_parts_and_answers_round_trip(local_db):
     assert doc["paper_title"] == "First Term Examination"
     assert [s["label"] for s in store.intake_sections(doc)] == [
         "Part I", "Part II"]
-    assert [r["section"] for r in rows] == [
-        "Part I", "Part I", "Part II", "Part II"]
+    assert [r["section"] for r in rows[:2]] == ["Part I", "Part I"]
+    assert {r["section"] for r in rows[2:]} == {"Part II"}
     assert rows[0]["answer"] == "(2)"
+    # A question's parts survive the round trip, still pointing at it.
+    q01 = next(r for r in rows if r["question_number"] == "01")
+    under = [r for r in rows if r["parent_seq"] == q01["seq"]]
+    assert [r["question_number"] for r in under] == ["01(1)", "01(2)"]
+    assert {r["depth"] for r in under} == {1}
     assert [s["label"] for s in after] == ["Part I"]
+
+
+def test_deleting_a_question_removes_its_parts(local_db):
+    """A part left behind when its question goes is an orphan the review
+    page cannot place under anything."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "GIT.pdf")
+        store.add_extracted_questions(conn, doc_id, parsed["questions"])
+        rows = store.intake_questions(conn, doc_id)
+        q01 = next(r for r in rows if r["question_number"] == "01")
+        store.delete_intake_question(conn, q01["id"])
+        left = [r["question_number"] for r in store.intake_questions(conn, doc_id)]
+
+    assert not any(n and n.startswith("01(") for n in left)
+    assert left == ["1", "2", "02"]
 
 
 def test_a_paper_read_before_parts_existed_has_no_parts(local_db):

@@ -287,6 +287,27 @@ def test_two_different_long_passages_are_not_flagged_by_this_guard():
     assert not any("passage" in r for r in reasons)
 
 
+def test_shared_passage_is_found_wherever_the_block_starts():
+    """shared_passage() skips pairs with no 100-character chunk in
+    common before running difflib. That shortcut must never hide a real
+    shared block, whatever offset the block starts at on either side."""
+    passage = (
+        "Read the statements below about the early river valley "
+        "civilisations, the way their cities grew along the banks, how "
+        "trade routes connected them to distant regions, and how metal "
+        "working with copper and bronze developed over several centuries "
+        "before the rise of the first empires in the region."
+    )
+    assert len(passage) > 2 * 100  # past the 200-character minimum
+    for pad_a in range(0, 101, 7):
+        for pad_b in (0, 13, 50, 99):
+            a = "x" * pad_a + passage + " What is the main theme?"
+            b = "y" * pad_b + passage + " What is the author's tone?"
+            result = guards.shared_passage(a, b)
+            assert result is not None, (pad_a, pad_b)
+            assert result[0] >= len(passage)
+
+
 def test_shared_passage_helper_returns_none_below_threshold():
     assert guards.shared_passage("short text a", "short text b") is None
 
