@@ -89,6 +89,10 @@ COLUMN_MAP = {
                     "lesson", "chapter", "topic_id", "chapter_id"],
     "marks":       ["marks", "mark", "score", "allocated_marks"],
     "answer":      ["answer", "correct_answer", "ans", "solution"],
+    # True when `answer` holds a blob reference rather than literal text
+    # (a file-upload submission, on EdSider's side) - without this, an
+    # opaque reference string is indistinguishable from a real answer.
+    "is_answer_blob": ["is_answer_blob", "answer_is_blob", "is_blob"],
     "language":    ["language_name", "language", "lang", "medium",
                     "language_id"],
     "contributor": ["contributor", "created_by", "author", "teacher"],
@@ -158,7 +162,15 @@ def to_question(row, index):
         "subject": _str(pick(row, COLUMN_MAP["subject"])),
         "topic": _str(pick(row, COLUMN_MAP["topic"])),
         "marks": marks,
-        "answer": extract_text(pick(row, COLUMN_MAP["answer"])),
+        # Not extract_text() - answer is not Draft.js content. Depending
+        # on question type it's a comma-separated (or JSON-array) list of
+        # per-option percentage weights, free-form model-answer text, or
+        # (when is_answer_blob is set) an opaque blob reference. None of
+        # those is rich text, so it is captured verbatim rather than
+        # parsed - decoding it is a job for whatever feature actually
+        # needs to interpret it, off real data, not a guess made here.
+        "answer": _str(pick(row, COLUMN_MAP["answer"])),
+        "is_answer_blob": _bool(pick(row, COLUMN_MAP["is_answer_blob"])),
         "language": _str(pick(row, COLUMN_MAP["language"])) or "en",
         "contributor": _str(pick(row, COLUMN_MAP["contributor"])),
         "source_file": _str(pick(row, COLUMN_MAP["source_file"])),
@@ -172,6 +184,21 @@ def to_question(row, index):
         # times.
         "children_raw": _str(pick(row, COLUMN_MAP["sub_questions"])),
     }
+
+
+def _bool(v):
+    # is_answer_blob is `character varying` on EdSider's side, not a
+    # real boolean - confirmed against the live schema, the literal
+    # string "false" comes back for a non-blob row. bool("false") is
+    # True (any non-empty string is truthy), which silently marked
+    # every row a blob - a real bug this caught rather than a finding
+    # about their data. A genuine bool (CSV path, or if the column type
+    # ever changes) is returned as-is; anything else is parsed by value.
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    return str(v).strip().lower() in ("true", "t", "1", "yes")
 
 
 def _str(v):

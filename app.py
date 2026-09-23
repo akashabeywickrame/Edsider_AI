@@ -198,6 +198,23 @@ def show_last_decision():
         )
 
 
+def current_reviewer():
+    """Who is actually clicking Confirm/Not a duplicate.
+
+    Azure App Service's built-in login (Easy Auth) sits in front of the
+    app and, once configured, injects the signed-in user's identity as
+    request headers - the app itself never has to talk to Azure AD B2C
+    or verify a token, Easy Auth already did that before this request
+    ever reached Streamlit. Falls back to the literal "reviewer" when
+    there is no such header - a local run, or before Easy Auth is
+    turned on - so this is safe to ship ahead of that Azure-side change
+    and starts attributing real names the moment it is switched on,
+    with no further code change needed.
+    """
+    name = st.context.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+    return name or "reviewer"
+
+
 def decision_note(pair):
     d = pair.get("decision")
     if d:
@@ -219,7 +236,7 @@ def decision_buttons(pair, qa, qb, key, guard_flags):
     if d1.button("Confirm duplicate", key=f"dup_{key}"):
         with store.connect() as conn:
             store.record_decision(
-                conn, pair["a"], pair["b"], "duplicate", "reviewer",
+                conn, pair["a"], pair["b"], "duplicate", current_reviewer(),
                 pair["score"], guard_flags,
             )
         st.session_state["last_decision"] = {
@@ -233,7 +250,7 @@ def decision_buttons(pair, qa, qb, key, guard_flags):
         only_a, only_b = guards.candidate_contrast_terms(qa["text"], qb["text"])
         with store.connect() as conn:
             store.record_decision(
-                conn, pair["a"], pair["b"], "distinct", "reviewer",
+                conn, pair["a"], pair["b"], "distinct", current_reviewer(),
                 pair["score"], guard_flags,
                 candidate_contrast_terms=(only_a, only_b),
             )
@@ -305,15 +322,51 @@ st.sidebar.caption(f"Database: {store.display_name()}")
 st.sidebar.caption(f"{total_questions:,} questions loaded")
 st.sidebar.caption(f"{len(rows):,} comparable, with fingerprints")
 st.sidebar.caption(f"Model: {DEFAULT_MODEL.split('/')[-1]}")
-# The bank is held for BANK_TTL; this is for right after sync.py or
-# embed.py has added questions and someone wants them now.
-if st.sidebar.button("Reload from database", use_container_width=True):
-    # The bank only - not the embedding model, which is the same model
-    # whatever the database holds and takes the longest to load again.
-    for cached in (load_rows, load_index, load_assessment_groups,
-                   all_assessment_links, sweep, paper_repeats):
-        cached.clear()
+# The bank is held for BANK_TTL. This button used to only re-read OUR
+# OWN database - which does nothing useful unless sync.py already ran
+# separately - so it now pulls from EdSider first (an incremental sync,
+# never --full: that re-reads the whole bank and is a by-hand, one-off
+# operation, not something a button click should risk). If the live
+# pull can't run at all - no PG_* credentials here, or EdSider's server
+# unreachable - it falls back to the old behaviour (reload our own copy
+# only) rather than leaving the sidebar looking like nothing happened.
+if st.sidebar.button("Sync from Database", use_container_width=True):
+    message, changed = None, True
+    try:
+        with st.spinner("Pulling new questions from EdSider..."):
+            from scripts.sync import run_sync
+            result = run_sync(full=False)
+        changed = bool(result["imported"] or result["links_saved"])
+        message = (
+            f"Synced: {result['imported']:,} new/updated question(s), "
+            f"{result['skipped']:,} skipped, "
+            f"{result['links_saved']:,} assessment link(s). "
+            f"Bank now has {result['total']:,} questions."
+            if changed else
+            "Already up to date - nothing new on EdSider's side."
+        )
+    except SystemExit as e:
+        message = (f"Live sync isn't configured on this server ({e}) - "
+                   "reloaded our own database instead.")
+    except Exception as e:
+        message = (f"Could not reach EdSider's database ({e}) - "
+                   "reloaded our own database instead.")
+
+    # Reloading re-reads and re-stacks the whole bank from our own
+    # database - measured at several seconds even once cached - so only
+    # pay for it when something might actually be different. On an error
+    # `changed` stays True: a local import could have added rows even
+    # though the live pull failed, and that is the one case the old
+    # "Reload from database" button existed for in the first place.
+    if changed:
+        for cached in (load_rows, load_index, load_assessment_groups,
+                       all_assessment_links, sweep, paper_repeats):
+            cached.clear()
+    st.session_state["last_sync_message"] = message
     st.rerun()
+
+if st.session_state.get("last_sync_message"):
+    st.sidebar.caption(st.session_state.pop("last_sync_message"))
 
 if not rows:
     st.title("EdSider AI")
