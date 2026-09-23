@@ -568,6 +568,13 @@ MIGRATIONS = [
     # their own sub-parts. This mirrors EdSider's own parent/child rows.
     ("intake_questions", "parent_seq", "INTEGER"),
     ("intake_questions", "depth", "INTEGER NOT NULL DEFAULT 0"),
+    # question.answer on EdSider's side is not always plain text: for an
+    # MCQ it is a comma-separated list of per-option percentage weights
+    # ("100,0,0,0"), index-aligned with the options embedded in `content`;
+    # for an essay/submission question it is a free-text model answer. A
+    # blob reference is the third case - is_answer_blob marks it, so a
+    # reader never mistakes an opaque reference for literal answer text.
+    ("questions", "is_answer_blob", "INTEGER DEFAULT 0"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -855,14 +862,16 @@ def save(conn, q):
     conn.execute(
         """INSERT INTO questions
            (id, text, title, grade, subject, topic, marks, answer,
-            language, contributor, source_file, content_hash, has_figure,
-            shape, children_raw)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            is_answer_blob, language, contributor, source_file,
+            content_hash, has_figure, shape, children_raw)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
                text=excluded.text, title=excluded.title,
                grade=excluded.grade, subject=excluded.subject,
                topic=excluded.topic, marks=excluded.marks,
-               answer=excluded.answer, language=excluded.language,
+               answer=excluded.answer,
+               is_answer_blob=excluded.is_answer_blob,
+               language=excluded.language,
                contributor=excluded.contributor,
                source_file=excluded.source_file,
                content_hash=excluded.content_hash,
@@ -872,6 +881,7 @@ def save(conn, q):
             q["id"], q["text"], q.get("title"),
             q.get("grade"), q.get("subject"),
             q.get("topic"), q.get("marks"), q.get("answer"),
+            1 if q.get("is_answer_blob") else 0,
             q.get("language", "en"), q.get("contributor"),
             q.get("source_file"), q["content_hash"],
             1 if q.get("has_figure") else 0,
@@ -891,6 +901,14 @@ def link_children_to_parents(conn):
     on a re-save (see the comment there), so a link once made survives
     a later re-sync of either row.
 
+    Writes only a child whose parent_id is actually missing or wrong -
+    on a steady-state re-run, where every link from last time is still
+    correct, that is zero rows rather than one UPDATE per child in the
+    WHOLE bank every single call. Measured live: with thousands of
+    parent rows across the real bank, the old unconditional version was
+    the dominant cost of running sync.py when EdSider had nothing new
+    at all - every "nothing to do" sync still rewrote every child.
+
     Returns how many child rows carry a parent_id after this call.
     """
     parents = conn.execute(
@@ -898,14 +916,25 @@ def link_children_to_parents(conn):
         "WHERE shape = 'parent' AND children_raw IS NOT NULL"
     ).fetchall()
 
+    wanted = {}
     for parent in parents:
-        child_ids = [c.strip() for c in parent["children_raw"].split(",")
-                    if c.strip()]
-        for cid in child_ids:
-            conn.execute(
-                "UPDATE questions SET parent_id = ? WHERE id = ?",
-                (parent["id"], cid),
-            )
+        for cid in (c.strip() for c in parent["children_raw"].split(",")):
+            if cid:
+                wanted[cid] = parent["id"]
+
+    if wanted:
+        child_ids = list(wanted)
+        current = {
+            r["id"]: r["parent_id"]
+            for r in conn.execute(
+                "SELECT id, parent_id FROM questions WHERE id = ANY(?)",
+                (child_ids,))
+        }
+        changed = [(pid, cid) for cid, pid in wanted.items()
+                  if current.get(cid) != pid]
+        if changed:
+            conn.executemany(
+                "UPDATE questions SET parent_id = ? WHERE id = ?", changed)
 
     return conn.execute(
         "SELECT COUNT(*) AS n FROM questions WHERE parent_id IS NOT NULL"

@@ -1239,15 +1239,17 @@ live in this repo, because a pipeline cannot guess them:
 - **`.gitattributes` keeps `*.sh` at LF.** This repo is edited on
   Windows, and a CRLF `startup.sh` fails under bash before its first line.
 
-Not verifiable from here, to confirm on the first deployment: the
-pipeline targets Python 3.11 while this project has only run on 3.8;
-App Service's own build (`SCM_DO_BUILD_DURING_DEPLOYMENT=true`)
-installing torch from the CPU index; the model's first download (about
-1 GB - cache it by pointing `HF_HOME` under `/home`) against the startup
-time limit; and memory, which needs a plan with several GB. Tesseract
-cannot be installed on a zip-deployed App Service, so there the review
-app's OCR reports scanned pages and pictures as "not read" - typed PDFs
-and Word files are unaffected; full OCR needs a custom container.
+**Deployed and confirmed working**, as of 2026-09-18: the app is live on
+Azure App Service, with `EDSIDER_DB` connecting to the real PostgreSQL
+database end to end. That resolves what used to be an open question
+here - the pipeline building on Python 3.11 against code only run on
+3.8, `SCM_DO_BUILD_DURING_DEPLOYMENT=true` installing torch from the CPU
+index, the model's first download (about 1 GB) against the startup time
+limit, and the memory plan - all of it ran successfully rather than
+being reasoned about in advance. Tesseract still cannot be installed on
+a zip-deployed App Service, so there the review app's OCR reports
+scanned pages and pictures as "not read" - typed PDFs and Word files are
+unaffected; full OCR still needs a custom container.
 
 **What "usable as a service" still needs**, roughly in order:
 
@@ -1266,9 +1268,11 @@ and Word files are unaffected; full OCR needs a custom container.
    only a new one), and something has to actually run `sync.py` on a
    schedule - it is a script to invoke by hand right now, not a
    background job of its own yet.
-3. Basic auth, structured logging, and a real deployment (this runs
-   under `uvicorn` locally; it needs a process manager and a real host
-   before anything external can reach it).
+3. Basic auth and structured logging. The real deployment itself is
+   **done** - see "Running on Azure App Service" above - so what is left
+   here is narrower than it was: no auth in front of `/check` and
+   `/reload` beyond the optional `EDSIDER_API_KEY` header, and no
+   structured logging yet.
 4. Re-tune thresholds on real EdSider data (depends on 1), for English
    first - Sinhala and Tamil are deliberately not embedded yet, see the
    language note above. `embed.py --language Sinhala` (or `Tamil`) is

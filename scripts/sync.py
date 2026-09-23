@@ -63,6 +63,14 @@ SOURCE = "edsider_postgres"
 # LEFT JOIN, not JOIN: an inner join silently drops every question
 # whose grade or subject is unset, which is exactly the data worth
 # seeing.
+#
+# answer / is_answer_blob - confirmed against questionModel.py:58.
+# `answer` is not one uniform shape: for an MCQ it is a comma-separated
+# list of per-option percentage weights ("100,0,0,0"), index-aligned
+# with the options embedded in `content`; for an essay/submission
+# question it is a free-text model answer a teacher can reference, not
+# used for auto-grading. `is_answer_blob` marks the third case, a blob
+# reference rather than literal text, so it is never mistaken for one.
 # ---------------------------------------------------------------------
 QUERY = """
     SELECT q.question_id,
@@ -73,6 +81,8 @@ QUERY = """
            l.language           AS language_name,
            q.is_subquestion,
            q.sub_questions,
+           q.answer,
+           q.is_answer_blob,
            q.created_by,
            q.created_at
     FROM question.question q
@@ -156,6 +166,16 @@ def _pg_connect():
         user=os.environ["PG_USER"],
         password=os.environ["PG_PASSWORD"],
         cursor_factory=psycopg2.extras.RealDictCursor,
+        # Without these, a flaky path to EdSider's server (seen twice
+        # today - "server closed the connection unexpectedly") hangs on
+        # the operating system's own default timeout instead of failing
+        # fast - minutes of a stuck button with no feedback, rather than
+        # a clear error the caller can act on. connect_timeout bounds
+        # opening the connection; statement_timeout bounds any one query
+        # once connected, in case the hang is mid-fetch rather than at
+        # connect time.
+        connect_timeout=10,
+        options="-c statement_timeout=30000",
     )
     # A client-side backstop, not the real safety mechanism - the real
     # one is the account itself having no write grants. Belt and braces.
@@ -187,16 +207,21 @@ def fetch_new_links(pg_conn, watermark):
     cur.close()
 
 
-def main():
-    args = parse_args()
+def run_sync(full=False):
+    """Pull new rows from EdSider's database into our own, and return a
+    summary dict of what happened.
 
+    This is the reusable core of `main()` below - also called directly
+    from app.py's "Reload from database" button, so pressing it actually
+    fetches anything EdSider added since the last sync, rather than just
+    re-reading whatever our own copy already happened to hold (see
+    CLAUDE.md, "Pulling directly from EdSider's database", for why those
+    used to be two separate, easily-confused steps).
+    """
     with store.connect() as local_conn:
-        watermark = 0 if args.full else store.get_watermark(local_conn, SOURCE)
-        link_watermark = (0 if args.full
+        watermark = 0 if full else store.get_watermark(local_conn, SOURCE)
+        link_watermark = (0 if full
                           else store.get_watermark(local_conn, SOURCE_LINKS))
-
-    print(f"\nSyncing from EdSider's database "
-          f"({'full pull' if args.full else f'since id {watermark}'})...")
 
     pg_conn = _pg_connect()
     try:
@@ -268,14 +293,30 @@ def main():
         pg_conn.rollback()  # nothing was written; close the read cleanly
         pg_conn.close()
 
-    print(f"  pulled from EdSider : {pulled:,}")
-    print(f"  imported            : {imported:,}")
-    print(f"  skipped (no text)   : {skipped:,}")
-    print(f"  watermark now at    : {highest_seen:,}")
-    print(f"  our database total  : {total:,}")
-    print(f"  sub-questions linked to a parent : {linked:,}")
-    print(f"  assessment links    : {links_saved:,} pulled "
-          f"(watermark now at {highest_link_seen:,})")
+    return {
+        "pulled": pulled, "imported": imported, "skipped": skipped,
+        "watermark": highest_seen, "total": total, "linked": linked,
+        "links_pulled": links_pulled, "links_saved": links_saved,
+        "link_watermark": highest_link_seen,
+    }
+
+
+def main():
+    args = parse_args()
+    print(f"\nSyncing from EdSider's database "
+          f"({'full pull' if args.full else 'incremental'})...")
+
+    result = run_sync(full=args.full)
+    imported = result["imported"]
+
+    print(f"  pulled from EdSider : {result['pulled']:,}")
+    print(f"  imported            : {result['imported']:,}")
+    print(f"  skipped (no text)   : {result['skipped']:,}")
+    print(f"  watermark now at    : {result['watermark']:,}")
+    print(f"  our database total  : {result['total']:,}")
+    print(f"  sub-questions linked to a parent : {result['linked']:,}")
+    print(f"  assessment links    : {result['links_saved']:,} pulled "
+          f"(watermark now at {result['link_watermark']:,})")
 
     if imported:
         print("\nNext: python scripts/embed.py   (only new text gets embedded)")
