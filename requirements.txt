@@ -40,3 +40,25 @@ pdfplumber>=0.11
 python-docx>=1.1
 pytesseract>=0.3.10
 Pillow>=10.0
+
+# The paper-preview pane on the intake review page. Two hand-rolled
+# attempts to embed a PDF via raw HTML/JS (a base64 data: URI, then a
+# Blob object URL) both rendered as nothing at all, silently - Chrome
+# and Edge's built-in PDF viewer does not reliably render a PDF handed
+# to it that way inside Streamlit's component iframe. This wraps
+# Mozilla's own PDF.js instead, the same rendering engine Firefox's
+# built-in viewer uses, and does not depend on the browser's own plugin
+# behavior at all. Pinned, same reasoning as streamlit itself above -
+# tested against 0.0.30, not left open-ended.
+streamlit-pdf-viewer==0.0.30
+
+# Bold/italic/subscript/superscript on the question and answer text
+# boxes on the same page - correcting a genuine formatting loss (a
+# squeezed fraction, a flattened exponent) needs more than plain text
+# can hold while editing. Wraps the Quill.js editor. Formatting is an
+# editing convenience only, not something that gets saved: what
+# reaches the database is still plain text (see app.py's
+# quill_to_text()), because normalize()/content_hash() and the
+# embedding all assume plain text - that is a separate, bigger change,
+# not taken on here.
+streamlit-quill==0.0.3

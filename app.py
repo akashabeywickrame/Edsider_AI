@@ -3,14 +3,18 @@
 Run with:   streamlit run app.py
 """
 
+import html
 import json
 import os
 import sys
 import tempfile
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit_pdf_viewer import pdf_viewer
+from streamlit_quill import st_quill
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -147,6 +151,116 @@ def title_caption(q):
     title = q.get("title")
     if title:
         st.caption(f"Title: {title}")
+
+
+# Bold/italic/subscript/superscript for correcting OCR damage that is
+# genuinely a formatting loss (a squeezed fraction, a flattened
+# exponent) rather than a wrong character - a wrong character (x?
+# instead of x², € instead of ∈) is already fixable by typing the
+# right Unicode symbol into plain text and needs none of this.
+RICH_TOOLBAR = [["bold", "italic"], [{"script": "sub"}, {"script": "super"}]]
+
+
+class _PlainTextExtractor(HTMLParser):
+    """Quill's editor returns HTML so formatting round-trips while
+    editing; what gets saved to the database is plain text, same as
+    every other question - normalize()/content_hash() and the
+    embedding both assume plain text, and teaching them to strip HTML
+    is a bigger, separate change (see the rich-text storage decision).
+    Formatting is therefore an editing convenience only: it is visible
+    and usable while correcting a question, then discarded on save,
+    the same as it would be if it had never been typed."""
+    def handle_data(self, data):
+        self.parts.append(data)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("p", "div", "br"):
+            self.parts.append("\n")
+
+    def reset(self):
+        super().reset()
+        self.parts = []
+
+
+def quill_to_text(html_value):
+    """Quill's HTML output -> the same plain text a plain text box
+    would have held. Empty input gives "", matching str.strip() on an
+    empty text_area rather than Quill's own empty-editor HTML."""
+    if not html_value:
+        return ""
+    parser = _PlainTextExtractor()
+    parser.feed(html_value)
+    return "".join(parser.parts).strip()
+
+
+def text_to_quill_html(text):
+    """Plain text -> safe HTML for Quill's initial value - the inverse
+    of quill_to_text(). Needed because what is stored has always been
+    plain text (only how it is edited changed here, not how it is
+    saved): unescaped, a "<" or "&" - not unusual in a maths paper's
+    inequalities - would be misread as markup, and a bare newline is
+    not a line break in HTML."""
+    if not text:
+        return ""
+    return html.escape(text).replace("\n", "<br>")
+
+
+@st.cache_data(show_spinner=False)
+def _intake_blob(doc_id, db_name):
+    """The uploaded file's own bytes - cached per (document, database),
+    not fetched fresh on every rerun. Ticking one Reviewed checkbox
+    reruns the whole page; without this, that meant a database round
+    trip for a multi-MB file on every single click, for a file that
+    never changes once uploaded."""
+    with store.connect() as conn:
+        return store.intake_file_blob(conn, doc_id)
+
+
+def render_paper_preview(doc, doc_id):
+    """The uploaded paper itself, next to the editable question cards -
+    so a reviewer can check a suspect OCR read against the original
+    page instead of trusting the extracted text blind.
+
+    A PDF is rendered with streamlit-pdf-viewer (PDF.js under the
+    hood), not hand-rolled HTML. Two things were tried and measurably
+    failed before this: pdfplumber page images one page at a time
+    (worked, but not practical to actually use - no continuous scroll);
+    then a hand-built <embed>/<iframe> with a base64 data: URI, and
+    then a Blob/JavaScript object URL - both rendered as nothing at
+    all, silently, no error, which real production PDF viewers exist
+    precisely to avoid by not depending on the browser's own plugin
+    behavior. Not worth a third hand-rolled guess.
+
+    A Word document has no equivalent here - a first version fell back
+    to showing the extracted text, but a wall of plain text is not a
+    preview and looked like a broken one. Rendering a real page image
+    would mean converting it to PDF first, which needs LibreOffice (or
+    similar) installed on the server - the same wall Tesseract already
+    hits: not installable on a zip-deployed Azure App Service, only a
+    custom container. Not worth half-building; a reviewer opens the
+    original file itself alongside this page instead, until that
+    infrastructure exists.
+    """
+    db_name = store.display_name()
+    blob = _intake_blob(doc_id, db_name)
+    if blob is None:
+        st.info(
+            "No preview stored for this paper - it was uploaded before "
+            "previews were kept. Re-upload it to get one."
+        )
+        return
+
+    file_type = doc.get("file_type")
+    if file_type == "pdf":
+        pdf_viewer(blob, width="100%", height=800, key=f"pdf_{doc_id}",
+                  render_text=True)
+    elif file_type == "image":
+        st.image(blob)
+    else:
+        st.info(
+            "No preview for Word documents yet - open the original file "
+            "alongside this page to check it against the extracted text."
+        )
 
 
 # ------------------------------------------------------------ decisions
@@ -1042,6 +1156,10 @@ elif page == "Paper intake":
                 paper_title=result["paper"]["title"],
                 sections=result["sections"],
                 raw_text=result["raw_text"], split_style=up_style,
+                # The paper itself, kept so a reviewer can check a
+                # suspect OCR read against the original page instead of
+                # trusting the extracted text blind.
+                file_blob=bytes(up.getbuffer()),
             )
             store.add_extracted_questions(
                 conn, doc_id, result["questions"],
@@ -1234,84 +1352,93 @@ elif page == "Paper intake":
     # shared stem rather than a question to answer on its own.
     parents_of = {d["parent_seq"] for d in drafts if d.get("parent_seq")}
     shown = None
-    for i, d in enumerate(drafts):
-        if d.get("section") and d["section"] != shown:
-            shown = d["section"]
-            part = by_label.get(shown, {})
-            st.header(shown)
-            here = [x for x in drafts if x.get("section") == shown]
-            n_questions = sum(1 for x in here if not (x.get("depth") or 0))
-            n_parts = len(here) - n_questions
-            about = [
-                part.get("heading") if part.get("heading") != shown else None,
-                intake_extract.KIND_LABELS.get(part.get("kind")),
-                f"{n_questions} question(s)",
-                f"{n_parts} part(s)" if n_parts else None,
-                f"{part['marks_each']} marks each"
-                if part.get("marks_each") else None,
-            ]
-            st.caption("  |  ".join(a for a in about if a))
-            if part.get("instructions"):
-                with st.expander("Instructions for this part"):
-                    st.text(part["instructions"])
+    # The paper itself sits alongside the editable cards, not above or
+    # below them, so a reviewer can check a suspect OCR read against the
+    # original page without losing their place in the list.
+    cards_col, preview_col = st.columns([3, 2])
+    with preview_col:
+        st.subheader("Original paper")
+        render_paper_preview(doc, doc_id)
+    with cards_col:
+        for i, d in enumerate(drafts):
+            if d.get("section") and d["section"] != shown:
+                shown = d["section"]
+                part = by_label.get(shown, {})
+                st.header(shown)
+                here = [x for x in drafts if x.get("section") == shown]
+                n_questions = sum(1 for x in here if not (x.get("depth") or 0))
+                n_parts = len(here) - n_questions
+                about = [
+                    part.get("heading") if part.get("heading") != shown else None,
+                    intake_extract.KIND_LABELS.get(part.get("kind")),
+                    f"{n_questions} question(s)",
+                    f"{n_parts} part(s)" if n_parts else None,
+                    f"{part['marks_each']} marks each"
+                    if part.get("marks_each") else None,
+                ]
+                st.caption("  |  ".join(a for a in about if a))
+                if part.get("instructions"):
+                    with st.expander("Instructions for this part"):
+                        st.text(part["instructions"])
 
-        # A question's parts sit indented under it, each with its own
-        # text, marks and answer - that is how the paper marks them, and
-        # how EdSider stores them (a parent row plus child rows).
-        depth = d.get("depth") or 0
-        if depth:
-            _, body = st.columns([0.06 * depth, 1])
-            card = body.container(border=True)
-        else:
-            card = st.container(border=True)
-
-        with card:
-            head, rm = st.columns([5, 1])
+            # A question's parts sit indented under it, each with its own
+            # text, marks and answer - that is how the paper marks them,
+            # and how EdSider stores them (a parent row plus child rows).
+            # Streamlit allows columns nested only one level deep, and
+            # the preview pane (cards_col/preview_col) already spends
+            # that one level - so the indent spacer below is the ONLY
+            # st.columns() call allowed anywhere in this loop; label/
+            # Remove and marks/Reviewed, which used to sit in their own
+            # column pairs, are stacked instead rather than nested again.
+            depth = d.get("depth") or 0
             if depth:
-                label = f"Part {d['question_number']}"
+                _, body = st.columns([0.06 * depth, 1])
+                card = body.container(border=True)
             else:
-                label = (f"Question {d['question_number']}"
-                         if d["question_number"]
-                         else f"Question {i + 1} (no number found)")
-            if d["extraction_confidence"] == "low":
-                label += "  -  low confidence"
-            head.markdown(f"**{label}**")
-            if rm.button("Remove", key=f"iq_{d['id']}_rm",
-                         use_container_width=True):
-                with store.connect() as conn:
-                    store.delete_intake_question(conn, d["id"])
-                st.rerun()
+                card = st.container(border=True)
 
-            if d["seq"] in parents_of:
-                st.caption(
-                    "Shared text for the parts below - the scenario or "
-                    "diagram they all refer to. Each part is answered "
-                    "separately."
+            with card:
+                if depth:
+                    label = f"Part {d['question_number']}"
+                else:
+                    label = (f"Question {d['question_number']}"
+                             if d["question_number"]
+                             else f"Question {i + 1} (no number found)")
+                if d["extraction_confidence"] == "low":
+                    label += "  -  low confidence"
+                st.markdown(f"**{label}**")
+
+                if d["seq"] in parents_of:
+                    st.caption(
+                        "Shared text for the parts below - the scenario or "
+                        "diagram they all refer to. Each part is answered "
+                        "separately."
+                    )
+                st_quill(
+                    value=text_to_quill_html(d["text"]), html=True,
+                    toolbar=RICH_TOOLBAR, key=f"iq_{d['id']}_text",
+                    placeholder="No shared text - the parts below are the question"
+                    if d["seq"] in parents_of else "",
                 )
-            st.text_area(
-                "Question text", value=d["text"] or "",
-                key=f"iq_{d['id']}_text", height=110 if depth else 140,
-                label_visibility="collapsed",
-                placeholder="No shared text - the parts below are the question"
-                if d["seq"] in parents_of else None,
-            )
-            m1, m2, _ = st.columns([1, 1, 3])
-            m1.number_input(
-                "Marks", min_value=0, max_value=100, step=1,
-                value=int(d["marks"]) if d["marks"] else 0,
-                key=f"iq_{d['id']}_marks",
-            )
-            m2.checkbox(
-                "Reviewed", value=bool(d["reviewed"]),
-                key=f"iq_{d['id']}_reviewed",
-            )
-            with st.expander("Answer" if d.get("answer")
-                             else "Answer (none found in the paper)"):
-                st.text_area(
-                    "Answer", value=d.get("answer") or "",
-                    key=f"iq_{d['id']}_answer", height=120,
-                    label_visibility="collapsed",
+                st.number_input(
+                    "Marks", min_value=0, max_value=100, step=1,
+                    value=int(d["marks"]) if d["marks"] else 0,
+                    key=f"iq_{d['id']}_marks",
                 )
+                st.checkbox(
+                    "Reviewed", value=bool(d["reviewed"]),
+                    key=f"iq_{d['id']}_reviewed",
+                )
+                with st.expander("Answer" if d.get("answer")
+                                 else "Answer (none found in the paper)"):
+                    st_quill(
+                        value=text_to_quill_html(d.get("answer")), html=True,
+                        toolbar=RICH_TOOLBAR, key=f"iq_{d['id']}_answer",
+                    )
+                if st.button("Remove", key=f"iq_{d['id']}_rm"):
+                    with store.connect() as conn:
+                        store.delete_intake_question(conn, d["id"])
+                    st.rerun()
 
     if st.button("Save all questions", type="primary"):
         with store.connect() as conn:
@@ -1319,10 +1446,10 @@ elif page == "Paper intake":
                 m = st.session_state[f"iq_{d['id']}_marks"]
                 store.update_intake_question(
                     conn, d["id"],
-                    text=st.session_state[f"iq_{d['id']}_text"],
+                    text=quill_to_text(st.session_state[f"iq_{d['id']}_text"]),
                     marks=int(m) if m else None,
-                    answer=st.session_state[f"iq_{d['id']}_answer"].strip()
-                    or None,
+                    answer=quill_to_text(
+                        st.session_state[f"iq_{d['id']}_answer"]) or None,
                     reviewed=1 if st.session_state[f"iq_{d['id']}_reviewed"]
                     else 0,
                 )

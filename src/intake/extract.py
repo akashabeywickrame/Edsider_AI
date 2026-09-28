@@ -38,17 +38,26 @@ class ExtractionUnavailable(RuntimeError):
 # A question starts at the left margin with its number, in any of the
 # forms real papers actually use:
 #
-#   5.  5)  5 .  (5)  05.  Q5  Q.5  Question 5  Question 5:
+#   5.  5)  5 .  (5)  05.  Q5  Q.5  Question 5  Question 5:  Question (5)
 #   5.What   (no space)          5.\n What   (number alone on its line)
 #
 # What must NOT match: "1.5" (a decimal), "In 1990." (a year in prose),
 # an MCQ option "(1)" listed after a real question - the last one is
 # left to segment()'s "numbers only go up" filter rather than the regex.
+#
+# "Question (06)" is the same bracketed numbering as "(01)", just with
+# the word "Question" printed in front of it - measured on a real GIT
+# A/L paper whose Part II numbers questions 1-5 as bare "(01)".."(05)"
+# then switches to "Question (06)" and "Question (07)" for the last
+# two, with no Part heading in between. Treating the word as decoration
+# rather than a different scheme keeps all seven in one counting-up
+# "paren" run instead of losing the last two, which otherwise get
+# silently glued onto question 5's text.
 _Q_START = re.compile(
     r"""^[ \t]*
     (?:
         (?:question|q)[ \t.:\-]*(?P<qn_word>\d{1,3})
-      | \(\s*(?P<qn_paren>\d{1,3})\s*\)
+      | (?:(?:question|q)[ \t.:\-]*)?\(\s*(?P<qn_paren>\d{1,3})\s*\)
       | (?P<qn_dot>\d{1,3})[ \t]*(?P<close>[.)])
     )
     (?![ \t]*marks?\b)
