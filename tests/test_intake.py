@@ -43,6 +43,36 @@ def test_segment_handles_q_prefix_and_parens():
         assert [d["marks"] for d in drafts] == [4, 3]
 
 
+def test_segment_handles_question_word_before_a_parenthesised_number():
+    """The real GIT A/L model paper: Part II numbers its first five
+    questions as bare "(01)".."(05)", then switches to "Question (06)"
+    and "Question (07)" for the last two - no Part heading in between,
+    and all seven are genuinely real questions. Losing the last two to
+    the "question word" not being recognised as the same bracketed
+    numbering left them glued onto question 5's text."""
+    text = (
+        "(01) A coastal town installs a flood warning system.\n"
+        "(02) Ravindu is a software developer.\n"
+        "(03) Senuri is building a personal web page.\n"
+        "(04) Pavan works for a national examination department.\n"
+        "(05) Chalani is researching the impacts of ICT.\n"
+        "Question (06) [15 marks]\n"
+        "Amara is a software engineer building a banking platform.\n"
+        "Question (07) [15 marks]\n"
+        "Dilshan is developing a multimedia web portfolio.\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == [
+        "01", "02", "03", "04", "05", "06", "07"]
+    # The "[15 marks]" annotation is not stripped from the body - only the
+    # leading number marker is (same as every other question here) - but
+    # it must still be captured as this question's marks.
+    assert "Amara is a software engineer" in drafts[5]["text"]
+    assert "Dilshan is developing" in drafts[6]["text"]
+    assert drafts[5]["marks"] == 15
+    assert drafts[6]["marks"] == 15
+
+
 def test_mcq_options_on_their_own_lines_stay_inside_the_question():
     """The real Grade 12 GIT paper: questions "1." with options "(1)" to
     "(4)" one per line. Any left-margin number counted as a question, so
@@ -443,6 +473,28 @@ def test_a_worked_answer_with_no_part_labels_stays_on_the_question():
         "Each character is stored as a binary code such as ASCII.",
         "Recording marks, and preparing the timetable.",
     ]
+
+
+def test_answers_attach_when_the_marking_scheme_drops_the_parens():
+    """The real GIT A/L paper: questions 6 and 7 are printed "Question
+    (06)"/"Question (07)" (see the mixed-numbering test above), but its
+    marking scheme heads their answers "Question 6"/"Question 7" - no
+    leading zero, no parens at all. _attach_answers must still find them,
+    since it compares question numbers as integers rather than strings."""
+    paper = (
+        "(01) A coastal town installs a flood warning system.\n"
+        "Question (06) [15 marks]\n"
+        "Amara is a software engineer building a banking platform.\n"
+        "MARKING SCHEME\n"
+        "Question (01) [15 marks]\n"
+        "Rainfall sensors, timestamps.\n"
+        "Question 6\n"
+        "Control Unit fetches, ALU compares.\n"
+    )
+    drafts = extract.segment(paper)
+    assert [d["question_number"] for d in drafts] == ["01", "06"]
+    assert drafts[0]["answer"] == "Rainfall sensors, timestamps."
+    assert drafts[1]["answer"] == "Control Unit fetches, ALU compares."
 
 
 def test_a_parts_heading_and_instructions_stay_with_it():

@@ -251,6 +251,15 @@ class _Pool:
     so reuse costs a burst of 2.5-second connections at startup, and
     without it every returned connection is closed. This one opens
     lazily and keeps up to _POOL_MAX_IDLE.
+
+    get() also bounds how many connections this process can have
+    CHECKED OUT at once to _POOL_MAX_IDLE, not only how many sit idle -
+    without that, enough concurrent load makes this process open
+    connections without any limit at all, and "remaining connection
+    slots are reserved for azure replication users" is what a shared
+    Postgres server says once every ordinary slot is gone, possibly to
+    this process alone. Blocking one caller briefly is a far smaller
+    cost than that.
     """
 
     def __init__(self, dsn, options):
@@ -259,8 +268,9 @@ class _Pool:
         self._idle = []
         self._lock = threading.Lock()
         self.closed = False
+        self._checked_out = threading.Semaphore(_POOL_MAX_IDLE)
 
-    def get(self):
+    def _acquire_raw(self):
         while True:
             with self._lock:
                 item = self._idle.pop() if self._idle else None
@@ -282,25 +292,46 @@ class _Pool:
                     continue
             return raw
 
-    def put(self, raw, broken=False):
-        if broken or raw.closed or self.closed:
-            _quietly_close(raw)
-            return
+    def get(self):
+        """One checked-out connection, waiting for one to free up if
+        _POOL_MAX_IDLE are already out."""
+        self._checked_out.acquire()
         try:
-            status = raw.info.transaction_status
-            if status == psycopg2.extensions.TRANSACTION_STATUS_UNKNOWN:
+            return self._acquire_raw()
+        except Exception:
+            self._checked_out.release()
+            raise
+
+    def reconnect(self):
+        """Swap a connection Connection._run() found dead mid-use for a
+        working one - not a new checkout. The caller already holds the
+        one permit its original get() acquired; calling get() again
+        here would acquire a second permit that nothing would ever
+        release, since only one put() follows for the whole borrow."""
+        return self._acquire_raw()
+
+    def put(self, raw, broken=False):
+        try:
+            if broken or raw.closed or self.closed:
                 _quietly_close(raw)
                 return
-            if status != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
-                raw.rollback()
-        except psycopg2.Error:
-            _quietly_close(raw)
-            return
-        with self._lock:
-            if len(self._idle) < _POOL_MAX_IDLE:
-                self._idle.append((raw, time.monotonic()))
+            try:
+                status = raw.info.transaction_status
+                if status == psycopg2.extensions.TRANSACTION_STATUS_UNKNOWN:
+                    _quietly_close(raw)
+                    return
+                if status != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                    raw.rollback()
+            except psycopg2.Error:
+                _quietly_close(raw)
                 return
-        _quietly_close(raw)
+            with self._lock:
+                if len(self._idle) < _POOL_MAX_IDLE:
+                    self._idle.append((raw, time.monotonic()))
+                    return
+            _quietly_close(raw)
+        finally:
+            self._checked_out.release()
 
     def discard_idle(self):
         """Close every idle connection. Used when one turns out to have
@@ -392,7 +423,7 @@ class Connection:
                 raise
             _quietly_close(self._raw)
             self._pool.discard_idle()
-            self._raw = self._pool.get()
+            self._raw = self._pool.reconnect()
             self._raw.autocommit = self._autocommit
             result = action(self._raw)
         self._fresh = False
@@ -575,6 +606,10 @@ MIGRATIONS = [
     # blob reference is the third case - is_answer_blob marks it, so a
     # reader never mistakes an opaque reference for literal answer text.
     ("questions", "is_answer_blob", "INTEGER DEFAULT 0"),
+    # The uploaded file's own bytes, for the paper-preview pane - see
+    # create_intake_document(). NULL for anything uploaded before this
+    # existed.
+    ("intake_documents", "file_blob", "BYTEA"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -1405,24 +1440,46 @@ def create_intake_document(conn, filename, file_type=None, extractor=None,
                            uploaded_by=None, paper_grade=None,
                            paper_subject=None, raw_text=None,
                            split_style=None, paper_title=None,
-                           sections=None):
+                           sections=None, file_blob=None):
     """Record one uploaded file. Returns its new id.
 
     `sections` is the paper's list of parts from
     intake.extract.structure(), kept as JSON - read it back with
     intake_sections().
+
+    `file_blob` is the uploaded file's own bytes (PDF/Word/image),
+    verbatim. Extraction used to read it from a temp file and delete it
+    once done, keeping only the extracted text - which meant a reviewer
+    had nowhere to check a suspect OCR read against the original page.
+    Kept here, not on disk: the same reasoning as fingerprints living in
+    PostgreSQL rather than a local file - one source of truth, and it
+    survives an app restart.
     """
     cur = conn.execute(
         """INSERT INTO intake_documents
            (filename, file_type, extractor, uploaded_by, paper_grade,
-            paper_subject, raw_text, split_style, paper_title, sections)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
+            paper_subject, raw_text, split_style, paper_title, sections,
+            file_blob)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
            RETURNING id""",
         (filename, file_type, extractor, uploaded_by, paper_grade,
          paper_subject, raw_text, split_style, paper_title,
-         json.dumps(sections) if sections is not None else None),
+         json.dumps(sections) if sections is not None else None,
+         psycopg2.Binary(file_blob) if file_blob is not None else None),
     )
     return cur.fetchone()["id"]
+
+
+def intake_file_blob(conn, doc_id):
+    """The uploaded file's own bytes, for the paper-preview pane. None
+    for a document uploaded before this existed, or a re-split that has
+    since replaced the drafts (the file itself is untouched by that)."""
+    row = conn.execute(
+        "SELECT file_blob FROM intake_documents WHERE id = ?", (doc_id,)
+    ).fetchone()
+    if row is None or row["file_blob"] is None:
+        return None
+    return bytes(row["file_blob"])
 
 
 def intake_sections(doc):
