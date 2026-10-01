@@ -1,0 +1,12 @@
+<!-- @dsCard group="Signals" height=88 subtitle="Similarity bands and verdicts, as words with a shape, never colour alone." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Verdict</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row'},h(E.Verdict,{verdict:'LIKELY DUPLICATE'}),h(E.Verdict,{verdict:'NEEDS REVIEW'}),h(E.Verdict,{verdict:'DISTINCT'}),h(E.Verdict,{verdict:'REPEAT ON ASSESSMENT'}),h(E.Verdict,{verdict:'EXACT MATCH'})));
+</script>
+</body>
+</html>

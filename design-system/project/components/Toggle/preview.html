@@ -1,0 +1,12 @@
+<!-- @dsCard group="Forms" height=80 subtitle="An on/off setting that applies immediately." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Toggle</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row',style:{gap:32}},h(E.Toggle,{label:'Safety checks on',checked:true}),h(E.Toggle,{label:'Show reviewed pairs'})));
+</script>
+</body>
+</html>

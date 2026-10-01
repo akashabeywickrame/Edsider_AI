@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Duplicates within a paper</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.wp-paper{all:unset;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;padding:12px 14px;border-radius:12px;cursor:pointer;font-size:15px;line-height:20px}
+.wp-paper:hover{background:var(--surface-sunk)}
+.wp-paper:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.wp-paper[aria-current="true"]{background:var(--primary-soft);color:var(--primary);font-weight:700}
+</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1760px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Within a paper" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Duplicates" title="within a paper" subtitle="The same question saved twice on one assessment. Only pairs scoring 0.95 or higher are shown - below that, papers flood with look-alike MCQs."></x-import>
+
+<section aria-label="Summary" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px">
+<x-import component-from-global-scope="EdSider.Stat" label="Papers checked" value="650" icon="paper" accent="blue"></x-import>
+<x-import component-from-global-scope="EdSider.Stat" label="Repeats found" value="182" icon="copy" accent="coral"></x-import>
+<x-import component-from-global-scope="EdSider.Stat" label="Papers with a repeat" value="105" icon="search" accent="gold"></x-import>
+</section>
+
+<div style="display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 28px; align-items: start">
+<nav class="es-card" aria-label="Papers with repeats" style="display: flex; flex-direction: column; gap: 4px; padding: 14px">
+<h2 class="scr-h3" style="padding: 8px 14px 10px">Papers with repeats</h2>
+<sc-for list="{{papers}}" as="pp" hint-placeholder-count="6">
+<button class="wp-paper" type="button" aria-current="{{pp.cur}}" onClick="{{pp.pick}}"><span>Assessment #{{pp.id}}<span class="es-caption" style="display: block">{{pp.subject}}</span></span><span class="es-pill es-tone--dup">{{pp.n}}</span></button>
+</sc-for>
+<p class="es-caption" style="padding: 10px 14px 4px">103 more papers</p>
+</nav>
+
+<section aria-label="Repeats on this paper" style="display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">Assessment #{{cur.id}} - {{cur.subject}}</h2>
+<label class="es-check"><input type="checkbox"> Show pairs already reviewed</label>
+</div>
+<sc-for list="{{cur.pairs}}" as="p" hint-placeholder-count="2">
+<x-import component-from-global-scope="EdSider.PairReview" verdict="REPEAT ON ASSESSMENT" context="{{p.context}}" score="{{p.score}}" a="{{p.a}}" b="{{p.b}}" passage-note="{{p.passage}}"></x-import>
+</sc-for>
+</section>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1760}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { cur: 1127 }; }
+renderVals() {
+var self = this;
+var papers = [
+{ id: 1127, subject: 'History - Grade 11', n: 2, pairs: [
+{ context: 'Questions 31 and 33', score: 0.99,
+passage: 'Questions 31, 32, 33 and 34 share the same 967-character statement set - a shared-passage family, each asking something different. Check the questions themselves before confirming.',
+a: { id: 58317, number: 31, text: 'Which pair shows the second statement being a result of the first?', grade: 'G11', subject: 'History' },
+b: { id: 58328, number: 33, text: 'Which pair shows no relationship between the first and second statements?', grade: 'G11', subject: 'History' } },
+{ context: 'Questions 12 and 27', score: 1.0,
+a: { id: 58209, number: 12, text: 'The Kandyan Convention was signed in\n(1) 1796   (2) 1815   (3) 1833   (4) 1948', grade: 'G11', subject: 'History' },
+b: { id: 58264, number: 27, text: 'The Kandyan Convention was signed in\n(1) 1796   (2) 1815   (3) 1833   (4) 1948', grade: 'G11', subject: 'History' } }
+] },
+{ id: 884, subject: 'Economics - Grade 12', n: 1, pairs: [
+{ context: 'Questions 8 and 19', score: 1.0,
+a: { id: 44950, number: 8, text: 'A rise in the price of a good leads to a fall in the quantity demanded. This is known as\n(1) the law of supply   (2) the law of demand   (3) market equilibrium   (4) elasticity', grade: 'G12', subject: 'Economics' },
+b: { id: 44987, number: 19, text: 'A rise in the price of a good leads to a fall in the quantity demanded. This is known as\n(1) the law of supply   (2) the law of demand   (3) market equilibrium   (4) elasticity', grade: 'G12', subject: 'Economics' } }
+] }
+];
+var cur = papers.filter(function (p) { return p.id === self.state.cur; })[0];
+return {
+cur: cur,
+papers: papers.map(function (p) { return Object.assign({}, p, { cur: p.id === self.state.cur ? 'true' : 'false', pick: function () { self.setState({ cur: p.id }); } }); })
+};
+}
+}
+</script>
+</body>
+</html>

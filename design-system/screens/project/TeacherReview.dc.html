@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Teacher review</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.tr-lab{font:700 13px/18px var(--font-heading);color:var(--text-muted);margin:0 0 6px}
+</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 2260px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="teacher" active="My papers" hint-size="1440px,76px"></dc-import>
+<main class="scr-main" style="padding-left: 200px; padding-right: 200px">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Teacher" title="review" subtitle="Every question on the paper, laid out the way you check it in EdSider - the question, its marks and its answer - with a place to say what is wrong."></x-import>
+
+<section class="es-card" aria-label="Paper" style="display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 32px; align-items: end">
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Your papers" options="{{papers}}"></x-import>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<p class="es-field__label" style="margin: 0">{{done}} of 45 marked reviewed</p>
+<div style="height: 10px; border-radius: 999px; background: var(--surface-sunk); overflow: hidden"><div style="height: 10px; width: {{donePct}}; background: var(--primary); border-radius: 999px"></div></div>
+</div>
+</section>
+
+<sc-for list="{{qs}}" as="q" hint-placeholder-count="3">
+<article class="es-card" style="display: flex; flex-direction: column; gap: 18px; padding: 26px 28px">
+<div style="display: flex; justify-content: space-between; align-items: center">
+<h2 class="scr-h2" style="color: var(--primary)">{{q.label}}</h2>
+<span style="font-family: var(--font-heading); font-weight: 700">{{q.marks}} marks</span>
+</div>
+<div><p class="tr-lab">Question</p><p class="es-question-text">{{q.text}}</p></div>
+<sc-if value="{{q.hasOptions}}" hint-placeholder-val="{{ true }}">
+<div><p class="tr-lab">Answer options</p><x-import component-from-global-scope="EdSider.McqOptions" options="{{q.options}}" correct="{{q.correct}}"></x-import></div>
+</sc-if>
+<sc-if value="{{q.hasGuide}}" hint-placeholder-val="{{ false }}">
+<div style="background: var(--surface-sunk); border-radius: 12px; padding: 14px 18px"><p class="tr-lab">Marking guidance</p><p style="margin: 0; font-size: 15px; line-height: 24px">{{q.guide}}</p></div>
+</sc-if>
+<sc-if value="{{q.hasComments}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 10px">
+<p class="tr-lab" style="margin: 0">Comments</p>
+<sc-for list="{{q.comments}}" as="c" hint-placeholder-count="1">
+<div style="border: 1px solid var(--border-soft); border-radius: 12px; padding: 12px 16px"><p class="es-caption" style="margin: 0 0 4px">{{c.by}} - {{c.at}}</p><p style="margin: 0; font-size: 15px; line-height: 23px">{{c.text}}</p></div>
+</sc-for>
+</div>
+</sc-if>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; border-top: 1px solid var(--border-soft); padding-top: 16px; flex-wrap: wrap">
+<label class="es-check"><input type="checkbox" checked="{{q.reviewed}}" onChange="{{q.toggle}}"> Marked as reviewed</label>
+<x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm" on-click="{{q.openComment}}">Add comment</x-import>
+</div>
+<sc-if value="{{q.commenting}}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; flex-direction: column; gap: 10px">
+<x-import component-from-global-scope="EdSider.Field" as="textarea" label="Comment" placeholder="Is this question or its answer wrong? Say what needs fixing." rows="{{three}}"></x-import>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" size="sm">Add comment</x-import></div>
+</div>
+</sc-if>
+</article>
+</sc-for>
+<p class="es-caption" style="text-align: center">42 more questions and parts on this paper</p>
+
+<section class="es-card" aria-label="Finish review" style="display: flex; flex-direction: column; gap: 18px; padding: 26px 28px">
+<h2 class="scr-h2">Finish review</h2>
+<fieldset style="border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px">
+<legend class="es-field__label" style="margin-bottom: 10px">What should happen to this paper?</legend>
+<label class="es-card" style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; box-shadow: none; border: 1.5px solid var(--border-strong)"><input type="radio" name="fin" style="accent-color: var(--primary); margin-top: 4px"><span><span style="display: block; font-weight: 700">Refer back</span><span class="es-caption">There are issues or errors that need correction. It goes back to data entry with your comments.</span></span></label>
+<label class="es-card" style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; box-shadow: none; border: 1.5px solid var(--border-strong)"><input type="radio" name="fin" style="accent-color: var(--primary); margin-top: 4px"><span><span style="display: block; font-weight: 700">Review done</span><span class="es-caption">The paper has no issues. It is added to the question bank, ready to publish for students.</span></span></label>
+</fieldset>
+<x-import component-from-global-scope="EdSider.Notice" tone="info">Mark every question reviewed before finishing.</x-import>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" disabled="{{yes}}">Finish review</x-import></div>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":2260}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { rev: { a: true, b: false, c: false }, open: null }; }
+renderVals() {
+var self = this;
+var base = [
+{ key: 'a', label: 'Q01', marks: 1, text: 'Which of the following is an input device?', options: [{ label: '1', text: 'Monitor' }, { label: '2', text: 'Printer' }, { label: '3', text: 'Scanner' }, { label: '4', text: 'Speaker' }], correct: '3', comments: [] },
+{ key: 'b', label: 'Q02', marks: 1, text: 'What is the binary equivalent of the decimal number 13?', options: [{ label: '1', text: '1011' }, { label: '2', text: '1101' }, { label: '3', text: '1110' }, { label: '4', text: '1001' }], correct: '2',
+comments: [{ by: 'N. Perera', at: '30 Sep 2026, 09:40', text: 'Option 3 should read 1110 in the printed paper too - please check the scan.' }] },
+{ key: 'c', label: 'Part 01(1)(a)', marks: 2, text: "Define the term 'system'.", options: [], guide: 'A set of interrelated components working together towards a common goal. (2 marks - 1 for components, 1 for goal)', comments: [] }
+];
+var n = 11;
+var qs = base.map(function (q) {
+if (self.state.rev[q.key]) n += 1;
+return Object.assign({}, q, {
+hasOptions: q.options.length > 0, hasGuide: !!q.guide, hasComments: q.comments.length > 0,
+reviewed: !!self.state.rev[q.key], commenting: self.state.open === q.key,
+toggle: function () { var r = Object.assign({}, self.state.rev); r[q.key] = !r[q.key]; self.setState({ rev: r }); },
+openComment: function () { self.setState({ open: self.state.open === q.key ? null : q.key }); }
+});
+});
+return {
+yes: true, three: 3, qs: qs, done: n, donePct: Math.round(n / 45 * 100) + '%',
+papers: ['#9 - GIT_Gr12_FirstTT.pdf (Awaiting your review)', '#6 - Biosystem_Gr13_Model.pdf (Review done)']
+};
+}
+}
+</script>
+</body>
+</html>

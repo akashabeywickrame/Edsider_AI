@@ -1,0 +1,12 @@
+<!-- @dsCard group="Forms" height=300 subtitle="Labelled text, text-area and select controls." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Field</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-stack',style:{maxWidth:520}},h(E.Field,{as:'textarea',label:'New question',placeholder:'Paste or type the question exactly as a teacher would enter it.',rows:3}),h('div',{className:'es-row',style:{alignItems:'flex-start'}},h('div',{style:{flex:1}},h(E.Field,{as:'select',label:'Grade',options:['Grade 10','Grade 11','Grade 12']})),h('div',{style:{flex:1}},h(E.Field,{as:'select',label:'Paper language',options:['English','Sinhala','Tamil'],help:'Used for reading scans.'})))));
+</script>
+</body>
+</html>

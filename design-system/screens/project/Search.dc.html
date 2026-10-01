@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Search by meaning</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.sx-ex{all:unset;box-sizing:border-box;font:600 14px/20px var(--font-body);padding:8px 14px;border-radius:999px;background:var(--surface);border:1.5px solid var(--border-soft);cursor:pointer;color:var(--text-dark)}
+.sx-ex:hover{border-color:var(--primary);color:var(--primary)}
+.sx-ex:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1300px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Search" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Search" title="by meaning" subtitle="Describe what a question asks in your own words. Results match the meaning, not the exact wording."></x-import>
+
+<section class="es-card" aria-label="Search" style="display: flex; flex-direction: column; gap: 16px; padding: 28px">
+<form style="display: flex; gap: 12px; align-items: flex-end" onSubmit="{{noop}}">
+<div class="es-field" style="flex-grow: 1">
+<label class="es-field__label" for="q">What should the question be about?</label>
+<input id="q" class="es-input" type="search" value="how plants make food using sunlight" style="font-size: 18px; padding: 14px 18px; border-radius: 16px">
+</div>
+<x-import component-from-global-scope="EdSider.Button" variant="primary" type="submit">Search</x-import>
+</form>
+<div class="es-row" style="gap: 10px">
+<span class="es-caption">Try:</span>
+<button class="sx-ex" type="button">Causes of the French Revolution</button>
+<button class="sx-ex" type="button">Newton's second law</button>
+<button class="sx-ex" type="button">Credit creation by banks</button>
+<button class="sx-ex" type="button">Input and output devices</button>
+</div>
+</section>
+
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">5 closest questions</h2>
+<p class="es-caption">English questions only for now - Sinhala and Tamil are not fingerprinted yet.</p>
+</div>
+
+<section aria-label="Results" style="display: flex; flex-direction: column; gap: 14px">
+<sc-for list="{{results}}" as="r" hint-placeholder-count="5">
+<article class="es-card" style="display: grid; grid-template-columns: 110px minmax(0, 1fr) 220px; gap: 24px; align-items: center">
+<div style="text-align: center"><span style="display: block; font: 800 25.6px/30px var(--font-heading); color: var(--primary)">{{r.pct}}</span><span class="es-caption">match</span></div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<p class="es-question-text">{{r.text}}</p>
+<p class="es-caption">Grade {{r.grade}} - {{r.subject}} - {{r.topic}}</p>
+</div>
+<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px"><span class="es-id">#{{r.id}}</span><span class="es-caption">{{r.shape}}</span></div>
+</article>
+</sc-for>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1300}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+noop: function (e) { if (e && e.preventDefault) e.preventDefault(); },
+results: [
+{ pct: '89%', id: 30214, text: 'Explain the process of photosynthesis in green plants.', grade: 'G09', subject: 'Science', topic: 'Plant nutrition', shape: 'Structured' },
+{ pct: '87%', id: 30288, text: 'Name the raw materials needed for photosynthesis and state where in the leaf it takes place.', grade: 'G09', subject: 'Science', topic: 'Plant nutrition', shape: 'Structured' },
+{ pct: '84%', id: 27561, text: 'Which gas is released by plants during photosynthesis?\n(1) Carbon dioxide   (2) Oxygen   (3) Nitrogen   (4) Hydrogen', grade: 'G07', subject: 'Science', topic: 'Living things', shape: 'MCQ' },
+{ pct: '81%', id: 30302, text: 'What is the role of chlorophyll in a leaf?', grade: 'G09', subject: 'Science', topic: 'Plant nutrition', shape: 'Short answer' },
+{ pct: '78%', id: 48830, text: 'Write the word equation for photosynthesis.', grade: 'G10', subject: 'Science', topic: 'Energy in living systems', shape: 'Short answer' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

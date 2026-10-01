@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Teacher review on a phone</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.tm-lab{font:700 13px/18px var(--font-heading);color:var(--text-muted);margin:0 0 6px}
+.tm .es-mcq{grid-template-columns:1fr}
+.tm-full{width:100%}
+</style>
+</helmet>
+<div class="es-root tm" style="width: 390px; height: 1780px; overflow: hidden; position: relative; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<header style="height: 60px; box-sizing: border-box; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; background: var(--surface); border-bottom: 1px solid var(--border-soft)">
+<img src="/_blob/b2f5067eb511bfec7064c52dca44a123" alt="EdSider AI" style="height: 40px; width: auto; display: block; margin-left: -10px">
+<span style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; color: var(--primary); background: var(--primary-soft); padding: 4px 10px; border-radius: 999px">Teacher review</span>
+</header>
+<main style="padding: 16px; display: flex; flex-direction: column; gap: 16px">
+<div style="background: var(--gradient-hero); border-radius: 16px; padding: 20px">
+<h1 style="font-family: var(--font-heading); font-size: 26px; line-height: 32px; font-weight: 800; margin: 0">GIT <span style="color: var(--primary)">Grade 12</span></h1>
+<p class="es-caption" style="margin-top: 4px">First Term Examination - paper #9</p>
+<div style="margin-top: 14px; display: flex; flex-direction: column; gap: 6px">
+<p class="es-field__label" style="margin: 0">12 of 45 marked reviewed</p>
+<div style="height: 8px; border-radius: 999px; background: var(--surface); overflow: hidden"><div style="height: 8px; width: 27%; background: var(--primary); border-radius: 999px"></div></div>
+</div>
+</div>
+
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Your papers" options="{{papers}}"></x-import>
+
+<article class="es-card" style="display: flex; flex-direction: column; gap: 14px; padding: 18px">
+<div style="display: flex; justify-content: space-between; align-items: center"><h2 class="scr-h2" style="color: var(--primary)">Q02</h2><span style="font-family: var(--font-heading); font-weight: 700">1 mark</span></div>
+<div><p class="tm-lab">Question</p><p class="es-question-text">What is the binary equivalent of the decimal number 13?</p></div>
+<div><p class="tm-lab">Answer options</p><x-import component-from-global-scope="EdSider.McqOptions" options="{{q2}}" correct="2"></x-import></div>
+<div style="border: 1px solid var(--border-soft); border-radius: 12px; padding: 12px 14px"><p class="es-caption" style="margin: 0 0 4px">N. Perera - 30 Sep 2026, 09:40</p><p style="margin: 0; font-size: 15px; line-height: 23px">Option 3 should read 1110 in the printed paper too - please check the scan.</p></div>
+<label class="es-check" style="min-height: 44px"><input type="checkbox"> Marked as reviewed</label>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Add comment</x-import>
+</article>
+
+<article class="es-card" style="display: flex; flex-direction: column; gap: 14px; padding: 18px">
+<div style="display: flex; justify-content: space-between; align-items: center"><h2 class="scr-h2" style="color: var(--primary)">Part 01(1)(a)</h2><span style="font-family: var(--font-heading); font-weight: 700">2 marks</span></div>
+<div><p class="tm-lab">Question</p><p class="es-question-text">Define the term 'system'.</p></div>
+<div style="background: var(--surface-sunk); border-radius: 12px; padding: 12px 14px"><p class="tm-lab">Marking guidance</p><p style="margin: 0; font-size: 15px; line-height: 24px">A set of interrelated components working together towards a common goal. (2 marks - 1 for components, 1 for goal)</p></div>
+<label class="es-check" style="min-height: 44px"><input type="checkbox"> Marked as reviewed</label>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Add comment</x-import>
+</article>
+</main>
+<div style="position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--border-soft); padding: 14px 16px 22px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 -8px 24px #1b153312">
+<p class="es-caption" style="text-align: center">Mark all 45 reviewed to finish</p>
+<x-import component-from-global-scope="EdSider.Button" variant="primary" disabled="{{yes}}" class-name="tm-full">Finish review</x-import>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1780}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+yes: true,
+papers: ['#9 - GIT Grade 12 (Awaiting review)', '#6 - Biosystem Grade 13 (Review done)'],
+q2: [{ label: '1', text: '1011' }, { label: '2', text: '1101' }, { label: '3', text: '1110' }, { label: '4', text: '1001' }]
+};
+}
+}
+</script>
+</body>
+</html>

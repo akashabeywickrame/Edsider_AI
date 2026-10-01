@@ -1,0 +1,59 @@
+{
+  "v": 3,
+  "assetGroups": {
+    "Logos": {
+      "name": "Logos",
+      "tile": "l",
+      "order": [
+        "edsider-ai-logo.png",
+        "edsider-logo.png"
+      ],
+      "files": {
+        "edsider-ai-logo.png": {
+          "name": "edsider-ai-logo.png",
+          "blob": "d54aff9f02018e26abe07a736604c6c4",
+          "size": 64131,
+          "type": "image/png"
+        },
+        "edsider-logo.png": {
+          "name": "edsider-logo.png",
+          "blob": "69c9cc921ba69832b37822b148b8ac3b",
+          "size": 31384,
+          "type": "image/png"
+        }
+      }
+    }
+  },
+  "blobs": {},
+  "createdOnFiles": {
+    "at": "2026-09-30T10:05:00Z",
+    "v": 1
+  },
+  "docs": {
+    "readme": "project/README.md",
+    "sections": []
+  },
+  "groups": [
+    "Logos"
+  ],
+  "lastChange": {
+    "at": "2026-09-30T11:20:00Z",
+    "by": "Akash Abeywickrama",
+    "via": "Claude Code",
+    "note": "Added McqEditor: extracted MCQ options are editable on Paper intake (text, correct answer, add/remove, one or many correct), matching EdSider's own question editor."
+  },
+  "layout": "files",
+  "libraries": [
+    {
+      "name": "react",
+      "version": "18"
+    },
+    {
+      "name": "react-dom",
+      "version": "18"
+    }
+  ],
+  "namespace": "EdSider",
+  "sections": {},
+  "title": "EdSider Design System"
+}

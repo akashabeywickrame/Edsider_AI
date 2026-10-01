@@ -1,0 +1,16 @@
+<!-- @dsCard group="Feedback" height=330 subtitle="Inline messages: info, success, warning, error." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Notice</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-stack',style:{gap:12}},
+  h(E.Notice,{tone:'info'},'No preview for Word documents yet - open the original file alongside this page.'),
+  h(E.Notice,{tone:'success'},'41822 vs 57310 saved as not a duplicate. It is listed on the Reviewed decisions page.'),
+  h(E.Notice,{tone:'warning',title:'3 questions still not marked reviewed'},'Mark every question reviewed before running the duplicate check.'),
+  h(E.Notice,{tone:'error',title:'Cannot reach the database named by EDSIDER_DB'},'connection to server timed out')));
+</script>
+</body>
+</html>

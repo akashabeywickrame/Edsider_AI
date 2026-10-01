@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Paper intake</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.pi-rte{border:1.5px solid var(--border-strong);border-radius:12px;background:var(--surface);overflow:hidden}
+.pi-rte:focus-within{border-color:var(--primary)}
+.pi-rte__bar{display:flex;gap:2px;padding:6px;border-bottom:1px solid var(--border-soft);background:var(--surface-page)}
+.pi-rte__bar button{all:unset;box-sizing:border-box;min-width:32px;height:30px;padding:0 8px;border-radius:8px;font:600 14px/30px var(--font-body);text-align:center;color:var(--text-dark);cursor:pointer}
+.pi-rte__bar button:hover{background:var(--primary-soft);color:var(--primary)}
+.pi-rte__bar button:focus-visible{outline:3px solid var(--primary);outline-offset:1px}
+.pi-rte__sep{width:1px;background:var(--border-soft);margin:4px 4px}
+.pi-rte__area{display:block;width:100%;box-sizing:border-box;border:0;outline:0;resize:vertical;min-height:84px;padding:12px 14px;font:16.8px/29.4px var(--font-body);color:var(--text-dark);background:transparent}
+.pi-row{display:flex;flex-wrap:wrap;gap:20px;align-items:center}
+.pi-marks{width:110px}
+.pi-exp{all:unset;box-sizing:border-box;display:flex;justify-content:space-between;align-items:center;width:100%;padding:11px 14px;border:1px solid var(--border-soft);border-radius:12px;background:var(--surface-page);font:600 14.5px/20px var(--font-body);color:var(--text-dark);cursor:pointer}
+.pi-exp:hover{border-color:var(--primary);color:var(--primary)}
+.pi-exp:focus-visible{outline:3px solid var(--primary);outline-offset:2px}
+.pi-exp[aria-expanded="true"]{border-radius:12px 12px 0 0;border-bottom-color:transparent}
+.pi-exp__chev{font-size:12px;color:var(--text-muted)}
+.pi-panel{border:1px solid var(--border-soft);border-top:0;border-radius:0 0 12px 12px;padding:14px;display:flex;flex-direction:column;gap:14px;background:var(--surface)}
+.pi-imgs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.pi-img{border:1px solid var(--border-soft);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;background:var(--surface-page)}
+.pi-img__slot{font:700 12px/16px var(--font-heading);letter-spacing:.04em;text-transform:uppercase;color:var(--primary)}
+.pi-img__pic{background:#ffffff;border:1px solid var(--border-soft);border-radius:8px;display:flex;align-items:center;justify-content:center;height:120px}
+.pi-attach{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:end;padding-top:12px;border-top:1px dashed var(--border-soft)}
+.pi-file{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 12px;border:1.5px dashed var(--border-strong);border-radius:12px;font-size:14px;color:var(--text-muted);background:var(--surface-page)}
+.pi-parthead{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;padding:14px 0 6px;border-bottom:2px solid var(--primary)}
+.pi-label{font:700 16px/22px var(--font-heading);color:var(--primary)}
+.pi-part{margin-left:30px}
+</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 4700px; overflow: hidden; position: relative; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Paper intake" hint-size="1440px,76px"></dc-import>
+<div style="position: absolute; left: 12px; top: 420px">
+<x-import component-from-global-scope="EdSider.SectionRail" label="Paper intake sections" items="{{rail}}" active="paper"></x-import>
+</div>
+<main class="scr-main" style="width: 1432px">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Paper" title="intake" subtitle="Upload a question paper - PDF, Word, or an image of a handwritten one. Its questions are pulled out, you correct them, then the batch is checked for repeats against itself before any of it joins the bank. Nothing here is trusted until you have confirmed it."></x-import>
+
+<section id="upload" class="es-card" aria-label="Upload a paper" style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px">
+<div style="border: 2px dashed var(--border-strong); border-radius: 16px; background: var(--surface-sunk); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; text-align: center">
+<span class="es-stat__icon es-accent--primary"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"></path></svg></span>
+<p class="scr-h3">Drop the question paper here</p>
+<p class="es-caption">PDF, Word (.docx, .doc), or an image of the paper - PNG, JPG, TIFF or BMP</p>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Choose a file</x-import>
+</div>
+<div style="display: flex; flex-direction: column; gap: 18px">
+<fieldset style="border: 0; margin: 0; padding: 0">
+<legend class="es-field__label" style="margin-bottom: 8px">Language of the paper</legend>
+<div class="es-row">
+<label class="scr-radio"><input type="radio" name="ul" checked> English</label>
+<label class="scr-radio"><input type="radio" name="ul"> Sinhala</label>
+<label class="scr-radio"><input type="radio" name="ul"> Tamil</label>
+</div>
+<p class="es-caption" style="margin-top: 6px">Used to read scanned pages and questions pasted in as pictures. Typed text is read directly whatever this says.</p>
+</fieldset>
+<fieldset style="border: 0; margin: 0; padding: 0">
+<legend class="es-field__label" style="margin-bottom: 8px">Where does a new question start in this paper?</legend>
+<div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start">
+<label class="scr-radio"><input type="radio" name="us" checked> Numbered at the left margin  (1.  2.  01.  Q1  (1))</label>
+<label class="scr-radio"><input type="radio" name="us"> Lines containing the word 'Question'</label>
+</div>
+<p class="es-caption" style="margin-top: 6px">Pick 'Question' for a worked-solutions or marking-scheme document, where the numbered lists are answer steps rather than questions.</p>
+</fieldset>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" arrow="{{yes}}">Extract questions</x-import></div>
+</div>
+</section>
+
+<section id="paper" class="es-card" aria-label="Paper details" style="display: flex; flex-direction: column; gap: 18px">
+<div style="display: flex; justify-content: space-between; align-items: flex-end; gap: 20px">
+<div style="width: 460px"><x-import component-from-global-scope="EdSider.Field" as="select" label="Uploaded papers" options="{{papers}}"></x-import></div>
+<x-import component-from-global-scope="EdSider.StatusPill" status="extracted"></x-import>
+</div>
+<p class="es-caption" style="margin-top: -8px">Extractor: pdfplumber - text layer on 11 pages, OCR on 1 page with pictures - uploaded 30 Sep 2026, 09:12</p>
+<button class="pi-exp" type="button" aria-expanded="{{resplitOpen}}" onClick="{{toggleResplit}}">Split it differently, or see the raw text read <span class="pi-exp__chev">{{resplitChev}}</span></button>
+<sc-if value="{{resplitOn}}" hint-placeholder-val="{{ false }}">
+<div class="pi-panel" style="margin-top: -18px">
+<p class="es-caption" style="margin: 0">The paper's text is kept, so it can be re-split without uploading it again. Re-splitting REPLACES the questions below, including any edits already made to them.</p>
+<p style="margin: 0; font-size: 15px">That style finds <b>45</b> question(s) (Part I: 40, Part II: 5). Currently stored: <b>84</b>.</p>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" size="sm">Re-split this paper</x-import></div>
+</div>
+</sc-if>
+
+<h2 style="font-family: var(--font-heading); font-size: 33.6px; line-height: 40px; font-weight: 800; margin: 8px 0 0">General Information Technology <span style="color: var(--primary)">- Grade 12 - First Term Examination</span></h2>
+<h3 class="scr-h3" style="margin-top: 4px">Paper details</h3>
+<div style="display: grid; grid-template-columns: 2fr 2fr 3fr auto; gap: 14px; align-items: end">
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Grade" options="{{grades}}"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Subject" options="{{subjects}}"></x-import>
+<x-import component-from-global-scope="EdSider.Field" label="Title" value="First Term Examination"></x-import>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Apply to all</x-import>
+</div>
+</section>
+
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">Questions (84)</h2>
+<p class="es-caption">12 of 84 marked reviewed</p>
+</div>
+<x-import component-from-global-scope="EdSider.Notice" tone="warning" title="2 of 84 came out low-confidence">Almost no text, or no marks found. They are marked below.</x-import>
+<p class="es-caption" style="margin-top: -12px">Grade and subject come from Paper details above. Set the marks per question, fix the text, and tick Reviewed once a question is correct.</p>
+
+<div style="display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start">
+<section aria-label="Questions" style="display: flex; flex-direction: column; gap: 16px">
+
+<div class="pi-parthead">
+<div><p class="scr-h2" style="color: var(--primary)">Part I</p><p class="es-caption">Multiple choice  |  40 question(s)  |  1 marks each</p></div>
+<x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Instructions for this part</x-import>
+</div>
+
+<article class="es-card es-draft" aria-label="Question 1">
+<div class="es-draft__head"><span class="pi-label">Question 1</span><span style="flex: 1"></span><span class="es-pill es-tone--ok">Reviewed</span></div>
+<div class="pi-rte"><div class="pi-rte__bar" role="toolbar" aria-label="Formatting"><button type="button" aria-label="Bold"><b>B</b></button><button type="button" aria-label="Italic"><i>I</i></button><span class="pi-rte__sep"></span><button type="button" aria-label="Subscript">x<sub>2</sub></button><button type="button" aria-label="Superscript">x<sup>2</sup></button></div><textarea class="pi-rte__area" aria-label="Question 1 text" rows="2">Which of the following is an input device?</textarea></div>
+<x-import component-from-global-scope="EdSider.McqEditor" options="{{q1}}" correct="3"></x-import>
+<div class="pi-row"><div class="pi-marks"><x-import component-from-global-scope="EdSider.Field" type="number" label="Marks" value="1"></x-import></div><label class="es-check" style="margin-top: 26px"><input type="checkbox" checked> Reviewed</label></div>
+<button class="pi-exp" type="button" aria-expanded="false">Answer <span class="pi-exp__chev">Show</span></button>
+<button class="pi-exp" type="button" aria-expanded="false">Images <span class="pi-exp__chev">Show</span></button>
+<div style="display: flex; justify-content: flex-end"><x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Remove</x-import></div>
+</article>
+
+<article class="es-card es-draft" aria-label="Question 17">
+<div class="es-draft__head"><span class="pi-label">Question 17</span><span style="flex: 1"></span><span class="es-pill es-tone--neutral">Not reviewed</span></div>
+<div class="pi-rte"><div class="pi-rte__bar" role="toolbar" aria-label="Formatting"><button type="button" aria-label="Bold"><b>B</b></button><button type="button" aria-label="Italic"><i>I</i></button><span class="pi-rte__sep"></span><button type="button" aria-label="Subscript">x<sub>2</sub></button><button type="button" aria-label="Superscript">x<sup>2</sup></button></div><textarea class="pi-rte__area" aria-label="Question 17 text" rows="2">Which of the following circuit symbols represents a resistor?</textarea></div>
+<div class="pi-row"><div class="pi-marks"><x-import component-from-global-scope="EdSider.Field" type="number" label="Marks" value="1"></x-import></div><label class="es-check" style="margin-top: 26px"><input type="checkbox"> Reviewed</label></div>
+<button class="pi-exp" type="button" aria-expanded="false">Answer (none found in the paper) <span class="pi-exp__chev">Show</span></button>
+<button class="pi-exp" type="button" aria-expanded="{{img17Open}}" onClick="{{toggle17}}">Images ({{img17Count}}) <span class="pi-exp__chev">{{img17Chev}}</span></button>
+<sc-if value="{{img17On}}" hint-placeholder-val="{{ true }}">
+<div class="pi-panel" style="margin-top: -16px">
+<div class="pi-imgs">
+<sc-for list="{{img17}}" as="im" hint-placeholder-count="4">
+<figure class="pi-img" style="margin: 0">
+<figcaption class="pi-img__slot">{{im.slot}}</figcaption>
+<div class="pi-img__pic" role="img" aria-label="{{im.alt}}">
+<sc-if value="{{im.isR}}" hint-placeholder-val="{{ false }}"><svg width="150" height="40" viewBox="0 0 150 40" aria-hidden="true"><path d="M5 20h35l6-12 10 24 10-24 10 24 10-24 10 24 6-12h43" fill="none" stroke="#1b1533" stroke-width="2.5" stroke-linejoin="round"></path></svg></sc-if>
+<sc-if value="{{im.isC}}" hint-placeholder-val="{{ false }}"><svg width="150" height="60" viewBox="0 0 150 60" aria-hidden="true"><path d="M5 30h62M83 30h62M67 8v44M83 8v44" fill="none" stroke="#1b1533" stroke-width="2.5"></path></svg></sc-if>
+<sc-if value="{{im.isB}}" hint-placeholder-val="{{ false }}"><svg width="150" height="60" viewBox="0 0 150 60" aria-hidden="true"><path d="M5 30h62M83 30h62M67 6v48M83 18v24" fill="none" stroke="#1b1533" stroke-width="2.5"></path></svg></sc-if>
+<sc-if value="{{im.isL}}" hint-placeholder-val="{{ false }}"><svg width="150" height="60" viewBox="0 0 150 60" aria-hidden="true"><path d="M5 30h50M95 30h50M61 16l28 28M89 16L61 44" fill="none" stroke="#1b1533" stroke-width="2.5"></path><circle cx="75" cy="30" r="20" fill="none" stroke="#1b1533" stroke-width="2.5"></circle></svg></sc-if>
+</div>
+<x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm" on-click="{{im.remove}}">Remove image</x-import>
+</figure>
+</sc-for>
+</div>
+<div class="pi-attach" style="grid-template-columns: 1fr">
+<div style="max-width: 520px"><x-import component-from-global-scope="EdSider.Field" type="number" label="This question's options were not split out automatically - how many does it have?" value="4"></x-import></div>
+</div>
+<div class="pi-attach">
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Attach a new image to" options="{{slots17}}"></x-import>
+<div class="es-field"><span class="es-field__label">Image file</span><span class="pi-file"><x-import component-from-global-scope="EdSider.Icon" name="upload"></x-import> Choose a PNG or JPG</span></div>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Attach image</x-import>
+</div>
+</div>
+</sc-if>
+<div style="display: flex; justify-content: flex-end"><x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Remove</x-import></div>
+</article>
+<p class="es-caption" style="text-align: center">38 more questions in Part I</p>
+
+<div class="pi-parthead">
+<div><p class="scr-h2" style="color: var(--primary)">Part II</p><p class="es-caption">Structured / essay  |  5 question(s)  |  39 part(s)  |  15 marks each</p></div>
+<x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Instructions for this part</x-import>
+</div>
+
+<article class="es-card es-draft es-draft--stem" aria-label="Question 01">
+<div class="es-draft__head"><span class="pi-label">Question 01</span><span style="flex: 1"></span><span class="es-pill es-tone--neutral">Not reviewed</span></div>
+<p class="es-caption" style="margin: 0">Shared text for the parts below - the scenario or diagram they all refer to. Each part is answered separately.</p>
+<div class="pi-rte"><div class="pi-rte__bar" role="toolbar" aria-label="Formatting"><button type="button" aria-label="Bold"><b>B</b></button><button type="button" aria-label="Italic"><i>I</i></button><span class="pi-rte__sep"></span><button type="button" aria-label="Subscript">x<sub>2</sub></button><button type="button" aria-label="Superscript">x<sup>2</sup></button></div><textarea class="pi-rte__area" aria-label="Question 01 shared text" rows="2">A school library uses a computerized system to issue and return books. Each member has a card with a barcode. The diagram shows the system.</textarea></div>
+<div class="pi-row"><div class="pi-marks"><x-import component-from-global-scope="EdSider.Field" type="number" label="Marks" value="15"></x-import></div><label class="es-check" style="margin-top: 26px"><input type="checkbox"> Reviewed</label></div>
+<button class="pi-exp" type="button" aria-expanded="{{imgStemOpen}}" onClick="{{toggleStem}}">Images ({{imgStemCount}}) <span class="pi-exp__chev">{{imgStemChev}}</span></button>
+<sc-if value="{{imgStemOn}}" hint-placeholder-val="{{ true }}">
+<div class="pi-panel" style="margin-top: -16px">
+<sc-if value="{{stemHasImg}}" hint-placeholder-val="{{ true }}">
+<figure class="pi-img" style="margin: 0">
+<figcaption class="pi-img__slot">Question</figcaption>
+<div class="pi-img__pic" role="img" aria-label="Block diagram of the library system: input, process, output" style="height: 150px">
+<svg width="470" height="110" viewBox="0 0 470 110" aria-hidden="true" font-family="Inter, sans-serif" font-size="13" fill="#1b1533">
+<rect x="4" y="25" width="120" height="60" rx="8" fill="none" stroke="#1b1533" stroke-width="2"></rect><text x="64" y="50" text-anchor="middle" font-weight="700">Input</text><text x="64" y="68" text-anchor="middle">Member card</text>
+<path d="M124 55h46M162 49l8 6-8 6" fill="none" stroke="#1b1533" stroke-width="2"></path>
+<rect x="175" y="25" width="120" height="60" rx="8" fill="none" stroke="#1b1533" stroke-width="2"></rect><text x="235" y="50" text-anchor="middle" font-weight="700">Process</text><text x="235" y="68" text-anchor="middle">Issue / return</text>
+<path d="M295 55h46M333 49l8 6-8 6" fill="none" stroke="#1b1533" stroke-width="2"></path>
+<rect x="346" y="25" width="120" height="60" rx="8" fill="none" stroke="#1b1533" stroke-width="2"></rect><text x="406" y="50" text-anchor="middle" font-weight="700">Output</text><text x="406" y="68" text-anchor="middle">Due-date slip</text>
+</svg>
+</div>
+<div><x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm" on-click="{{removeStemImg}}">Remove image</x-import></div>
+</figure>
+</sc-if>
+<div class="pi-attach">
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Attach a new image to" options="{{slotsBasic}}"></x-import>
+<div class="es-field"><span class="es-field__label">Image file</span><span class="pi-file"><x-import component-from-global-scope="EdSider.Icon" name="upload"></x-import> Choose a PNG or JPG</span></div>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Attach image</x-import>
+</div>
+</div>
+</sc-if>
+<div style="display: flex; justify-content: flex-end"><x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Remove</x-import></div>
+</article>
+
+<article class="es-card es-draft pi-part" aria-label="Part 01(1)(a)">
+<div class="es-draft__head"><span class="pi-label">Part 01(1)(a)</span><span style="flex: 1"></span><span class="es-pill es-tone--neutral">Not reviewed</span></div>
+<div class="pi-rte"><div class="pi-rte__bar" role="toolbar" aria-label="Formatting"><button type="button" aria-label="Bold"><b>B</b></button><button type="button" aria-label="Italic"><i>I</i></button><span class="pi-rte__sep"></span><button type="button" aria-label="Subscript">x<sub>2</sub></button><button type="button" aria-label="Superscript">x<sup>2</sup></button></div><textarea class="pi-rte__area" aria-label="Part 01(1)(a) text" rows="1">Define the term 'system'.</textarea></div>
+<div class="pi-row"><div class="pi-marks"><x-import component-from-global-scope="EdSider.Field" type="number" label="Marks" value="2"></x-import></div><label class="es-check" style="margin-top: 26px"><input type="checkbox"> Reviewed</label></div>
+<button class="pi-exp" type="button" aria-expanded="{{ansOpen}}" onClick="{{toggleAns}}">Answer <span class="pi-exp__chev">{{ansChev}}</span></button>
+<sc-if value="{{ansOn}}" hint-placeholder-val="{{ true }}">
+<div class="pi-panel" style="margin-top: -16px">
+<div class="pi-rte"><div class="pi-rte__bar" role="toolbar" aria-label="Answer formatting"><button type="button" aria-label="Bold"><b>B</b></button><button type="button" aria-label="Italic"><i>I</i></button><span class="pi-rte__sep"></span><button type="button" aria-label="Subscript">x<sub>2</sub></button><button type="button" aria-label="Superscript">x<sup>2</sup></button></div><textarea class="pi-rte__area" aria-label="Part 01(1)(a) answer" rows="2">A set of interrelated components working together towards a common goal. (2 marks - 1 for components, 1 for goal)</textarea></div>
+</div>
+</sc-if>
+<button class="pi-exp" type="button" aria-expanded="false">Images <span class="pi-exp__chev">Show</span></button>
+<div style="display: flex; justify-content: flex-end"><x-import component-from-global-scope="EdSider.Button" variant="ghost" size="sm">Remove</x-import></div>
+</article>
+
+<div class="es-row" style="gap: 12px; margin-top: 8px">
+<x-import component-from-global-scope="EdSider.Button" variant="primary">Save all questions</x-import>
+</div>
+<button class="pi-exp" type="button" aria-expanded="false">Add a question the extractor missed <span class="pi-exp__chev">Show</span></button>
+</section>
+
+<aside class="es-card" aria-label="Original paper" style="display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; justify-content: space-between; align-items: center">
+<h2 class="scr-h3">Original paper</h2>
+<span class="es-caption">Page 2 of 12</span>
+</div>
+<div role="img" aria-label="Preview of page 2 of the uploaded PDF" style="height: 820px; border-radius: 12px; border: 1px solid var(--border-soft); background: var(--surface); padding: 36px 32px; display: flex; flex-direction: column; gap: 14px">
+<div style="height: 12px; width: 60%; background: var(--surface-sunk); border-radius: 6px; align-self: center"></div>
+<div style="height: 10px; width: 40%; background: var(--surface-sunk); border-radius: 6px; align-self: center; margin-bottom: 18px"></div>
+<sc-for list="{{lines}}" as="w" hint-placeholder-count="14"><div style="height: 9px; width: {{w}}; background: var(--border-soft); border-radius: 5px"></div></sc-for>
+<p class="es-caption" style="margin-top: auto; text-align: center">[Rendered page of the uploaded PDF - scroll for more pages]</p>
+</div>
+<p class="es-caption" style="margin: 0">Check a suspect read against the original page here without losing your place in the list.</p>
+</aside>
+</div>
+
+<section id="dup" class="es-card" aria-label="Duplicate check" style="display: flex; flex-direction: column; gap: 14px">
+<h2 class="scr-h2">Duplicate check within this paper</h2>
+<p class="es-caption">The same question must not appear twice on one paper. Runs only once every question is marked reviewed, because it is meaningless on text that has not been corrected yet.</p>
+<x-import component-from-global-scope="EdSider.Notice" tone="info">72 question(s) still not marked reviewed.</x-import>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" disabled="{{yes}}">Check for duplicates</x-import></div>
+</section>
+
+<section id="status" class="es-card" aria-label="Review status" style="display: flex; justify-content: space-between; align-items: center; gap: 20px">
+<div><h2 class="scr-h2">Review status</h2><p class="es-caption" style="margin-top: 4px; max-width: 820px">Data entry's own job stops at the duplicate check above. Assigning a checked paper to a teacher is a separate person's job, in the paper-assignment app. Run the duplicate check above first.</p></div>
+<x-import component-from-global-scope="EdSider.StatusPill" status="extracted"></x-import>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":4700}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { resplit: false, img17: true, stem: true, ans: true, gone: {}, stemImg: true }; }
+renderVals() {
+var self = this;
+function flip(k) { return function () { var s = {}; s[k] = !self.state[k]; self.setState(s); }; }
+var opts17 = [
+{ id: 'o1', slot: 'Option 1', alt: 'Resistor symbol: a zig-zag line', isR: true },
+{ id: 'o2', slot: 'Option 2', alt: 'Capacitor symbol: two parallel plates', isC: true },
+{ id: 'o3', slot: 'Option 3', alt: 'Cell symbol: a long and a short plate', isB: true },
+{ id: 'o4', slot: 'Option 4', alt: 'Lamp symbol: a circle with a cross', isL: true }
+].filter(function (o) { return !self.state.gone[o.id]; }).map(function (o) {
+return Object.assign({ isR: false, isC: false, isB: false, isL: false }, o, { remove: function () { var g = Object.assign({}, self.state.gone); g[o.id] = true; self.setState({ gone: g }); } });
+});
+var stemCount = this.state.stemImg ? 1 : 0;
+return {
+yes: true,
+rail: [{ id: 'upload', icon: 'upload', label: 'Upload' }, { id: 'paper', icon: 'paper', label: 'Questions' }, { id: 'dup', icon: 'copy', label: 'Duplicate check' }, { id: 'status', icon: 'check', label: 'Review status' }],
+papers: ['#9  -  GIT_Gr12_FirstTT.pdf  (extracted)', '#8  -  Biosystem_Gr13_Model.pdf  (checked)', '#7  -  CMaths_Gr13_P1.docx  (extracted)'],
+grades: ['Grade 12', 'Grade 11', 'Grade 13'],
+subjects: ['General Information Technology', 'Information and Communication Technology', 'Combined Mathematics'],
+q1: [{ label: '1', text: 'Monitor' }, { label: '2', text: 'Printer' }, { label: '3', text: 'Scanner' }, { label: '4', text: 'Speaker' }],
+slots17: ['Question', 'Answer', 'Option 1', 'Option 2', 'Option 3', 'Option 4'],
+slotsBasic: ['Question', 'Answer'],
+resplitOn: this.state.resplit, resplitOpen: this.state.resplit ? 'true' : 'false', resplitChev: this.state.resplit ? 'Hide' : 'Show', toggleResplit: flip('resplit'),
+img17On: this.state.img17, img17Open: this.state.img17 ? 'true' : 'false', img17Chev: this.state.img17 ? 'Hide' : 'Show', toggle17: flip('img17'), img17: opts17, img17Count: opts17.length,
+imgStemOn: this.state.stem, imgStemOpen: this.state.stem ? 'true' : 'false', imgStemChev: this.state.stem ? 'Hide' : 'Show', toggleStem: flip('stem'),
+stemHasImg: this.state.stemImg, imgStemCount: stemCount, removeStemImg: function () { self.setState({ stemImg: false }); },
+ansOn: this.state.ans, ansOpen: this.state.ans ? 'true' : 'false', ansChev: this.state.ans ? 'Hide' : 'Show', toggleAns: flip('ans'),
+lines: ['92%', '88%', '95%', '40%', '0%', '90%', '84%', '70%', '0%', '93%', '89%', '96%', '55%', '0%', '91%', '86%', '60%']
+};
+}
+}
+</script>
+</body>
+</html>

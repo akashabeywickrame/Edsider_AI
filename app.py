@@ -216,6 +216,56 @@ def _intake_blob(doc_id, db_name):
         return store.intake_file_blob(conn, doc_id)
 
 
+@st.cache_data(show_spinner=False)
+def _question_image_blob(image_id, db_name):
+    """One attached image's own bytes - cached per (image, database),
+    the same reasoning as _intake_blob(): a rerun should not re-fetch
+    every attached image on the page just because one checkbox changed."""
+    with store.connect() as conn:
+        return store.question_image_blob(conn, image_id)
+
+
+# The Paper intake page re-fetches these three on every single rerun -
+# and in Streamlit, EVERY widget interaction is a full rerun of the
+# whole script, not just of whatever changed. Ticking one Reviewed
+# checkbox among forty questions was paying for a fresh database round
+# trip for every question and every attached image on the page, each
+# one costing real time over the network to Azure - not a rendering
+# cost, an actual re-query cost, repeated on every click. Cached here,
+# and explicitly cleared at every place that writes to intake_documents,
+# intake_questions or intake_question_images, so a save still shows
+# its own fresh result immediately - only the OTHER, unrelated reruns
+# (a different question's checkbox, an unrelated widget) get to skip
+# the round trip.
+@st.cache_data(show_spinner=False)
+def _load_intake_docs(db_name):
+    """intake_documents() is SELECT * - which pulls file_blob (the
+    paper's own uploaded bytes) along with everything else. Postgres
+    hands that back as a memoryview, which st.cache_data cannot pickle
+    into its cache at all (UnserializableReturnValueError), and caching
+    the whole blob for every document just to show a selector and a
+    status badge would be wasteful even if it could. Dropped here - the
+    preview pane already fetches one document's own blob separately,
+    on demand, via _intake_blob()."""
+    with store.connect() as conn:
+        docs = [dict(d) for d in store.intake_documents(conn)]
+    for d in docs:
+        d.pop("file_blob", None)
+    return docs
+
+
+@st.cache_data(show_spinner=False)
+def _load_intake_drafts(doc_id, db_name):
+    with store.connect() as conn:
+        return [dict(q) for q in store.intake_questions(conn, doc_id)]
+
+
+@st.cache_data(show_spinner=False)
+def _load_intake_images(doc_id, db_name):
+    with store.connect() as conn:
+        return store.question_images_for_document(conn, doc_id)
+
+
 def render_paper_preview(doc, doc_id):
     """The uploaded paper itself, next to the editable question cards -
     so a reviewer can check a suspect OCR read against the original
@@ -1166,6 +1216,7 @@ elif page == "Paper intake":
                 fallback_grade=result["paper"]["grade"],
                 fallback_subject=result["paper"]["subject"],
             )
+        _load_intake_docs.clear()
         parts = ", ".join(f"{s['label']} ({s['questions']})"
                           for s in result["sections"] if s["label"])
         st.success(
@@ -1176,8 +1227,7 @@ elif page == "Paper intake":
         )
         st.rerun()
 
-    with store.connect() as conn:
-        docs = [dict(d) for d in store.intake_documents(conn)]
+    docs = _load_intake_docs(store.display_name())
 
     if not docs:
         st.info("No papers uploaded yet.")
@@ -1199,8 +1249,8 @@ elif page == "Paper intake":
             "by hand."
         )
 
-    with store.connect() as conn:
-        drafts = [dict(q) for q in store.intake_questions(conn, doc_id)]
+    drafts = _load_intake_drafts(doc_id, store.display_name())
+    images_by_q = _load_intake_images(doc_id, store.display_name())
 
     # -- re-split, without needing the original file again --
     if doc.get("raw_text"):
@@ -1252,6 +1302,9 @@ elif page == "Paper intake":
                         paper_subject=subject,
                         paper_title=doc.get("paper_title") or meta["title"],
                     )
+                _load_intake_docs.clear()
+                _load_intake_drafts.clear()
+                _load_intake_images.clear()
                 st.rerun()
 
             st.text_area(
@@ -1306,6 +1359,8 @@ elif page == "Paper intake":
                 store.update_intake_question(
                     conn, d["id"], grade=pg or None, subject=ps or None,
                 )
+        _load_intake_docs.clear()
+        _load_intake_drafts.clear()
         st.rerun()
 
     st.divider()
@@ -1435,9 +1490,85 @@ elif page == "Paper intake":
                         value=text_to_quill_html(d.get("answer")), html=True,
                         toolbar=RICH_TOOLBAR, key=f"iq_{d['id']}_answer",
                     )
+
+                # Some content is fundamentally a picture - a diagram, a
+                # photograph, a table that reads badly as flattened text
+                # - that extraction cannot turn into meaningful text on
+                # its own. This lets a reviewer attach one to the
+                # question itself, its answer, or (for an MCQ) one
+                # specific option - options are never their own row, so
+                # an option's own printed label is what an image for it
+                # is keyed on. See store.intake_question_images.
+                existing_images = images_by_q.get(d["id"], [])
+                img_label = (f"Images ({len(existing_images)})"
+                            if existing_images else "Images")
+                with st.expander(img_label):
+                    slot_names = {"question": "Question", "answer": "Answer"}
+                    for img in existing_images:
+                        name = slot_names.get(
+                            img["slot"], img["slot"].replace("option:", "Option "))
+                        st.caption(name)
+                        blob = _question_image_blob(img["id"], store.display_name())
+                        if blob:
+                            st.image(blob)
+                        if st.button("Remove image",
+                                    key=f"iq_{d['id']}_img_{img['id']}_rm"):
+                            with store.connect() as conn:
+                                store.delete_question_image(conn, img["id"])
+                            _load_intake_images.clear()
+                            st.rerun()
+                        st.divider()
+
+                    _, mcq_options = ((d["text"] or "", []) if depth
+                                      else intake_extract.split_mcq_options(
+                                          d["text"] or ""))
+                    if mcq_options:
+                        option_slots = [f"option:{o['label']}"
+                                        for o in mcq_options]
+                    else:
+                        # A picture-only MCQ - each option is a photo
+                        # next to a bare "I"/"II" label with no period
+                        # or bracket the extractor can split on - leaves
+                        # split_mcq_options() with nothing to find. A
+                        # reviewer who can see the real options in the
+                        # paper preview still needs somewhere to attach
+                        # an image per option, so this offers a plain,
+                        # adjustable set of slots instead of leaving
+                        # them with only "Question" and "Answer".
+                        n = st.number_input(
+                            "This question's options were not split out "
+                            "automatically - how many does it have?",
+                            min_value=0, max_value=8, value=0, step=1,
+                            key=f"iq_{d['id']}_img_option_count",
+                        )
+                        option_slots = [f"option:{i + 1}" for i in range(int(n))]
+                    slot_choices = ["question", "answer"] + option_slots
+                    st.selectbox(
+                        "Attach a new image to", slot_choices,
+                        format_func=lambda s: slot_names.get(
+                            s, s.replace("option:", "Option ")),
+                        key=f"iq_{d['id']}_img_slot",
+                    )
+                    upload = st.file_uploader(
+                        "Image file", type=["png", "jpg", "jpeg"],
+                        key=f"iq_{d['id']}_img_upload",
+                    )
+                    if upload is not None and st.button(
+                            "Attach image", key=f"iq_{d['id']}_img_attach"):
+                        with store.connect() as conn:
+                            store.add_question_image(
+                                conn, d["id"],
+                                st.session_state[f"iq_{d['id']}_img_slot"],
+                                upload.getvalue(), content_type=upload.type,
+                            )
+                        _load_intake_images.clear()
+                        st.rerun()
+
                 if st.button("Remove", key=f"iq_{d['id']}_rm"):
                     with store.connect() as conn:
                         store.delete_intake_question(conn, d["id"])
+                    _load_intake_drafts.clear()
+                    _load_intake_images.clear()
                     st.rerun()
 
     if st.button("Save all questions", type="primary"):
@@ -1453,6 +1584,7 @@ elif page == "Paper intake":
                     reviewed=1 if st.session_state[f"iq_{d['id']}_reviewed"]
                     else 0,
                 )
+        _load_intake_drafts.clear()
         st.success("Saved.")
         st.rerun()
 
@@ -1510,6 +1642,7 @@ elif page == "Paper intake":
                         parent_seq=parent["seq"] if parent else None,
                         depth=((parent.get("depth") or 0) + 1) if parent else 0,
                     )
+                _load_intake_drafts.clear()
                 st.rerun()
 
     st.divider()
@@ -1540,6 +1673,7 @@ elif page == "Paper intake":
             out = intake_review.check_batch(fresh, get_embedder())
         with store.connect() as conn:
             store.update_intake_document(conn, doc_id, status="checked")
+        _load_intake_docs.clear()
 
         by_id = {d["id"]: d for d in fresh}
         if not out["exact_groups"] and not out["similar_pairs"]:
@@ -1579,11 +1713,34 @@ elif page == "Paper intake":
                 )
             st.divider()
 
+    st.divider()
+    st.subheader("Review status")
     st.caption(
-        "Promoting the reviewed questions into the bank, and back to "
-        "EdSider, is not wired yet - this page stops at the check."
+        "Data-entry's own job stops at the duplicate check above. Assigning "
+        "a checked paper to a teacher is a separate person's job, in the "
+        "paper-assignment app - not a button on this page."
     )
-
+    if doc["status"] == "checked":
+        st.info("Ready - waiting for the assigning administrator to hand "
+               "this to a teacher.")
+    elif doc["status"] == "teacher_review":
+        st.info(f"With {doc['assigned_to'] or 'a teacher'} for review.")
+    elif doc["status"] == "refer_back":
+        st.warning(
+            "The teacher sent this back with comments - see them on each "
+            "question above, fix what was flagged, then run the duplicate "
+            "check again to return this to the assignment queue."
+        )
+    elif doc["status"] == "review_done":
+        st.success(
+            "The teacher has signed off - this paper is promoted into the "
+            "real bank automatically the moment they finish, so seeing "
+            "this for more than a moment is worth a second look."
+        )
+    elif doc["status"] == "published":
+        st.success("Promoted into the real bank.")
+    else:
+        st.caption("Run the duplicate check above first.")
 
 # --------------------------------------------------------- question bank
 

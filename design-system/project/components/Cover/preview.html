@@ -1,0 +1,49 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><title>Cover</title>
+<style>
+  html, body { margin: 0; background: var(--surface-page); }
+  .cover { position: relative; width: 960px; height: 288px; overflow: hidden; background: var(--surface-page); font-family: var(--font-heading); }
+  svg { position: absolute; inset: 0; }
+  .primary { fill: var(--primary); }
+  .ink { fill: var(--text-dark); }
+  .gold { fill: var(--accent-gold); }
+  .blue { fill: var(--accent-blue); }
+  .tint { fill: var(--border-outline); }
+  .chip { fill: var(--surface); }
+  .card { rx: var(--radius-card); }
+  .text { position: absolute; left: 32px; bottom: 32px; max-width: 440px; }
+  .name { margin: 0; font-size: 96px; line-height: .92; font-weight: 800; letter-spacing: -0.01em; color: var(--text-dark); }
+  .name span { color: var(--primary); }
+  .tag { margin: 16px 0 0; font-family: var(--font-body); font-size: 14px; line-height: 20px; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+  <!--
+    blocks: primary 200x240 slab, text-dark 120x120, accent-gold 176x56 pill (bleeds right), accent-blue 48px disc, border-outline lavender 280x152 (bleeds bottom/right)
+    arrangement: one tall slab with satellites right of x=480; pill and tint bleed off the right and bottom edges, as the site's cards overlap its hero band
+    pattern: pills from radius-pill - the site's language pills and nav pills are its most repeated shape; "soft, friendly, large radii" row
+    steps/radii: space-2 8, space-3 14, space-4 20, space-card 22; radius-card 16 on blocks, radius-pill (half the short side) on pills
+  -->
+  <svg width="960" height="288" viewBox="0 0 960 288" aria-hidden="true">
+    <rect class="primary card" x="480" y="24" width="200" height="240"/>
+    <rect class="ink card" x="700" y="24" width="120" height="120"/>
+    <rect class="gold" x="840" y="24" width="176" height="56" rx="28"/>
+    <circle class="blue" cx="864" cy="120" r="24"/>
+    <rect class="tint card" x="700" y="164" width="280" height="152"/>
+    <rect class="chip" x="502" y="160" width="120" height="28" rx="14"/>
+    <rect class="chip" x="502" y="196" width="88" height="28" rx="14"/>
+    <rect class="chip" x="502" y="232" width="104" height="28" rx="14" opacity=".55"/>
+    <rect class="primary" x="722" y="186" width="96" height="28" rx="14"/>
+    <rect class="chip" x="826" y="186" width="72" height="28" rx="14"/>
+  </svg>
+  <div class="text">
+    <h1 class="name">EdSider</h1>
+    <p class="tag">Study better. Review smarter. The system suggests; a person decides.</p>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Find duplicate questions</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1860px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Find duplicates" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Find" title="duplicate questions" subtitle="Pairs of questions in the bank that read alike. Each pair needs a person to decide - nothing is merged or deleted automatically."></x-import>
+
+<section aria-label="Summary" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px">
+<x-import component-from-global-scope="EdSider.Stat" label="Comparable questions" value="16,084" icon="bank" accent="blue"></x-import>
+<x-import component-from-global-scope="EdSider.Stat" label="Flagged at 0.95" value="3,045" icon="copy" accent="coral"></x-import>
+<x-import component-from-global-scope="EdSider.Stat" label="Held back by safety checks" value="2,887" icon="check" accent="primary"></x-import>
+<x-import component-from-global-scope="EdSider.Stat" label="Exact-copy groups" value="879" icon="search" accent="gold"></x-import>
+</section>
+
+<section class="es-card" aria-label="Filters" style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 32px; align-items: center">
+<div class="es-field">
+<label class="es-field__label" for="thr">Similarity threshold <span style="font-family: var(--font-heading); font-weight: 800; color: var(--primary); margin-left: 8px">0.95</span></label>
+<input id="thr" class="scr-range" type="range" min="0.70" max="0.99" step="0.01" value="0.95">
+<p class="es-caption">Below 0.95 the bank returns hundreds of thousands of pairs - too many to review.</p>
+</div>
+<x-import component-from-global-scope="EdSider.Toggle" label="Safety checks on" checked="{{yes}}"></x-import>
+<label class="es-check"><input type="checkbox"> Show pairs already reviewed</label>
+</section>
+
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">Pairs to review</h2>
+<p class="es-caption">Showing the 50 highest of 3,045. Pairs with a verdict are hidden.</p>
+</div>
+
+<sc-if value="{{hasMsg}}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="EdSider.Notice" tone="success">{{msg}}</x-import>
+</sc-if>
+
+<sc-for list="{{pairs}}" as="p" hint-placeholder-count="2">
+<x-import component-from-global-scope="EdSider.PairReview" score="{{p.score}}" raw="{{p.raw}}" context="{{p.context}}" a="{{p.a}}" b="{{p.b}}" reasons="{{p.reasons}}" on-confirm="{{p.confirm}}" on-distinct="{{p.distinct}}" on-skip="{{p.skip}}"></x-import>
+</sc-for>
+
+<sc-if value="{{empty}}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="EdSider.Notice" tone="success" title="All caught up">Every flagged pair at this threshold has been reviewed.</x-import>
+</sc-if>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1860}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { gone: {}, msg: '' }; }
+renderVals() {
+var self = this;
+var all = [
+{ key: 'p1', score: 1.0, context: 'Identical text, filed under two grades and subjects',
+a: { id: 23418, text: 'UPS stands for ______.', grade: 'G10', subject: 'Information and Communication Technology', topic: 'Computer hardware', contributor: 'D. Silva', assessments: [412] },
+b: { id: 31907, text: 'UPS stands for ______.', grade: 'G11', subject: 'General Information Technology', topic: 'Computer hardware', contributor: 'R. Fernando', assessments: [655, 702] },
+reasons: [] },
+{ key: 'p2', score: 0.96, context: 'Reworded - same question',
+a: { id: 44102, text: 'Explain the process of credit creation by commercial banks.', grade: 'G12', subject: 'Economics', topic: 'Money and banking', contributor: 'S. Kumar' },
+b: { id: 52776, text: "Explain how commercial banks 'create money' through the credit creation process.", grade: 'G13', subject: 'Economics', topic: 'Money and banking', contributor: 'A. Jayasinghe' },
+reasons: [] }
+];
+function done(p, text) {
+var g = Object.assign({}, self.state.gone); g[p.key] = true;
+self.setState({ gone: g, msg: text });
+}
+var pairs = all.filter(function (p) { return !self.state.gone[p.key]; }).map(function (p) {
+var label = p.a.id + ' vs ' + p.b.id;
+return Object.assign({}, p, {
+confirm: function () { done(p, label + ' saved as a duplicate. It is listed on the Reviewed decisions page.'); },
+distinct: function () { done(p, label + ' saved as not a duplicate. It is listed on the Reviewed decisions page.'); },
+skip: function () { done(p, label + ' skipped for this session. Nothing was saved.'); }
+});
+});
+return { yes: true, pairs: pairs, empty: pairs.length === 0, msg: this.state.msg, hasMsg: !!this.state.msg };
+}
+}
+</script>
+</body>
+</html>

@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Start EdSider AI on a Linux host (Azure App Service or any server).
 #
-#   bash startup.sh        the duplicate-check API (service.py)
-#   bash startup.sh ui     the review app (app.py, Streamlit)
+#   bash startup.sh          the duplicate-check API (service.py)
+#   bash startup.sh ui       the data-entry review app (app.py, Streamlit)
+#   bash startup.sh teacher  the teacher review app (teacher_app.py)
+#   bash startup.sh assign   the paper-assignment app (masd_app.py)
 #
 # App Service, left to itself, picks app.py and expects a Flask or Django
 # app inside it; ours is Streamlit, and the API is service.py, so the
-# start command has to say which one to run.
+# start command has to say which one to run. teacher_app.py and
+# masd_app.py are deliberately separate deployments, not pages inside
+# app.py - a data-entry person's app.py session should never be able to
+# reach the teacher's screen, or the reverse, and a hidden sidebar entry
+# in one shared app would not have guaranteed that the way running them
+# as genuinely separate processes (their own App Service, their own URL)
+# does.
 #
 # The database is PostgreSQL, reached over the network, so there is
 # nothing to copy or unpack here any more - EDSIDER_DB is a connection
@@ -39,8 +47,16 @@ case "$mode" in
     exec python -m streamlit run app.py \
       --server.port "$port" --server.address 0.0.0.0 --server.headless true
     ;;
+  teacher)
+    exec python -m streamlit run teacher_app.py \
+      --server.port "$port" --server.address 0.0.0.0 --server.headless true
+    ;;
+  assign)
+    exec python -m streamlit run masd_app.py \
+      --server.port "$port" --server.address 0.0.0.0 --server.headless true
+    ;;
   *)
-    echo "startup: unknown mode '$mode' - use 'api' or 'ui'" >&2
+    echo "startup: unknown mode '$mode' - use 'api', 'ui', 'teacher' or 'assign'" >&2
     exit 2
     ;;
 esac

@@ -1,0 +1,12 @@
+<!-- @dsCard group="Content" height=130 subtitle="MCQ answer options in a two-column grid, the correct one marked in words." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>McqOptions</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(E.McqOptions,{correct:'b',options:[{label:'a',text:'1789'},{label:'b',text:'1917'},{label:'c',text:'1848'},{label:'d',text:'1905'}]}));
+</script>
+</body>
+</html>

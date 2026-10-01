@@ -1,0 +1,12 @@
+<!-- @dsCard group="Layout" height=220 subtitle="Page title on the brand's peach-to-lavender band, with an accent word in purple." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>PageHeader</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(E.PageHeader,{accent:'Find',title:'duplicate questions',subtitle:'Pairs of questions in the bank that read alike. Each one needs a person to decide - nothing is merged automatically.'},h(E.Toggle,{label:'Safety checks on',checked:true}),h(E.Button,{variant:'primary',arrow:true},'Start reviewing')));
+</script>
+</body>
+</html>

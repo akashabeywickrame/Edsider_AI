@@ -1,0 +1,12 @@
+<!-- @dsCard group="Signals" height=88 subtitle="Where a paper is in the intake to teacher-review workflow." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>StatusPill</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row'},['extracted','checked','teacher_review','refer_back','review_done','published'].map(function(s){return h(E.StatusPill,{key:s,status:s})})));
+</script>
+</body>
+</html>

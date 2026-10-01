@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in to EdSider AI on a phone</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700&amp;family=Inter:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}
+.sm-btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;max-width:220px;min-height:48px;border-radius:10px;color:#ffffff;text-decoration:none;font:600 16px/20px var(--font-body);background:linear-gradient(135deg,#7135ad,#5a2ea6);box-shadow:0 10px 22px rgba(97,50,165,0.25)}
+.sm-btn:focus-visible{outline:4px solid rgba(113,53,173,0.35);outline-offset:2px}
+.sm-google{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;max-width:260px;min-height:48px;box-sizing:border-box;border-radius:10px;border:1px solid #747775;background:#ffffff;color:#1f1f1f;text-decoration:none;font:600 16px/20px var(--font-body)}
+.sm-google:focus-visible{outline:4px solid rgba(113,53,173,0.35);outline-offset:2px}
+.sm-or{display:flex;align-items:center;gap:10px;width:100%;font-size:13px;font-weight:600;color:var(--text-muted)}
+.sm-or::before,.sm-or::after{content:"";flex:1;height:1px;background:var(--border-soft)}
+.sm-role{display:flex;align-items:center;gap:10px;min-height:48px;padding:0 14px;border:1.5px solid var(--border-strong);border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;background:#ffffff}
+.sm-role input{accent-color:var(--primary);width:18px;height:18px;margin:0}
+</style>
+</helmet>
+<div class="es-root" style="width: 390px; height: 980px; overflow: hidden; display: flex; flex-direction: column; background: linear-gradient(180deg, #f8f0e1, #f4ecde); font-family: var(--font-body); color: var(--text-dark)">
+<main style="flex-grow: 1; display: flex; flex-direction: column; align-items: center; padding: 26px 16px 20px; text-align: center">
+<img src="/_blob/b2f5067eb511bfec7064c52dca44a123" alt="EdSider AI" style="width: 170px; height: auto; display: block; margin-bottom: 8px">
+<h1 style="margin: 0; font-family: var(--font-heading); font-size: 32px; line-height: 38px; font-weight: 700; color: #111111">Welcome!</h1>
+<p style="margin: 8px 0 12px; font-size: 16px; line-height: 23px; color: #444444">Sign in to EdSider AI</p>
+<div style="width: 120px; height: 8px; border-radius: 12px; background: linear-gradient(90deg, #6a2db9, #e6ca8f); margin-bottom: 20px"></div>
+<section aria-label="Sign in" style="width: 100%; background: #ffffff; border-radius: 16px; box-shadow: 0 14px 40px rgba(56, 34, 84, 0.14); overflow: hidden">
+<div style="padding: 4px 4px 0"><img src="/_blob/f6c4eb9bb92ecf5f57f08c0ac81ea6d5" alt="Two teachers in a classroom with books" style="display: block; width: 100%; height: 180px; object-fit: cover; border-radius: 12px"></div>
+<div style="padding: 18px 16px 22px; display: flex; flex-direction: column; align-items: center; gap: 14px">
+<fieldset style="border: 0; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left">
+<legend style="font-size: 14px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px">I am signing in as</legend>
+<label class="sm-role"><input type="radio" name="role"> Data entry</label>
+<label class="sm-role" style="border-color: var(--primary); background: var(--primary-soft); color: var(--primary)"><input type="radio" name="role" checked> Teacher</label>
+<label class="sm-role"><input type="radio" name="role"> Administrator</label>
+</fieldset>
+<a class="sm-btn" href="TeacherMobile.dc.html" style="max-width: 260px">Sign in with Microsoft</a>
+<div class="sm-or" aria-hidden="true">or</div>
+<a class="sm-google" href="TeacherMobile.dc.html">
+<svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path></svg>
+Sign in with Google
+</a>
+<p class="es-caption" style="margin: 0; font-size: 13px">Use the Microsoft or Google account linked to your EdSider profile.</p>
+</div>
+</section>
+</main>
+<footer style="text-align: center; padding: 10px 16px 14px; border-radius: 12px 12px 0 0; background: linear-gradient(90deg, #d2cde8, #b58eb5); font-size: 12px; line-height: 17px">
+<img src="/_blob/a1b7dfe8658b8a17562b9effcc1bf94a" alt="EdSider" style="height: 22px; width: auto"><br>© 2026 Edsider. All rights reserved.
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":980}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

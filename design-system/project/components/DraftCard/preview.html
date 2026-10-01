@@ -1,0 +1,15 @@
+<!-- @dsCard group="Intake" height=640 subtitle="An extracted question on the paper-intake page, editable, with its parts indented under it." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>DraftCard</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-stack',style:{gap:12}},
+  h(E.DraftCard,{label:'Part I Q07',marks:1,text:'Which of the following is an input device?',options:[{label:'1',text:'Monitor'},{label:'2',text:'Printer'},{label:'3',text:'Scanner'},{label:'4',text:'Speaker'}],correct:'3',reviewed:true}),
+  h(E.DraftCard,{label:'Part II Q01',kind:'stem',marks:15,text:'A school library uses a computerized system to issue and return books.'}),
+  h(E.DraftCard,{label:'01(a)',depth:1,marks:2,text:"Define the term 'system'.",answer:'A set of interrelated components working together towards a common goal. (2 marks - 1 for components, 1 for goal)'})));
+</script>
+</body>
+</html>

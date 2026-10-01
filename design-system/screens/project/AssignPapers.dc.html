@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Assign papers to teachers</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1300px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="admin" active="Assign papers" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Assign" title="papers to teachers" subtitle="Papers data entry has already checked for internal repeats, waiting to be handed to a teacher for subject review."></x-import>
+
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">Ready to assign ({{readyCount}})</h2>
+<p class="es-caption">Teachers appear here after they first open the Teacher review app.</p>
+</div>
+
+<sc-if value="{{hasMsg}}" hint-placeholder-val="{{ false }}">
+<x-import component-from-global-scope="EdSider.Notice" tone="success">{{msg}}</x-import>
+</sc-if>
+
+<section aria-label="Ready to assign" style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px">
+<sc-for list="{{ready}}" as="d" hint-placeholder-count="3">
+<article class="es-card" style="display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px">
+<div><p class="scr-h3">{{d.subject}}</p><p class="es-caption">{{d.grade}} - {{d.title}}</p></div>
+<x-import component-from-global-scope="EdSider.StatusPill" status="checked"></x-import>
+</div>
+<p class="es-caption" style="border-top: 1px solid var(--border-soft); padding-top: 12px">#{{d.id}} - {{d.file}} - {{d.n}} questions - uploaded {{d.at}}</p>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Assign to" options="{{teachers}}"></x-import>
+<div><x-import component-from-global-scope="EdSider.Button" variant="primary" size="sm" on-click="{{d.assign}}">Assign</x-import></div>
+</article>
+</sc-for>
+</section>
+
+<h2 class="scr-h2" style="margin-top: 12px">Already assigned</h2>
+<section class="es-card" aria-label="Already assigned" style="padding: 0; overflow: hidden">
+<table class="scr-table">
+<thead><tr><th>Paper</th><th style="width: 220px">Teacher</th><th style="width: 260px">Status</th><th style="width: 200px">Last change</th></tr></thead>
+<tbody>
+<sc-for list="{{assigned}}" as="a" hint-placeholder-count="4">
+<tr>
+<td><span style="font-weight: 600">{{a.subject}} - {{a.grade}}</span><br><span class="es-caption">#{{a.id}} - {{a.file}}</span></td>
+<td>{{a.teacher}}</td>
+<td><x-import component-from-global-scope="EdSider.StatusPill" status="{{a.status}}"></x-import></td>
+<td class="es-caption">{{a.at}}</td>
+</tr>
+</sc-for>
+</tbody>
+</table>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1300}}'>
+class Component extends DCLogic {
+constructor(props) { super(props); this.state = { gone: {}, msg: '' }; }
+renderVals() {
+var self = this;
+var ready = [
+{ id: 12, subject: 'Combined Mathematics', grade: 'Grade 13', title: 'Model Paper', file: 'CMaths_Gr13_P1.docx', n: 17, at: '29 Sep 2026' },
+{ id: 11, subject: 'Science', grade: 'Grade 9', title: 'Second Term Test', file: 'Sci_Gr9_Term2.pdf', n: 40, at: '29 Sep 2026' },
+{ id: 10, subject: 'Economics', grade: 'Grade 12', title: 'First Term Test', file: 'Econ_Gr12_T1.pdf', n: 30, at: '28 Sep 2026' }
+].filter(function (d) { return !self.state.gone[d.id]; }).map(function (d) {
+return Object.assign({}, d, { assign: function () { var g = Object.assign({}, self.state.gone); g[d.id] = true; self.setState({ gone: g, msg: '#' + d.id + ' ' + d.subject + ' assigned to N. Perera.' }); } });
+});
+return {
+ready: ready, readyCount: ready.length, msg: this.state.msg, hasMsg: !!this.state.msg,
+teachers: ['N. Perera', 'S. Kumar', 'A. Jayasinghe', 'M. Rajan'],
+assigned: [
+{ id: 9, subject: 'General Information Technology', grade: 'Grade 12', file: 'GIT_Gr12_FirstTT.pdf', teacher: 'N. Perera', status: 'teacher_review', at: '30 Sep 2026, 08:15' },
+{ id: 8, subject: 'Biosystem Technology', grade: 'Grade 13', file: 'Biosystem_Gr13_Model.pdf', teacher: 'S. Kumar', status: 'refer_back', at: '29 Sep 2026, 16:02' },
+{ id: 6, subject: 'History', grade: 'Grade 11', file: 'Hist_Gr11_T1.pdf', teacher: 'A. Jayasinghe', status: 'review_done', at: '27 Sep 2026, 11:30' },
+{ id: 4, subject: 'Mathematics', grade: 'Grade 8', file: 'Maths_Gr8_T3.pdf', teacher: 'M. Rajan', status: 'published', at: '25 Sep 2026, 14:48' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

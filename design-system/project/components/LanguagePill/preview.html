@@ -1,0 +1,12 @@
+<!-- @dsCard group="Signals" height=80 subtitle="The paper or question language, coloured as on the EdSider site." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>LanguagePill</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row'},h(E.LanguagePill,{lang:'si'}),h(E.LanguagePill,{lang:'ta'}),h(E.LanguagePill,{lang:'en'})));
+</script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Check a new question</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1720px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Check a question" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Check" title="a new question" subtitle="Paste a question before adding it. First the bank is searched for an exact copy, then the meaning is compared with every question already there."></x-import>
+
+<div style="display: grid; grid-template-columns: 5fr 7fr; gap: 28px; align-items: start">
+<section class="es-card" aria-label="New question" style="display: flex; flex-direction: column; gap: 20px">
+<h2 class="scr-h2">New question</h2>
+<x-import component-from-global-scope="EdSider.Field" as="textarea" label="Question text" value="Calculate the perimeter of a rectangle 12 cm by 5 cm." rows="{{four}}"></x-import>
+<div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px">
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Grade" options="{{grades}}" value="Grade 7"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Subject" options="{{subjects}}" value="Mathematics"></x-import>
+</div>
+<fieldset style="border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
+<legend class="es-field__label" style="margin-bottom: 8px">Language</legend>
+<div class="es-row">
+<label class="scr-radio"><input type="radio" name="lang" checked> English</label>
+<label class="scr-radio" lang="si"><input type="radio" name="lang"> සිංහල</label>
+<label class="scr-radio" lang="ta"><input type="radio" name="lang"> தமிழ்</label>
+</div>
+</fieldset>
+<div class="es-row" style="gap: 12px; margin-top: 4px">
+<x-import component-from-global-scope="EdSider.Button" variant="primary" arrow="{{yes}}">Check against the bank</x-import>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" disabled="{{yes}}">Add to the bank</x-import>
+</div>
+<p class="es-caption">A question can only be added when nothing is flagged. A flagged match needs a person's decision first.</p>
+</section>
+
+<section aria-label="Result" style="display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 class="scr-h2">Result</h2>
+<p class="es-caption">Checked against 16,084 English questions in 157 ms</p>
+</div>
+<x-import component-from-global-scope="EdSider.Notice" tone="info" title="No exact copy">No question in the bank has this exact text. Closest matches by meaning are below.</x-import>
+<sc-for list="{{matches}}" as="m" hint-placeholder-count="3">
+<article class="es-card" style="display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap">
+<x-import component-from-global-scope="EdSider.Verdict" score="{{m.score}}"></x-import>
+<x-import component-from-global-scope="EdSider.Score" score="{{m.score}}" raw="{{m.raw}}" legend="{{no}}"></x-import>
+</div>
+<x-import component-from-global-scope="EdSider.QuestionCard" id="{{m.q.id}}" text="{{m.q.text}}" grade="{{m.q.grade}}" subject="{{m.q.subject}}" topic="{{m.q.topic}}" contributor="{{m.q.contributor}}"></x-import>
+<x-import component-from-global-scope="EdSider.GuardNote" reasons="{{m.reasons}}" raw="{{m.raw}}" score="{{m.score}}"></x-import>
+</article>
+</sc-for>
+<x-import component-from-global-scope="EdSider.Notice" tone="warning" title="Not added to the bank">1 likely duplicate needs a person's decision before this question can be added.</x-import>
+</section>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1720}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+yes: true, no: false, four: 4,
+grades: ['Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12', 'Grade 13'],
+subjects: ['Mathematics', 'Science', 'Economics', 'History', 'General Information Technology'],
+matches: [
+{ score: 0.96, q: { id: 38841, text: 'What is the perimeter of a rectangle measuring 12 cm by 5 cm?', grade: 'G07', subject: 'Mathematics', topic: 'Mensuration', contributor: 'N. Perera' }, reasons: [] },
+{ score: 0.72, raw: 0.977, q: { id: 41822, text: 'Calculate the area of a rectangle 12 cm by 5 cm.', grade: 'G07', subject: 'Mathematics', topic: 'Mensuration', contributor: 'N. Perera' },
+reasons: [{ guard: 'Opposing concepts', text: '"perimeter" in the new question, "area" in this one - they ask for different quantities.' }] },
+{ score: 0.78, raw: 0.91, q: { id: 40517, text: 'Calculate the perimeter of a rectangle 15 cm by 4 cm.', grade: 'G07', subject: 'Mathematics', topic: 'Mensuration', contributor: 'S. Kumar' },
+reasons: [{ guard: 'Numbers differ', text: '12 and 5 in the new question; 15 and 4 in this one.' }] }
+]
+};
+}
+}
+</script>
+</body>
+</html>

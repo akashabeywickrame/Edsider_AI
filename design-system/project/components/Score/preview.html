@@ -1,0 +1,12 @@
+<!-- @dsCard group="Signals" height=150 subtitle="Similarity as a percentage, with the band thresholds and the raw score a guard lowered." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Score</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row',style:{gap:48,alignItems:'flex-start'}},h(E.Score,{score:0.97}),h(E.Score,{score:0.88}),h(E.Score,{score:0.72,raw:0.977})));
+</script>
+</body>
+</html>

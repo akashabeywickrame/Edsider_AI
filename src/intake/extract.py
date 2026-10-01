@@ -216,6 +216,20 @@ def grade_label(code):
     return f"Grade {int(m.group(1))}" if m else (code or "")
 
 
+def _marks_matches(body):
+    """Every (start, end, value) _MARKS_PATTERNS finds in body, already
+    parsed and range-checked - the shared search _find_marks() and
+    _strip_marks_annotation() both build on, so they can never disagree
+    about which match is "the" one."""
+    hits = []
+    for pat in _MARKS_PATTERNS:
+        for m in pat.finditer(body):
+            value = int(m.group(1))
+            if 1 <= value <= 100:
+                hits.append((m.start(), m.end(), value))
+    return hits
+
+
 def _find_marks(body):
     """The last marks annotation in a question body, 1-100, or None.
 
@@ -223,15 +237,51 @@ def _find_marks(body):
     ("(a) ... (2 marks) (b) ... (3 marks)") and then, more often than
     not, a total - and the total is the useful one.
     """
-    hits = []
-    for pat in _MARKS_PATTERNS:
-        for m in pat.finditer(body):
-            value = int(m.group(1))
-            if 1 <= value <= 100:
-                hits.append((m.start(), value))
+    hits = _marks_matches(body)
     if not hits:
         return None
-    return max(hits, key=lambda h: h[0])[1]
+    return max(hits, key=lambda h: h[0])[2]
+
+
+def _strip_marks_annotation(text):
+    """Remove the one marks annotation _find_marks() would read out of
+    this text - not every number anywhere in it that merely looks like
+    one, which risks deleting content that has nothing to do with a
+    score. Meant to run only after that value has already been read
+    into its own `marks` field, so nothing is lost - it just moves out
+    of the prose and into the structured column where it belongs.
+
+    This matters once a question or its answer is compared against what
+    a student actually wrote: a student never writes "[3 marks]" as
+    part of their own answer, so leaving it embedded in the stored
+    expected answer would make an automated comparison score every
+    student's real answer against text they could never have matched.
+    """
+    if not text:
+        return text
+    hits = _marks_matches(text)
+    if not hits:
+        return text
+    # Different _MARKS_PATTERNS can match overlapping substrings of the
+    # SAME annotation - "[2 marks]" as a whole, and "2 marks" bare
+    # inside it - so hits are merged into their full span before
+    # picking which one to remove; without this, only the narrower,
+    # nested match gets stripped and the brackets it sat inside are
+    # left behind ("Definition of a System []").
+    spans = []
+    for start, end, _value in sorted(hits):
+        if spans and start <= spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+        else:
+            spans.append((start, end))
+    start, end = spans[-1]
+    stripped = text[:start] + text[end:]
+    # Removing the annotation can leave the line it sat on with a
+    # trailing space, or a leading one on the line after it.
+    stripped = re.sub(r"[ \t]+\n", "\n", stripped)
+    stripped = re.sub(r"\n[ \t]+", "\n", stripped)
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped)
+    return stripped.strip()
 
 
 def _confidence(text, marks):
@@ -473,9 +523,121 @@ def _split_parts(body, depth=0):
     parts = []
     for tag, piece in pieces:
         inner_stem, inner_parts = _split_parts(piece, depth + 1)
-        parts.append({"tag": tag, "text": inner_stem, "marks": _find_marks(piece),
+        parts.append({"tag": tag, "text": inner_stem,
+                      "marks": _own_marks(piece, inner_stem, inner_parts),
                       "parts": inner_parts})
     return body[:starts[0][0]].strip(), parts
+
+
+def split_mcq_options(body):
+    """An MCQ question's body -> (stem, [{"label": tag, "text": ...}, ...]).
+
+    An MCQ is never split by structure() itself - its stem and options
+    stay one piece of text, because the duplicate-check fingerprint needs
+    them together (see CLAUDE.md, "MCQ options live inside content").
+    This is a separate, presentation-only pass for a review page that
+    wants to show each option as its own card: it reuses _sub_starts(),
+    the same marker-detection _split_parts() already uses for structured
+    question parts, since an option list is the same shape - whatever the
+    paper numbers them with (A/B/C/D, 1/2/3/4, (a)/(b)/(c)...), counting
+    up correctly and needing at least two real markers to count as a
+    list at all. Unlike a part, an option is never split further and
+    never gets its own marks or answer - just text and a printed label.
+
+    Returns (body, []) - not an error - when nothing looks like an
+    option list, so a caller can fall back to showing the text as-is.
+    """
+    starts = _sub_starts(body)
+    if not starts:
+        return body.strip(), []
+    options = []
+    for i, (pos, end, tag) in enumerate(starts):
+        stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
+        options.append({"label": tag, "text": body[end:stop].strip()})
+    return body[:starts[0][0]].strip(), options
+
+
+# Up to 4 letters, not 2: a plain digit or single letter label never
+# needs more, but a roman numeral does - "iii" and "viii" are real
+# option labels (see _ROMAN_SEQUENCE above). A first version of this
+# capped at 2 characters, which matched "ii" and "iv" but silently
+# failed every longer roman numeral, leaving a real correct answer
+# unmarked with no error to notice it by.
+_MCQ_ANSWER_LABEL = re.compile(r"^\(?\s*([A-Za-z0-9]{1,4})\s*\)?$")
+
+
+def mcq_correct_label(answer):
+    """The bare option label ('2', 'a', 'iii') an already-extracted
+    answer like "(2)", "A" or "(III)" names - matched against
+    split_mcq_options()'s own option labels case-insensitively, since an
+    answer key and the options themselves do not always agree on case.
+    None when it doesn't look like a label at all - a free-text answer
+    a data-entry person typed by hand, say.
+    """
+    if not answer:
+        return None
+    m = _MCQ_ANSWER_LABEL.match(answer.strip())
+    return m.group(1).lower() if m else None
+
+
+def _bold_mcq_answer(text, bold_runs):
+    """The printed label of the one option in this MCQ's text that a
+    bold run identifies as correct - for a paper that marks its answer
+    by bolding the right option instead of printing a separate answer
+    key. Matched by substring containment rather than exact position:
+    read_docx() only hands back bold runs as plain text snippets (see
+    its own docstring for why), so "does this option's text contain
+    that bold snippet" is the whole check.
+
+    None when nothing is bold, when nothing here looks like an MCQ at
+    all, or when a bold snippet matches more than one option - equally
+    consistent with "no separate figure caught this bold text" and
+    "two options happen to share a short bold word", and there is no
+    way to tell those apart, so this stays silent rather than guessing.
+
+    Checked both ways round: selecting a whole option line and bolding
+    it captures its printed marker too ("(2) Helium"), but
+    split_mcq_options() has already stripped that marker from the
+    option's own text ("Helium") by the time this runs - so the bold
+    run is the LONGER string here, not the shorter one, as often as not.
+    """
+    if not bold_runs:
+        return None
+    _stem, options = split_mcq_options(text)
+    if not options:
+        return None
+    hits = [o["label"] for o in options
+            if any(run in o["text"] or o["text"] in run for run in bold_runs)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _own_marks(piece, stem, inner_parts):
+    """A part's own marks - preferring what the paper states for THIS
+    part specifically over a number that actually belongs to one of its
+    own children.
+
+    A part with its own nested sub-parts - "(1)" holding "(a)(b)(c)",
+    say - has no single marks annotation of its own on a real paper:
+    each child carries its own, and (1) is worth their sum. Searching
+    the whole piece for "the last marks annotation" is right for a part
+    with no children (the existing, unchanged branch below) but wrong
+    once there is a nested list underneath it - measured on the real
+    GIT A/L paper's question (01), it read part "(1)" as 3 marks (part
+    (c)'s own figure) instead of 10 (3+4+3, its three parts' true sum).
+    """
+    if not inner_parts:
+        return _find_marks(piece)
+    explicit = _find_marks(stem)
+    if explicit is not None:
+        return explicit
+    child_marks = [p["marks"] for p in inner_parts]
+    if all(m is not None for m in child_marks):
+        return sum(child_marks)
+    # Some child has no mark of its own yet (still being corrected, or
+    # the paper genuinely does not print one there) - an incomplete sum
+    # would look like a real total when it understates one, so this
+    # part is left blank rather than confidently wrong.
+    return None
 
 
 # ------------------------------------------------------ paper structure
@@ -531,17 +693,52 @@ _MARKS_EACH = re.compile(
     r"(?:each|every)[ \t]+question[ \t]+carries[ \t]+(\d{1,3})[ \t]+marks?",
     re.IGNORECASE,
 )
-# An MCQ option - "(1) RAM", "A. Keyboard" - and not a lettered part of a
-# structured question, which says what to do: the real Biosystem
-# Technology paper's Part II-B is all "a) Explain ... b) Describe ...",
-# and read as options the whole part was labelled multiple choice.
+# An MCQ option - "(1) RAM", "A. Keyboard", "I. Ignoring climate data" -
+# and not a lettered part of a structured question, which says what to
+# do: the real Biosystem Technology paper's Part II-B is all "a) Explain
+# ... b) Describe ...", and read as options the whole part was labelled
+# multiple choice.
+#
+# Roman numerals matter here, not just digits and a-e letters: a real
+# Grade 13 Biosystem Technology paper numbers every Part I option
+# "I. II. III. IV. V." rather than "(1) (2) (3)..." - missed entirely by
+# an earlier version of this pattern, so _kind_from() below never saw
+# these questions as MCQs at all. A question whose options happened to
+# be short text then correctly stayed whole by luck (too short to look
+# like a real structured part - see _MIN_PART_CHARS), but one with
+# longer, more descriptive options ("The percentage of ratio between
+# the length and the breadth...") got split_parts()'d into five fake
+# sub-questions, each stripped of its own "I."/"II." marker as if it
+# were a real part's printed number rather than an MCQ option.
+#
+# Adding roman numerals then broke a DIFFERENT part of the same real
+# paper: Part II-A nests roman-numeral sub-questions inside lettered
+# parts - "a) i)Mention the main processes...", "b) i) Give examples
+# ...". The verb-exclusion lookahead below only recognises a part when
+# an instructional verb sits RIGHT AFTER its own marker ("a) Explain..."),
+# but here "a)" is immediately followed by ANOTHER marker ("i)Mention",
+# no space before the verb) - so the lookahead never got to see
+# "Mention" at all, and "a)"/"b)" themselves started counting as MCQ
+# option lines. That flipped the whole section's kind to "mcq",
+# which skips _split_parts() entirely - so "04" never split into real
+# a)/b)/i)/ii)/iii) parts in the database at all; it stayed one
+# undivided block, same failure shape as the first bug, one level up.
+# Fixed by also rejecting a marker immediately followed by what looks
+# like ANOTHER marker - a genuine MCQ option is never followed by a
+# nested list of its own. Separately, "Writedown"/"Listdown" (no space)
+# are real typos in this same paper that the verb-exclusion list missed
+# entirely, since \bwrite\b needs a word boundary "write" does not have
+# when run straight into "down".
 _OPTION_LINE = re.compile(
-    r"^[ \t]*(?:\([ \t]*(?:[1-5]|[a-eA-E])[ \t]*\)|[a-eA-E][.)])[ \t]+"
-    r"(?!(?:explain|describe|state|name|draw|write|calculate|define|list"
-    r"|give|identify|compare|discuss|show|find|prove|outline|mention"
-    r"|briefly|what|why|how|which|who|when|where|convert|complete"
+    r"^[ \t]*(?:\([ \t]*(?:[1-5]|[a-eA-E]|[ivxIVX]{1,4})[ \t]*\)"
+    r"|(?:[a-eA-E]|[ivxIVX]{1,4})[.)])[ \t]+"
+    r"(?!(?:explain|describe|state|name|draw|write(?:down)?|calculate|define"
+    r"|list(?:down)?|give|identify|compare|discuss|show|find|prove|outline"
+    r"|mention|briefly|what|why|how|which|who|when|where|convert|complete"
     r"|evaluate|suggest|classify|distinguish|justify|analy[sz]e|determine"
-    r"|derive|sketch|label)\b)\S",
+    r"|derive|sketch|label)\b)"
+    r"(?!\(?(?:[ivxIVX]{1,4}|[a-eA-E])[.)][ \t]*\S)"
+    r"\S",
     re.MULTILINE | re.IGNORECASE,
 )
 # "Q1: (2)" - one entry of an MCQ answer key. "Question (01)" at the start
@@ -711,16 +908,16 @@ def _attach_answers(answers, drafts, sections):
             head, per_part = _split_answer_by_part(worked[number(d)])
             kids = descendants(d)
             if not (kids and per_part):
-                d["answer"] = worked[number(d)]
+                d["answer"] = _strip_marks_annotation(worked[number(d)])
                 continue
             # The scheme labels a part "(1)(a)"; the draft's own number is
             # the question's printed number plus that same suffix.
-            d["answer"] = head or None
+            d["answer"] = _strip_marks_annotation(head) or None
             printed = d["question_number"] or ""
             for kid in kids:
                 suffix = (kid["question_number"] or "")[len(printed):]
                 if per_part.get(suffix):
-                    kid["answer"] = per_part[suffix]
+                    kid["answer"] = _strip_marks_annotation(per_part[suffix])
 
 
 def _emit_parts(drafts, parts, parent_seq, prefix, section, depth=1):
@@ -734,16 +931,22 @@ def _emit_parts(drafts, parts, parent_seq, prefix, section, depth=1):
     for part in parts:
         number = f"{prefix}({part['tag']})" if prefix else f"({part['tag']})"
         seq = len(drafts) + 1
+        # Marks are read out of part["text"] before storage, not after -
+        # stripping first would remove the very annotation _own_marks()
+        # already used (via _split_parts()) to set part["marks"], but
+        # that has already happened by the time _emit_parts() runs, so
+        # stripping here is purely cosmetic on an already-decided value.
+        text = _strip_marks_annotation(part["text"])
         drafts.append({
             "seq": seq,
             "question_number": number,
-            "text": part["text"],
+            "text": text,
             "marks": part["marks"],
             "section": section,
             "answer": None,
             "depth": depth,
             "parent_seq": parent_seq,
-            "extraction_confidence": _confidence(part["text"], part["marks"]),
+            "extraction_confidence": _confidence(text, part["marks"]),
         })
         _emit_parts(drafts, part["parts"], seq, number, section, depth + 1)
 
@@ -862,14 +1065,22 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
 
         kind = sp["kind"] or _kind_hint(intro) or _kind_from(b for _, b in pieces)
         for raw, body in pieces:
-            # "Each question carries 15 marks" is the question's mark; the
-            # last "[2]" inside it is only its final part's.
-            marks = each or _find_marks(body)
             # An MCQ is never split: its options are a list at the left
             # margin that looks exactly like a part list, and an option is
             # not a question with an answer of its own.
             stem, parts_tree = ((body, []) if kind == "mcq"
                                 else _split_parts(body))
+            # "Each question carries 15 marks" is the question's mark
+            # when the paper states it once for the whole section; else
+            # the same stem-then-sum-of-parts rule _own_marks() uses for
+            # every other level - a split question is worth what its
+            # parts add up to, not whatever figure happens to sit last
+            # in its raw text.
+            marks = each or _own_marks(body, stem, parts_tree)
+            # Marks are read from the unstripped stem/body above, not
+            # after - stripping first would remove the very annotation
+            # that reading just used.
+            stem = _strip_marks_annotation(stem)
             parent_seq = len(drafts) + 1
             drafts.append({
                 "seq": parent_seq,
@@ -885,7 +1096,7 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
                 # the extractor struggling, so it is not low confidence.
                 "extraction_confidence": (
                     "ok" if parts_tree
-                    else (_confidence(body, marks) if raw is not None else "low")),
+                    else (_confidence(stem, marks) if raw is not None else "low")),
             })
             _emit_parts(drafts, parts_tree, parent_seq, raw or "", sp["label"])
         parts.append({
@@ -1119,9 +1330,47 @@ def _text_with_pictures_read(page, boxes, ocr):
     return "\n".join(t for _, t in blocks)
 
 
+def _pdf_bold_runs(page):
+    """Text of every substantial bold-font word run on this page, in
+    reading order - independent of read_pdf()'s own text assembly
+    (extract_text() / OCR), so this can never disturb the page-routing
+    logic that already works. Same reasoning as _docx_walk()'s
+    bold_runs: plain text snippets, not positions, so a caller only
+    needs to check "does this option's text contain one of these", not
+    track offsets through anything downstream.
+
+    PDF carries no font-weight flag of its own - a bold font's NAME
+    usually contains "Bold" ("Arial-BoldMT", "TimesNewRomanPS-BoldMT"),
+    the same heuristic other PDF tooling relies on for the same reason.
+    A page with no real text layer (pure OCR) has no font names to
+    check at all, so this simply finds nothing there - safe to call
+    unconditionally on every page rather than only ones read as "text".
+    """
+    try:
+        words = page.extract_words(extra_attrs=["fontname"])
+    except Exception:
+        return []
+    runs, current = [], []
+    for w in words:
+        if "bold" in (w.get("fontname") or "").lower():
+            current.append(w["text"])
+        elif current:
+            runs.append(" ".join(current))
+            current = []
+    if current:
+        runs.append(" ".join(current))
+    return [r for r in runs if len(r.strip()) >= _MIN_BOLD_ANSWER_CHARS]
+
+
 def read_pdf(path, ocr):
-    """(text, note). Each page is read the cheapest way that actually
-    captures it - see _pdf_page_route. `ocr` is image -> text.
+    """(text, note, bold_runs). Each page is read the cheapest way that
+    actually captures it - see _pdf_page_route. `ocr` is image -> text.
+
+    `bold_runs` is the text of every substantial bold-font run across
+    every page - see _pdf_bold_runs() for why it is text snippets rather
+    than positions, and extract() for how it becomes a fallback correct-
+    MCQ-answer when a paper marks its answer by bolding the right option
+    instead of printing a separate answer key.
 
     If OCR is unavailable, the pages that needed it keep whatever text
     layer they had and the note says how many were not read - one
@@ -1134,7 +1383,7 @@ def read_pdf(path, ocr):
             "pdfplumber is not installed - `pip install pdfplumber`"
         ) from e
 
-    parts = []
+    parts, bold_runs = [], []
     read_by_ocr = not_read = came_back_empty = 0
     reason = None
     with pdfplumber.open(path) as pdf:
@@ -1142,6 +1391,7 @@ def read_pdf(path, ocr):
         for page in pdf.pages:
             text = _fix_ligatures(page.extract_text() or "")
             boxes = _pictures_on(page)
+            bold_runs.extend(_pdf_bold_runs(page))
             route = _pdf_page_route(text, boxes)
             if route != "text" and reason is None:
                 try:
@@ -1172,7 +1422,7 @@ def read_pdf(path, ocr):
                  f"cannot read - or a blank page)")
     if not_read:
         note += f" - {not_read} of {total} pages not read: {reason}"
-    return "\n".join(parts).strip(), note
+    return "\n".join(parts).strip(), note, bold_runs
 
 
 # ------------------------------------------------------------------ Word
@@ -1266,13 +1516,54 @@ def _omml(el):
     return "".join(_omml(c) for c in el)
 
 
-def _docx_walk(el, out, picture):
+def _run_is_bold(run_el):
+    """Whether a <w:r> run element is bold - <w:rPr><w:b/></w:rPr>, with
+    an explicit w:val="0"/"false" meaning NOT bold (Word writes that
+    when bold is turned off inside an otherwise-bold character style,
+    not just <w:b>'s plain absence)."""
+    props = run_el.find(_W + "rPr")
+    if props is None:
+        return False
+    b = props.find(_W + "b")
+    if b is None:
+        return False
+    return b.get(_W + "val") not in ("0", "false")
+
+
+# A bold run shorter than this is a heading, a label like "Note:", or
+# emphasis on a single word inside an ordinary sentence - not a paper
+# marking one whole MCQ option as the correct answer. Measured against
+# the shortest real option text seen in this codebase's own test
+# papers ("Helium", "Argon"): every genuine option is at least this long.
+_MIN_BOLD_ANSWER_CHARS = 3
+
+
+def _docx_walk(el, out, picture, bold_runs=None):
     """Body XML -> text, in document order. python-docx's own
     `document.paragraphs` skips tables, equations and pictures - on a
-    maths paper, that is most of the content."""
+    maths paper, that is most of the content.
+
+    `bold_runs`, when given a list, collects the text of every bold run
+    encountered - not where it sits (bold_runs is presentation-only
+    metadata, not offsets into `out`, so nothing downstream has to
+    track position through the "\\n{3,}" collapse and final strip()
+    read_docx() applies afterwards). This is how an MCQ whose correct
+    option is marked by bolding it, rather than a separate answer key,
+    gets identified - see extract()'s use of mcq_correct_label() and
+    split_mcq_options() together with this.
+    """
     tag = el.tag if isinstance(el.tag, str) else ""
     if tag == _M + "oMath":
         out.append(_omml(el))
+        return
+    if tag == _W + "r" and _run_is_bold(el):
+        local = []
+        for child in el:
+            _docx_walk(child, local, picture, bold_runs)
+        text = "".join(local)
+        out.append(text)
+        if bold_runs is not None and len(text.strip()) >= _MIN_BOLD_ANSWER_CHARS:
+            bold_runs.append(text.strip())
         return
     if tag == _W + "t":
         out.append(el.text or "")
@@ -1294,12 +1585,15 @@ def _docx_walk(el, out, picture):
         # text box side by side; reading both would double it.
         choice = el.find(_MC + "Choice")
         if choice is not None:
-            _docx_walk(choice, out, picture)
+            _docx_walk(choice, out, picture, bold_runs)
         return
     if tag == _W + "tr":
         # One line per row: an MCQ options grid becomes
         # "A. Colombo | B. Kandy", which segment() leaves attached to
-        # the question above it.
+        # the question above it. Bold tracking does not follow into a
+        # table cell - real MCQ options in the papers seen so far are
+        # always plain paragraphs, never a table, so this is a
+        # deliberate scope limit, not an oversight.
         cells = []
         for tc in el.findall(_W + "tc"):
             sub = []
@@ -1308,15 +1602,22 @@ def _docx_walk(el, out, picture):
         out.append(" | ".join(c for c in cells if c) + "\n")
         return
     for child in el:
-        _docx_walk(child, out, picture)
+        _docx_walk(child, out, picture, bold_runs)
     if tag == _W + "p":
         out.append("\n")
 
 
 def read_docx(path, ocr):
-    """(text, note). Paragraphs, tables and equations in document order,
-    with each embedded picture OCR'd in place - a question pasted into
-    Word as a screenshot is otherwise invisible."""
+    """(text, note, bold_runs). Paragraphs, tables and equations in
+    document order, with each embedded picture OCR'd in place - a
+    question pasted into Word as a screenshot is otherwise invisible.
+
+    `bold_runs` is the text of every substantial bold run in the
+    document - see _docx_walk()'s own docstring for why it is text
+    snippets rather than positions, and extract() for how it becomes a
+    fallback correct-MCQ-answer when a paper marks its answer by
+    bolding the right option instead of printing a separate answer key.
+    """
     try:
         import docx
     except ImportError as e:
@@ -1349,8 +1650,8 @@ def read_docx(path, ocr):
         not_read += 1
         return "\n[image - not read]\n"
 
-    out = []
-    _docx_walk(document.element.body, out, picture)
+    out, bold_runs = [], []
+    _docx_walk(document.element.body, out, picture, bold_runs)
     text = re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
 
     note = "docx-text"
@@ -1358,7 +1659,7 @@ def read_docx(path, ocr):
         note += f" + ocr ({read_by_ocr} image{'s' if read_by_ocr != 1 else ''})"
     if not_read:
         note += f" - {not_read} image(s) not read: {reason}"
-    return text, note
+    return text, note, bold_runs
 
 
 # --------------------------------------------------------------- extract
@@ -1406,11 +1707,12 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
 
     text = ""
     extractor = "none"
+    bold_runs = []
     try:
         if suffix == ".pdf":
-            text, extractor = read_pdf(path, ocr)
+            text, extractor, bold_runs = read_pdf(path, ocr)
         elif suffix == ".docx":
-            text, extractor = read_docx(path, ocr)
+            text, extractor, bold_runs = read_docx(path, ocr)
         elif suffix == ".doc":
             # The pre-2007 binary format; python-docx cannot open it.
             extractor = "unsupported:.doc (open it in Word and save as .docx)"
@@ -1440,6 +1742,15 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
     for q in parsed["questions"]:
         q.setdefault("grade", meta["grade"])
         q.setdefault("subject", meta["subject"])
+        # Some papers never print a separate answer key at all - the
+        # correct option is just bolded in place. Only a fallback: a
+        # real answer key, already read by _attach_answers() above,
+        # always wins. MCQ is never split, so only a depth-0 question
+        # can be one at all.
+        if not q.get("answer") and not q.get("depth"):
+            label = _bold_mcq_answer(q.get("text") or "", bold_runs)
+            if label:
+                q["answer"] = f"({label})"
 
     return {
         "file_type": file_type,

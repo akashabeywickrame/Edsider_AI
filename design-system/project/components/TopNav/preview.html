@@ -1,0 +1,12 @@
+<!-- @dsCard group="Layout" height=150 subtitle="The header bar with page links; the active page is a soft purple pill." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>TopNav</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-stack',style:{gap:12}},h(E.TopNav,{active:'Find duplicates',pages:['Check a question','Find duplicates','Within a paper','Decisions','Search','Question bank','Paper intake'],who:'Signed in as reviewer'}),h(E.TopNav,{title:'Teacher review',active:'My papers',pages:['My papers'],who:'N. Perera'})));
+</script>
+</body>
+</html>

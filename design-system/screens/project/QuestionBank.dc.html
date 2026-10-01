@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Question bank</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+<script src="ds/edsider/components/bundle.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="es-root" style="width: 1440px; height: 1260px; overflow: hidden; background: var(--surface-page); font-family: var(--font-body); color: var(--text-dark)">
+<dc-import name="Header" app="data" active="Question bank" hint-size="1440px,76px"></dc-import>
+<main class="scr-main">
+<x-import component-from-global-scope="EdSider.PageHeader" accent="Question" title="bank" subtitle="Every question synced from EdSider, in all three languages. Filter it to find what is already there."></x-import>
+
+<section class="es-card" aria-label="Filters" style="display: grid; grid-template-columns: 2fr repeat(4, minmax(0, 1fr)); gap: 16px; align-items: end">
+<x-import component-from-global-scope="EdSider.Field" label="Search text" placeholder="Words in the question"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Grade" options="{{grades}}"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Subject" options="{{subjects}}"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Language" options="{{langs}}"></x-import>
+<x-import component-from-global-scope="EdSider.Field" as="select" label="Kind" options="{{shapes}}"></x-import>
+</section>
+
+<div style="display: flex; justify-content: space-between; align-items: center">
+<p class="es-caption">Showing 8 of 103,337 questions</p>
+<div class="es-row">
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Previous</x-import>
+<x-import component-from-global-scope="EdSider.Button" variant="secondary" size="sm">Next</x-import>
+</div>
+</div>
+
+<section class="es-card" aria-label="Questions" style="padding: 0; overflow: hidden">
+<table class="scr-table">
+<thead><tr><th style="width: 100px">ID</th><th>Question</th><th style="width: 80px">Grade</th><th style="width: 200px">Subject</th><th style="width: 120px">Language</th><th style="width: 130px">Kind</th><th style="width: 150px">Added by</th></tr></thead>
+<tbody>
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="8">
+<tr>
+<td><span class="es-id">#{{r.id}}</span></td>
+<td lang="{{r.lang}}" style="font-size: 15px; line-height: 23px">{{r.text}}</td>
+<td>{{r.grade}}</td>
+<td>{{r.subject}}</td>
+<td><x-import component-from-global-scope="EdSider.LanguagePill" lang="{{r.lang}}"></x-import></td>
+<td><span class="scr-chip">{{r.shape}}</span></td>
+<td style="color: var(--text-muted)">{{r.by}}</td>
+</tr>
+</sc-for>
+</tbody>
+</table>
+</section>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1260}}'>
+class Component extends DCLogic {
+renderVals() {
+return {
+grades: ['All grades', 'Grade 6', 'Grade 7', 'Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12', 'Grade 13'],
+subjects: ['All subjects', 'Mathematics', 'Science', 'Economics', 'History', 'General Information Technology'],
+langs: ['All languages', 'English', 'Sinhala', 'Tamil'],
+shapes: ['Any kind', 'Standalone', 'Parent', 'Sub-question'],
+rows: [
+{ id: 41822, text: 'Calculate the area of a rectangle 12 cm by 5 cm.', grade: 'G07', subject: 'Mathematics', lang: 'en', shape: 'Standalone', by: 'N. Perera' },
+{ id: 88104, text: 'දිග 12 cm සහ පළල 5 cm වූ සෘජුකෝණාස්‍රයක වර්ගඵලය ගණනය කරන්න.', grade: 'G07', subject: 'ගණිතය', lang: 'si', shape: 'Standalone', by: 'K. Wijesinghe' },
+{ id: 96311, text: '12 செ.மீ நீளமும் 5 செ.மீ அகலமும் கொண்ட செவ்வகத்தின் பரப்பளவைக் காண்க.', grade: 'G07', subject: 'கணிதம்', lang: 'ta', shape: 'Standalone', by: 'M. Rajan' },
+{ id: 23418, text: 'UPS stands for ______.', grade: 'G10', subject: 'Information and Communication Technology', lang: 'en', shape: 'Standalone', by: 'D. Silva' },
+{ id: 44102, text: 'Explain the process of credit creation by commercial banks.', grade: 'G12', subject: 'Economics', lang: 'en', shape: 'Standalone', by: 'S. Kumar' },
+{ id: 842, text: 'Write the answer using the food chain below. Grass - Grasshopper - Frog - Snake', grade: 'G08', subject: 'Science', lang: 'en', shape: 'Parent', by: 'R. Fernando' },
+{ id: 837, text: 'How many links are there in the above food chain?', grade: 'G08', subject: 'Science', lang: 'en', shape: 'Sub-question', by: 'R. Fernando' },
+{ id: 58317, text: 'Which pair shows the second statement being a result of the first?', grade: 'G11', subject: 'History', lang: 'en', shape: 'Standalone', by: 'A. Jayasinghe' }
+]
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<!-- @dsCard group="Layout" height=400 subtitle="The floating icon rail for jumping between sections of a long page." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SectionRail</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h(E.SectionRail,{label:'Paper intake sections',items:[{id:'up',icon:'upload',label:'Upload'},{id:'paper',icon:'paper',label:'Questions'},{id:'dup',icon:'copy',label:'Duplicate check'},{id:'status',icon:'check',label:'Review status'},{id:'assign',icon:'users',label:'Assign'}]}));
+</script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "AssignPapers.dc.html": {
+      "h": 1300,
+      "is_interactive": true,
+      "title": "Assign papers (admin app)",
+      "w": 1440,
+      "x": 1990,
+      "y": 6380
+    },
+    "CheckQuestion.dc.html": {
+      "h": 1720,
+      "is_interactive": true,
+      "title": "Check a new question",
+      "w": 1440,
+      "x": 1520,
+      "y": 0
+    },
+    "Decisions.dc.html": {
+      "h": 1700,
+      "is_interactive": true,
+      "title": "Reviewed decisions",
+      "w": 1440,
+      "x": 0,
+      "y": 2280
+    },
+    "Header.dc.html": {
+      "h": 76,
+      "is_interactive": true,
+      "title": "Shared header",
+      "w": 1440,
+      "x": 0,
+      "y": 9193
+    },
+    "Main.dc.html": {
+      "h": 1860,
+      "is_interactive": true,
+      "title": "Find duplicates",
+      "w": 1440,
+      "x": 0,
+      "y": 0
+    },
+    "PaperIntake.dc.html": {
+      "h": 4700,
+      "is_interactive": true,
+      "title": "Paper intake",
+      "w": 1440,
+      "x": 4560,
+      "y": 2280
+    },
+    "QuestionBank.dc.html": {
+      "h": 1260,
+      "is_interactive": true,
+      "title": "Question bank",
+      "w": 1440,
+      "x": 3040,
+      "y": 2280
+    },
+    "Search.dc.html": {
+      "h": 1300,
+      "is_interactive": true,
+      "title": "Search by meaning",
+      "w": 1440,
+      "x": 1520,
+      "y": 2280
+    },
+    "SignIn.dc.html": {
+      "h": 1080,
+      "is_interactive": true,
+      "title": "Sign in - the entry page",
+      "w": 1440,
+      "x": 0,
+      "y": 9693
+    },
+    "SignInMobile.dc.html": {
+      "h": 980,
+      "is_interactive": true,
+      "title": "Sign in - phone",
+      "w": 390,
+      "x": 1520,
+      "y": 9693
+    },
+    "TeacherMobile.dc.html": {
+      "h": 1780,
+      "title": "Teacher review - phone",
+      "w": 390,
+      "x": 1520,
+      "y": 6380
+    },
+    "TeacherReview.dc.html": {
+      "h": 2260,
+      "is_interactive": true,
+      "title": "Teacher review (teacher app)",
+      "w": 1440,
+      "x": 0,
+      "y": 6380
+    },
+    "WithinPaper.dc.html": {
+      "h": 1760,
+      "is_interactive": true,
+      "title": "Duplicates within a paper",
+      "w": 1440,
+      "x": 3040,
+      "y": 0
+    },
+    "Landing.dc.html": {
+      "h": 1980,
+      "is_interactive": true,
+      "title": "EdSider AI landing page",
+      "w": 1440,
+      "x": 1990,
+      "y": 9693
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-09-30T11:00:00Z",
+    "v": 1
+  },
+  "designSystems": [
+    {
+      "artifact": "https://claude.ai/artifact/3o5gPdb8dMewphjzHs93hw",
+      "copiedAt": "2026-09-30T11:25:00Z",
+      "namespace": "edsider",
+      "title": "EdSider Design System",
+      "version": "1790746296-e6b3"
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "note-lyt850": {
+      "kind": "title1",
+      "maxW": 3430,
+      "text": "MASD View to Assign Papers to teachers",
+      "w": 240,
+      "x": 1990,
+      "y": 6080
+    },
+    "row1": {
+      "kind": "title1",
+      "maxW": 4480,
+      "text": "Data-entry tool - reviewing duplicates",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "row3": {
+      "kind": "title1",
+      "maxW": 3430,
+      "text": "Teacher's View",
+      "w": 240,
+      "x": 0,
+      "y": 6080
+    },
+    "row4": {
+      "kind": "title1",
+      "maxW": 1440,
+      "text": "Shared parts",
+      "w": 240,
+      "x": 0,
+      "y": 8893
+    },
+    "row5": {
+      "kind": "title1",
+      "maxW": 3430,
+      "text": "Sign-in and landing page",
+      "w": 240,
+      "x": 0,
+      "y": 9393
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "CheckQuestion.dc.html",
+    "WithinPaper.dc.html",
+    "Decisions.dc.html",
+    "Search.dc.html",
+    "QuestionBank.dc.html",
+    "PaperIntake.dc.html",
+    "TeacherReview.dc.html",
+    "TeacherMobile.dc.html",
+    "AssignPapers.dc.html",
+    "Header.dc.html",
+    "SignIn.dc.html",
+    "SignInMobile.dc.html",
+    "Landing.dc.html"
+  ],
+  "pages": [],
+  "title": "EdSider AI - App Screens"
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EdSider AI header</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="edsider-tokens.css">
+<link rel="stylesheet" href="ds/edsider/components/bundle.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&amp;family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+Sinhala:wght@400;600&amp;family=Noto+Sans+Tamil:wght@400;600&amp;display=swap">
+<style>body{margin:0}
+.hd .es-nav ul{gap:2px}
+.hd .es-nav a{font-size:13px;line-height:18px;padding:7px 11px;white-space:nowrap}
+</style>
+</helmet>
+<div class="es-root hd" style="width: 1440px; height: 76px; font-family: var(--font-body); color: var(--text-dark); background: var(--surface)">
+<nav class="es-nav" aria-label="Pages" style="height: 76px; box-sizing: border-box; padding: 12px 32px; flex-wrap: nowrap; gap: 16px">
+<a href="{{homeHref}}" aria-label="EdSider AI home" style="padding: 0; display: flex; align-items: center; flex-shrink: 0">
+<img src="/_blob/b2f5067eb511bfec7064c52dca44a123" alt="EdSider AI" style="height: 50px; width: auto; display: block; margin-left: -14px">
+</a>
+<span style="font-family: var(--font-heading); font-size: 12px; font-weight: 700; color: var(--primary); background: var(--primary-soft); padding: 4px 10px; border-radius: 999px; flex-shrink: 0; white-space: nowrap">{{appLabel}}</span>
+<ul style="margin-left: auto; flex-wrap: nowrap">
+<sc-for list="{{links}}" as="l" hint-placeholder-count="7">
+<li><a href="{{l.href}}" aria-current="{{l.ac}}">{{l.label}}</a></li>
+</sc-for>
+</ul>
+<span class="es-nav__who" style="margin-left: 8px; padding-left: 16px; border-left: 1px solid var(--border-soft); white-space: nowrap; font-size: 13px; flex-shrink: 0">{{who}}</span>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"app":{"editor":"enum","options":["data","teacher","admin"],"default":"data"},"active":{"editor":"text","default":"Find duplicates"},"$preview":{"width":1440,"height":76}}'>
+class Component extends DCLogic {
+renderVals() {
+var app = this.props.app || 'data';
+var active = this.props.active || 'Find duplicates';
+var sets = {
+data: [
+['Check a question', 'CheckQuestion.dc.html'], ['Find duplicates', 'Main.dc.html'], ['Within a paper', 'WithinPaper.dc.html'],
+['Decisions', 'Decisions.dc.html'], ['Search', 'Search.dc.html'], ['Question bank', 'QuestionBank.dc.html'], ['Paper intake', 'PaperIntake.dc.html']
+],
+teacher: [['My papers', 'TeacherReview.dc.html']],
+admin: [['Assign papers', 'AssignPapers.dc.html']]
+};
+var labels = { data: 'Question review', teacher: 'Teacher review', admin: 'Paper assignment' };
+var whos = { data: 'Signed in as reviewer', teacher: 'N. Perera', admin: 'Assigning administrator' };
+return {
+links: sets[app].map(function (s) { return { label: s[0], href: s[1], ac: s[0] === active ? 'page' : 'false' }; }),
+homeHref: sets[app][0][1],
+appLabel: labels[app],
+who: whos[app]
+};
+}
+}
+</script>
+</body>
+</html>

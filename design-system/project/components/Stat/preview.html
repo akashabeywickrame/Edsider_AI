@@ -1,0 +1,12 @@
+<!-- @dsCard group="Feedback" height=130 subtitle="A headline count in a stat card with a pastel icon tile." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Stat</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-row',style:{gap:20,alignItems:'stretch'}},h(E.Stat,{label:'Pairs reviewed',value:'1,204',icon:'check',accent:'primary'}),h(E.Stat,{label:'Duplicate',value:'312',icon:'copy',accent:'coral'}),h(E.Stat,{label:'Needs review',value:'96',icon:'search',accent:'gold'}),h(E.Stat,{label:'Comparable questions',value:'16,084',icon:'bank',accent:'blue'})));
+</script>
+</body>
+</html>

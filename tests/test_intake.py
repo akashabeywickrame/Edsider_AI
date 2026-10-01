@@ -169,6 +169,48 @@ def test_segment_takes_the_last_marks_annotation():
     text = "1. (a) Define X. (2 marks) (b) Explain Y. (3 marks) Total (5 marks)\n"
     drafts = extract.segment(text)
     assert drafts[0]["marks"] == 5
+    # The annotation used to read that 5 is gone from the stored text -
+    # a student's own answer will never contain "Total (5 marks)", so
+    # leaving it in would corrupt a future comparison against one.
+    assert "Total (5 marks)" not in drafts[0]["text"]
+    assert "Define X." in drafts[0]["text"]
+
+
+def test_marks_annotation_is_stripped_from_a_leaf_questions_text():
+    text = "1. Convert the number to binary. [3]\n2. Explain the result. [2]\n"
+    drafts = extract.segment(text)
+    assert drafts[0]["text"] == "Convert the number to binary."
+    assert drafts[0]["marks"] == 3
+    assert drafts[1]["text"] == "Explain the result."
+    assert drafts[1]["marks"] == 2
+
+
+def test_marks_annotation_is_stripped_from_a_split_parts_own_text():
+    text = (
+        "1. A farmer grows two crops on the same land.\n"
+        "(i) Explain what is meant by intercropping in this context. [3]\n"
+        "(ii) State two advantages of the practice for the farmer. [4]\n"
+        "(iii) Describe one problem the farmer may face with it. [3]\n"
+    )
+    drafts = extract.segment(text)
+    by_number = {d["question_number"]: d for d in drafts}
+    assert by_number["1(i)"]["text"] == (
+        "Explain what is meant by intercropping in this context.")
+    assert by_number["1(i)"]["marks"] == 3
+    assert "[3]" not in by_number["1(i)"]["text"]
+
+
+def test_marks_annotation_is_stripped_from_the_answer_text():
+    """The marking scheme's own "[N marks]" label must not survive into
+    the stored expected answer, for the same reason as the question
+    text - it is not part of what a student would ever write."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    q01 = _part(parsed, "Part II")[0]
+    parts = {p["question_number"]: p for p in _under(parsed, q01)}
+    answer = parts["01(1)(a)"]["answer"]
+    assert answer.startswith("Definition of a System")
+    assert "[2 marks]" not in answer
+    assert "marks" not in answer.lower()
 
 
 def test_segment_strips_the_printed_question_number_from_the_text():
@@ -360,6 +402,34 @@ def test_each_part_carries_its_own_marks():
     assert marks["01(1)(b)"] == 5
 
 
+def test_split_question_marks_sum_to_the_question_total():
+    """The real GIT A/L paper prints no marks total for "(1)" or "(2)"
+    themselves - only their own lettered parts carry a figure, e.g.
+    (1)(a) [2], (1)(b) [5]. Before this, "(1)"'s own marks field showed
+    5 - (b)'s own figure, the last one found searching (1)'s whole text
+    - instead of 7, what (a) and (b) actually add up to."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    parts = _under(parsed, _part(parsed, "Part II")[0])
+    marks = {p["question_number"]: p["marks"] for p in parts}
+    assert marks["01(1)"] == 7   # (a) 2 + (b) 5
+    assert marks["01(2)"] == 4   # (a) 2 + (b) 2
+
+
+def test_split_question_marks_are_blank_when_a_part_has_none_yet():
+    """If even one part's own mark is unknown, summing the rest would
+    understate the real total and look no different from a genuine one
+    - left blank instead, so a reviewer sees a gap to fill rather than
+    a wrong number to trust."""
+    text = (
+        "1. A farmer grows two crops on the same land.\n"
+        "(i) Explain what is meant by intercropping in this context. [3]\n"
+        "(ii) State two advantages of the practice for the farmer.\n"
+        "(iii) Describe one problem the farmer may face with it. [3]\n"
+    )
+    drafts = extract.segment(text)
+    assert drafts[0]["marks"] is None
+
+
 def test_mcq_options_are_never_split_into_parts():
     """Options are a numbered list at the left margin, exactly like a
     part list, but an option is not a question with an answer of its
@@ -370,6 +440,139 @@ def test_mcq_options_are_never_split_into_parts():
     assert "(4) Any machine" in _part(parsed, "Part I")[0]["text"]
 
 
+def test_mcq_with_verbose_roman_numeral_options_is_not_split_into_parts():
+    """The real Grade 13 Biosystem Technology paper numbers every Part I
+    option "I. II. III. IV. V." rather than "(1) (2) (3)...". A question
+    whose options happened to be short text stayed whole by luck (too
+    short to look like a real structured part), but one with longer,
+    descriptive options - like this real question 9 - was read as a
+    structured question and split_parts()'d into five fake sub-
+    questions, each stripped of its own "I."/"II." as if it were a real
+    part's printed number rather than an MCQ option label."""
+    text = (
+        "Part I\n"
+        "09.What is mean by egg's shape index?\n"
+        "I. The percentage of ratio between the length and the breadth "
+        "that's important in packaging\n"
+        "II. The percentage of ratio between the length and the weight "
+        "that's important in packaging\n"
+        "III. The percentage of ratio between the length and the breadth "
+        "that's important in deciding the quality while cooking\n"
+        "IV. The percentage of ratio between the length and the weight "
+        "that's important in deciding the quality while cooking\n"
+        "V. The percentage of ration between the breadth and the weight "
+        "that's important in deciding the brittleness\n"
+        "10.Which of the following is an example for temporary controlled "
+        "environmental structure?\n"
+        "I. Web house\nII. Solar greenhouse\nIII. Green house\n"
+        "IV. Polythene greenhouse\nV. Lath house\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == ["09", "10"]
+    stem, options = extract.split_mcq_options(drafts[0]["text"])
+    assert stem == "What is mean by egg's shape index?"
+    assert [o["label"] for o in options] == ["I", "II", "III", "IV", "V"]
+
+
+def test_nested_roman_sub_questions_are_not_misread_as_mcq_options():
+    """Adding roman numerals to _OPTION_LINE (previous test) broke a
+    DIFFERENT part of this same real paper: Part II-A nests roman-
+    numeral sub-questions inside lettered parts - "a) i)Mention the
+    main processes...", "b) i) Give examples...". "a)"/"b)" themselves
+    started counting as MCQ option lines, because the verb that should
+    have excluded them ("Mention", "Give") sits after ANOTHER marker
+    ("i)"), not right after "a)"/"b)" the way the exclusion check
+    expects - so the whole section's kind flipped to "mcq", which
+    skips part-splitting entirely: question 04 never split into real
+    a)/b)/i)/ii)/iii) parts at all, staying one undivided block."""
+    text = (
+        "Part II-A\n"
+        "04.\n"
+        "a) i)List down the disadvantages of frrezing.\n"
+        "ii) What is the principle applies in blanching?\n"
+        "iii) Give examples of food diversification.\n"
+        "b) i) What are the reasons of food packaging?\n"
+        "ii) List down the advantages of modified atmosphere packaging.\n"
+        "iii) Writedown the measureable factors of post harvest losses.\n"
+    )
+    drafts = extract.segment(text)
+    numbers = [d["question_number"] for d in drafts]
+    assert numbers == [
+        "04", "04(a)", "04(a)(i)", "04(a)(ii)", "04(a)(iii)",
+        "04(b)", "04(b)(i)", "04(b)(ii)", "04(b)(iii)",
+    ]
+    by_number = {d["question_number"]: d for d in drafts}
+    assert by_number["04(a)(i)"]["text"] == (
+        "List down the disadvantages of frrezing.")
+    assert by_number["04(b)(iii)"]["text"].startswith(
+        "Writedown the measureable factors")
+
+
+def test_split_mcq_options_separates_stem_from_each_option():
+    """A review page wants each option as its own card - unlike
+    structure() itself, which deliberately keeps an MCQ's stem and
+    options as one piece of text for the duplicate-check fingerprint."""
+    parsed = extract.structure(_TWO_PART_PAPER)
+    q1 = _part(parsed, "Part I")[0]
+    stem, options = extract.split_mcq_options(q1["text"])
+    assert stem == 'Which of the following BEST describes a "system"?'
+    assert [(o["label"], o["text"]) for o in options] == [
+        ("1", "A device that only performs a single function"),
+        ("2", "An organized set of interacting components"),
+        ("3", "A group of unrelated hardware parts"),
+        ("4", "Any machine that uses electricity"),
+    ]
+
+
+def test_split_mcq_options_handles_five_lettered_options():
+    """Whatever the paper numbers them with, and however many there
+    are - not hardcoded to four."""
+    body = ("Which gas is most responsible for the greenhouse effect?\n"
+            "A. Nitrogen\nB. Oxygen\nC. Carbon dioxide\nD. Argon\nE. Helium")
+    stem, options = extract.split_mcq_options(body)
+    assert stem == "Which gas is most responsible for the greenhouse effect?"
+    assert [o["label"] for o in options] == ["A", "B", "C", "D", "E"]
+    assert options[2]["text"] == "Carbon dioxide"
+
+
+def test_split_mcq_options_ignores_a_single_stray_bracket():
+    """One bracketed word is not an option list - the same "two markers
+    minimum" rule _split_parts() already relies on."""
+    body = "Define the term (system) as used in computing. [2]"
+    stem, options = extract.split_mcq_options(body)
+    assert stem == body
+    assert options == []
+
+
+def test_split_mcq_options_handles_capital_roman_numerals():
+    """Whichever way a paper numbers its options - capital roman
+    numerals included, bracketed or not."""
+    body = ("Which of these is a noble gas?\n"
+            "I. Oxygen\nII. Nitrogen\nIII. Helium\nIV. Chlorine")
+    stem, options = extract.split_mcq_options(body)
+    assert [o["label"] for o in options] == ["I", "II", "III", "IV"]
+    assert options[2]["text"] == "Helium"
+
+    bracketed = ("Which pathway does NOT lead to ATP production?\n"
+                "(I) Glycolysis\n(II) Krebs cycle\n"
+                "(III) Photosynthesis\n(IV) Electron transport chain")
+    _, options2 = extract.split_mcq_options(bracketed)
+    assert [o["label"] for o in options2] == ["I", "II", "III", "IV"]
+
+
+def test_mcq_correct_label_matches_every_real_label_style():
+    assert extract.mcq_correct_label("(2)") == "2"
+    assert extract.mcq_correct_label("A") == "a"
+    # Roman numerals beyond two characters - "iii", "viii" - are real
+    # option labels and must not be silently rejected as too long.
+    assert extract.mcq_correct_label("(III)") == "iii"
+    assert extract.mcq_correct_label("VIII") == "viii"
+    assert extract.mcq_correct_label(None) is None
+    assert extract.mcq_correct_label("") is None
+    # Free text a data-entry person typed by hand is not a label at all.
+    assert extract.mcq_correct_label("The control unit") is None
+
+
 def test_roman_numbered_parts_are_split():
     text = (
         "1. A farmer grows two crops on the same land.\n"
@@ -378,8 +581,12 @@ def test_roman_numbered_parts_are_split():
         "(iii) Describe one problem the farmer may face with it. [3]\n"
     )
     drafts = extract.segment(text)
+    # The question's own mark is what its three parts add up to (3+4+3),
+    # not whichever part's own figure happens to sit last in its raw
+    # text - see _own_marks() and test_split_question_marks_sum_to_the_
+    # question_total below.
     assert [(d["question_number"], d["depth"], d["marks"]) for d in drafts] == [
-        ("1", 0, 3),
+        ("1", 0, 10),
         ("1(i)", 1, 3),
         ("1(ii)", 1, 4),
         ("1(iii)", 1, 3),
@@ -450,8 +657,11 @@ def test_a_worked_answer_is_split_across_the_parts_it_marks():
     parts = {p["question_number"]: p for p in _under(parsed, q01)}
 
     assert q01["answer"] is None          # nothing before the first label
+    # "[2 marks]" is read into this part's own marks elsewhere - kept out
+    # of the stored answer text itself, see test_marks_annotation_is_
+    # stripped_from_the_answer_text.
     assert parts["01(1)(a)"]["answer"] == (
-        "Definition of a System [2 marks]\n"
+        "Definition of a System\n"
         "A system is an organized collection of interacting components.")
     # A part the scheme says nothing about keeps an empty box.
     assert parts["01(1)(b)"]["answer"] is None
@@ -734,6 +944,75 @@ def _write_pdf(path, lines, picture=None, pictures=()):
     path.write_bytes(bytes(out))
 
 
+def _write_pdf_bold(path, lines):
+    """A one-page PDF like _write_pdf(), but each line is (y, text, bold)
+    - two font resources, F1 Helvetica and F2 Helvetica-Bold, selected
+    per line, so a real bold-font run exists to detect."""
+    ops = []
+    for y, s, bold in lines:
+        font = "/F2" if bold else "/F1"
+        ops.append(f"BT {font} 12 Tf 50 {y} Td ({s}) Tj ET")
+    stream = "\n".join(ops).encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+        b"/Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1, xref)
+    path.write_bytes(bytes(out))
+
+
+def test_pdf_bold_option_is_read_as_the_answer_when_no_answer_key_exists(tmp_path):
+    """The real Grade 13 Biosystem Technology paper marks its correct
+    MCQ option by bolding the whole line - no separate answer key at
+    all. Same fallback as the DOCX case, now proven for PDF too."""
+    pytest.importorskip("pdfplumber")
+    path = tmp_path / "bold.pdf"
+    _write_pdf_bold(path, [
+        (780, "01.Interpretes weather conditions suitable for", False),
+        (760, "biological systems involves,", False),
+        (740, "I. Ignoring climate data", False),
+        (720, "II. Analyzing conditions for optimal growth", True),
+        (700, "III. Focusing only on temperature", False),
+        (680, "IV. Avoiding forecasts", False),
+        (660, "V. Reducing monitoring", False),
+        (640, "02.Water quality determination measures,", False),
+        (620, "I. Only temperature", False),
+        (600, "II. pH, nutrients and contaminants", True),
+        (580, "III. Air pressure", False),
+        (560, "IV. Soil texture", False),
+        (540, "V. Plant height", False),
+    ])
+    result = extract.extract(path, ocr=lambda img: "")
+    by_number = {q["question_number"]: q for q in result["questions"]}
+    assert by_number["01"]["answer"] == "(II)"
+    assert by_number["02"]["answer"] == "(II)"
+
+
+def test_pdf_bold_runs_ignores_text_shorter_than_the_floor(tmp_path):
+    """A bold page number or a stray short word is not a paper marking a
+    whole MCQ option correct - same length floor as the DOCX case."""
+    pytest.importorskip("pdfplumber")
+    import pdfplumber
+    path = tmp_path / "short.pdf"
+    _write_pdf_bold(path, [(780, "Hi", True)])
+    with pdfplumber.open(path) as pdf:
+        assert extract._pdf_bold_runs(pdf.pages[0]) == []
+
+
 def test_segment_restarts_numbering_after_a_part_heading():
     text = (
         "Part 1\n1. Define velocity.\n2. Define acceleration.\n"
@@ -905,8 +1184,101 @@ def test_docx_keeps_equations_inside_the_question(tmp_path):
     d.save(str(path))
 
     result = extract.extract(path)
-    assert result["questions"][0]["text"] == "Show that 80 x 1/2 = 40. (5 marks)"
+    # "(5 marks)" is read into its own marks field, not left in the text -
+    # see test_marks_annotation_is_stripped_from_a_leaf_questions_text.
+    assert result["questions"][0]["text"] == "Show that 80 x 1/2 = 40."
     assert result["questions"][0]["marks"] == 5
+
+
+def test_docx_bold_option_is_read_as_the_answer_when_no_answer_key_exists():
+    """Some real papers never print a separate answer key - the correct
+    option is simply bolded in place, in the question itself."""
+    assert extract._bold_mcq_answer(
+        "Which of these is a noble gas?\n(1) Oxygen\n(2) Helium\n"
+        "(3) Nitrogen\n(4) Chlorine",
+        ["(2) Helium"],  # the whole bolded line, marker included
+    ) == "2"
+    assert extract._bold_mcq_answer(
+        "Which of these is a noble gas?\n(1) Oxygen\n(2) Helium\n"
+        "(3) Nitrogen\n(4) Chlorine",
+        ["Helium"],  # only the word itself bolded, no marker
+    ) == "2"
+    # More than one option matches the same short bold word - too
+    # ambiguous to guess, so this stays silent rather than picking one.
+    assert extract._bold_mcq_answer(
+        "Pick the correct pair.\n(1) Iron and Oxygen\n(2) Helium and Neon\n"
+        "(3) Iron and Chlorine\n(4) Argon and Xenon",
+        ["Iron"],
+    ) is None
+    # No bold at all, or not an MCQ - nothing to infer.
+    assert extract._bold_mcq_answer("Which of these is a noble gas?", []) is None
+
+
+def test_extract_docx_infers_mcq_answer_from_a_bold_option(tmp_path):
+    docx = pytest.importorskip("docx")
+    d = docx.Document()
+    d.add_paragraph("1. Which of these is a noble gas?")
+    d.add_paragraph("(1) Oxygen")
+    bold_run = d.add_paragraph().add_run("(2) Helium")
+    bold_run.bold = True
+    d.add_paragraph("(3) Nitrogen")
+    d.add_paragraph("(4) Chlorine")
+    d.add_paragraph("2. Which of these is a metal?")
+    d.add_paragraph("(1) Oxygen")
+    bold_run2 = d.add_paragraph().add_run("(2) Iron")
+    bold_run2.bold = True
+    d.add_paragraph("(3) Nitrogen")
+    d.add_paragraph("(4) Chlorine")
+    path = tmp_path / "bold_mcq.docx"
+    d.save(str(path))
+
+    result = extract.extract(path)
+    by_number = {q["question_number"]: q for q in result["questions"]}
+    assert by_number["1"]["answer"] == "(2)"
+    assert by_number["2"]["answer"] == "(2)"
+
+
+def test_docx_roman_numeral_mcq_with_bold_answer_is_not_split(tmp_path):
+    """The same real Grade 13 Biosystem Technology paper shape as
+    test_mcq_with_verbose_roman_numeral_options_is_not_split_into_parts,
+    now as an actual .docx with a bolded correct option - both fixes
+    (_OPTION_LINE recognising roman numerals, and bold-run detection)
+    have to hold together, not just separately."""
+    docx = pytest.importorskip("docx")
+    d = docx.Document()
+    d.add_paragraph("01.What is mean by egg's shape index?")
+    d.add_paragraph(
+        "I. The percentage of ratio between the length and the breadth "
+        "that's important in packaging")
+    bold_run = d.add_paragraph().add_run(
+        "II. The percentage of ratio between the length and the weight "
+        "that's important in packaging")
+    bold_run.bold = True
+    d.add_paragraph(
+        "III. The percentage of ratio between the length and the breadth "
+        "that's important in deciding the quality while cooking")
+    d.add_paragraph(
+        "IV. The percentage of ratio between the length and the weight "
+        "that's important in deciding the quality while cooking")
+    d.add_paragraph(
+        "V. The percentage of ration between the breadth and the weight "
+        "that's important in deciding the brittleness")
+    d.add_paragraph("02.Which of the following is an example for temporary "
+                    "controlled environmental structure?")
+    d.add_paragraph("I. Web house")
+    bold_run2 = d.add_paragraph().add_run("II. Solar greenhouse")
+    bold_run2.bold = True
+    d.add_paragraph("III. Green house")
+    d.add_paragraph("IV. Polythene greenhouse")
+    d.add_paragraph("V. Lath house")
+    path = tmp_path / "roman_bold.docx"
+    d.save(str(path))
+
+    result = extract.extract(path)
+    by_number = {q["question_number"]: q for q in result["questions"]}
+    assert set(by_number) == {"01", "02"}   # not split into fake parts
+    assert by_number["01"]["answer"] == "(II)"
+    assert by_number["02"]["answer"] == "(II)"
 
 
 def test_docx_reads_tables_and_pictures_in_order(tmp_path):
@@ -1074,6 +1446,168 @@ def test_update_intake_question_applies_edits(local_db):
     assert row["reviewed"] == 1
 
 
+def test_teacher_reviewed_is_separate_from_the_data_entry_tick(local_db):
+    """Two roles, two ticks - a teacher confirming a question must not
+    silently mark it reviewed for data-entry, or the reverse."""
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "raw text")
+        q_id = store.intake_questions(conn, doc_id)[0]["id"]
+
+        store.update_intake_question(conn, q_id, reviewed=1)
+        row = store.intake_questions(conn, doc_id)[0]
+        assert row["reviewed"] == 1
+        assert row["teacher_reviewed"] == 0
+
+        store.update_intake_question(conn, q_id, teacher_reviewed=1)
+        row = store.intake_questions(conn, doc_id)[0]
+        assert row["reviewed"] == 1
+        assert row["teacher_reviewed"] == 1
+
+
+def test_question_comments_round_trip_per_document(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Q one")
+        store.add_intake_question(conn, doc_id, 2, "Q two")
+        q1, q2 = store.intake_questions(conn, doc_id)
+
+        store.add_question_comment(conn, q1["id"], "Ms. Perera",
+                                    "Option 3 should be marked correct.")
+        store.add_question_comment(conn, q1["id"], "Ms. Perera",
+                                    "Actually option 2 is right.")
+
+        by_question = store.question_comments_for_document(conn, doc_id)
+
+    assert [c["comment"] for c in by_question[q1["id"]]] == [
+        "Option 3 should be marked correct.",
+        "Actually option 2 is right.",
+    ]
+    assert by_question[q1["id"]][0]["author"] == "Ms. Perera"
+    assert q2["id"] not in by_question
+
+
+def test_question_images_round_trip_per_document(local_db):
+    """A reviewer attaching a picture of the actual diagram/option/table
+    to a question, its answer, or one MCQ option - for content
+    extraction could not turn into meaningful text on its own."""
+    fake_png = b"\x89PNG\r\n\x1a\n" + b"fake image bytes"
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Name the cut flower shown.")
+        store.add_intake_question(conn, doc_id, 2, "Q two")
+        q1, q2 = store.intake_questions(conn, doc_id)
+
+        img_id = store.add_question_image(
+            conn, q1["id"], "question", fake_png, content_type="image/png")
+        store.add_question_image(
+            conn, q1["id"], "option:I", b"option I picture bytes")
+
+        by_question = store.question_images_for_document(conn, doc_id)
+        blob = store.question_image_blob(conn, img_id)
+
+    assert [i["slot"] for i in by_question[q1["id"]]] == ["question", "option:I"]
+    assert by_question[q1["id"]][0]["content_type"] == "image/png"
+    assert q2["id"] not in by_question
+    assert blob == fake_png
+
+
+def test_delete_question_image_removes_it(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Q one")
+        q1 = store.intake_questions(conn, doc_id)[0]
+        img_id = store.add_question_image(conn, q1["id"], "answer", b"bytes")
+
+        store.delete_question_image(conn, img_id)
+        by_question = store.question_images_for_document(conn, doc_id)
+        blob = store.question_image_blob(conn, img_id)
+
+    assert by_question == {}
+    assert blob is None
+
+
+def test_upsert_teacher_records_first_visit_and_keeps_it_on_later_ones(local_db):
+    """The assigning administrator's dropdown is built from this table -
+    a teacher's first visit to their review page is what puts them in
+    it, not anything typed in by hand."""
+    with store.connect() as conn:
+        store.upsert_teacher(conn, "dilhani@edsider.lk", "Dilhani Data")
+        first_seen = store.list_teachers(conn)[0]["first_seen_at"]
+
+        store.upsert_teacher(conn, "dilhani@edsider.lk", "Dilhani D.")
+        store.upsert_teacher(conn, "nimal@edsider.lk", "Nimal Teacher")
+        teachers = store.list_teachers(conn)
+
+    by_identity = {t["identity"]: t for t in teachers}
+    assert set(by_identity) == {"dilhani@edsider.lk", "nimal@edsider.lk"}
+    # The later visit's display name wins, but first_seen_at does not move.
+    assert by_identity["dilhani@edsider.lk"]["display_name"] == "Dilhani D."
+    assert by_identity["dilhani@edsider.lk"]["first_seen_at"] == first_seen
+
+
+def test_assign_document_moves_it_to_teacher_review(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf", extractor="pdf-text")
+        store.update_intake_document(conn, doc_id, status="checked")
+
+        store.assign_document(conn, doc_id, "dilhani@edsider.lk")
+        doc = store.get_intake_document(conn, doc_id)
+        mine = store.documents_assigned_to(conn, "dilhani@edsider.lk")
+        someone_elses = store.documents_assigned_to(conn, "nimal@edsider.lk")
+
+    assert doc["status"] == "teacher_review"
+    assert doc["assigned_to"] == "dilhani@edsider.lk"
+    assert [d["id"] for d in mine] == [doc_id]
+    assert someone_elses == []
+
+
+def test_promote_document_copies_questions_into_the_real_bank(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(
+            conn, "grade10-git.pdf", uploaded_by="data.entry@edsider.lk")
+        store.add_intake_question(
+            conn, doc_id, 1, "A coastal town installs a flood warning system.",
+            grade="G12", subject="General Information Technology",
+        )
+        store.add_intake_question(
+            conn, doc_id, 2, "Identify the components.", marks=3,
+            answer="Rainfall sensors, timestamps.",
+            parent_seq=1, depth=1,
+        )
+        store.update_intake_document(conn, doc_id, status="review_done")
+
+        promoted = store.promote_document(conn, doc_id)
+        doc = store.get_intake_document(conn, doc_id)
+        parent_id = f"intake-{doc_id}-1"
+        child_id = f"intake-{doc_id}-2"
+        parent = conn.execute(
+            "SELECT * FROM questions WHERE id = ?", (parent_id,)).fetchone()
+        child = conn.execute(
+            "SELECT * FROM questions WHERE id = ?", (child_id,)).fetchone()
+
+    assert promoted == 2
+    assert doc["status"] == "published"
+    assert parent["shape"] == "parent"
+    assert parent["children_raw"] == child_id
+    assert child["shape"] == "sub-question"
+    assert child["parent_id"] == parent_id
+    assert child["marks"] == 3
+    assert child["answer"] == "Rainfall sensors, timestamps."
+    assert child["contributor"] == "data.entry@edsider.lk"
+    assert child["is_answer_blob"] == 0
+
+
+def test_promote_document_refuses_before_review_is_done(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Q one")
+        store.update_intake_document(conn, doc_id, status="teacher_review")
+
+        with pytest.raises(ValueError, match="review is done"):
+            store.promote_document(conn, doc_id)
+
+
 def test_update_intake_question_rejects_unknown_columns(local_db):
     with store.connect() as conn:
         doc_id = store.create_intake_document(conn, "p.pdf")
@@ -1168,6 +1702,46 @@ def test_deleting_a_question_removes_its_parts(local_db):
 
     assert not any(n and n.startswith("01(") for n in left)
     assert left == ["1", "2", "02"]
+
+
+def test_deleting_a_question_with_comments_and_images_does_not_fail(local_db):
+    """intake_question_comments and intake_question_images reference the
+    question they are attached to - deleting a question that has either
+    must clean them up first, not hit a foreign-key violation."""
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Q one")
+        q1 = store.intake_questions(conn, doc_id)[0]
+        store.add_question_comment(conn, q1["id"], "Ms. Perera", "Wrong answer.")
+        store.add_question_image(conn, q1["id"], "question", b"bytes")
+
+        store.delete_intake_question(conn, q1["id"])
+
+        left = store.intake_questions(conn, doc_id)
+        comments = store.question_comments_for_document(conn, doc_id)
+        images = store.question_images_for_document(conn, doc_id)
+
+    assert left == []
+    assert comments == {}
+    assert images == {}
+
+
+def test_replacing_questions_with_comments_and_images_does_not_fail(local_db):
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "p.pdf")
+        store.add_intake_question(conn, doc_id, 1, "Q one")
+        q1 = store.intake_questions(conn, doc_id)[0]
+        store.add_question_comment(conn, q1["id"], "Ms. Perera", "Wrong answer.")
+        store.add_question_image(conn, q1["id"], "question", b"bytes")
+
+        store.replace_intake_questions(
+            conn, doc_id, [{"seq": 1, "question_number": "1", "text": "Q new"}])
+
+        left = [r["text"] for r in store.intake_questions(conn, doc_id)]
+        comments = store.question_comments_for_document(conn, doc_id)
+
+    assert left == ["Q new"]
+    assert comments == {}
 
 
 def test_a_paper_read_before_parts_existed_has_no_parts(local_db):

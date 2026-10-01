@@ -1,0 +1,12 @@
+<!-- @dsCard group="Intake" height=360 subtitle="Editable MCQ options: fix the text, tick the correct answer, add or remove options." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>McqEditor</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-card',style:{maxWidth:720}},h(E.McqEditor,{correct:'2',options:[{label:'1',text:'1011'},{label:'2',text:'1101'},{label:'3',text:'1110'},{label:'4',text:''}]})));
+</script>
+</body>
+</html>

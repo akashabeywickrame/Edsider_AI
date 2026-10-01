@@ -1,0 +1,12 @@
+<!-- @dsCard group="Actions" height=120 subtitle="Primary, secondary, ghost and danger actions." -->
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Button</title><style>body{margin:0;background:var(--surface-page)}.es-root{padding:16px}</style></head>
+<body>
+<div id="root" class="es-root"></div>
+<script>
+  var E = window.EdSider, h = React.createElement;
+  ReactDOM.createRoot(document.getElementById('root')).render(h('div',{className:'es-stack',style:{gap:12}},h('div',{className:'es-row'},h(E.Button,{variant:'primary'},'Check for duplicates'),h(E.Button,{},'Re-split this paper'),h(E.Button,{variant:'ghost'},'Skip'),h(E.Button,{variant:'danger'},'Undo - send back for review')),h('div',{className:'es-row'},h(E.Button,{variant:'primary',size:'sm'},'Assign'),h(E.Button,{size:'sm'},'Add comment'),h(E.Button,{variant:'primary',disabled:true},'Finish review'))));
+</script>
+</body>
+</html>
