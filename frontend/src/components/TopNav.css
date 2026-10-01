@@ -1,0 +1,65 @@
+/* .es-nav itself (layout, link pills, the aria-current highlight) is
+   already defined in bundle.css - this only adds the denser spacing
+   Header.dc.html uses to fit seven links on one row. */
+
+.tn {
+  height: 76px;
+  box-sizing: border-box;
+  padding: 12px 32px;
+  flex-wrap: nowrap;
+  gap: 16px;
+}
+.tn__logo {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.tn__logo img {
+  height: 50px;
+  width: auto;
+  display: block;
+  margin-left: -14px;
+}
+.tn__badge {
+  font-family: var(--font-heading);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-soft);
+  padding: 4px 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* .es-nav ul (bundle.css) has higher specificity than a single class
+   would - "ul.tn__links" matches it so flex-wrap: nowrap actually wins
+   instead of silently losing to bundle.css's own flex-wrap: wrap. */
+ul.tn__links {
+  margin-left: auto;
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+.tn__links a {
+  font-size: 13px;
+  line-height: 18px;
+  padding: 7px 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .tn {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+  }
+  ul.tn__links {
+    margin-left: 0;
+    flex-wrap: wrap;
+    width: 100%;
+    order: 3;
+  }
+  .es-nav__who {
+    margin-left: auto;
+  }
+}

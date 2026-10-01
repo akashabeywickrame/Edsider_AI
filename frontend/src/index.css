@@ -1,0 +1,30 @@
+/* Global reset only - every actual colour/font/spacing value comes
+   from edsider-tokens.css and bundle.css (public/), loaded in
+   index.html. This file intentionally defines no EdSider tokens of
+   its own, so there is only ever one source of truth for them. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  color: var(--text-dark);
+  background: #fff;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}

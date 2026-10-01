@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
@@ -88,6 +89,26 @@ app = FastAPI(
     description="Check one question against the bank. See /check.",
     version="1.0",
     lifespan=lifespan,
+)
+
+# The React frontend (frontend/) calls this API directly from the
+# browser, from a different origin (Vite's dev server, and whatever
+# domain the built app is eventually served from) - without CORS the
+# browser refuses every request before it even reaches a route here.
+# EDSIDER_ALLOWED_ORIGINS is a comma-separated list (an App Service
+# setting, not a code change, same reasoning as EDSIDER_API_KEY); unset,
+# it defaults to the Vite dev server's own ports for local development.
+_allowed_origins = [
+    o.strip() for o in
+    os.environ.get("EDSIDER_ALLOWED_ORIGINS",
+                   "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

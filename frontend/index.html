@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/edsider-ai-logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EdSider AI</title>
+    <meta name="description" content="EdSider AI helps the EdSider team prepare exam papers - it reads uploaded papers, spots questions students have already seen, and leaves every final decision to a teacher." />
+    <!--
+      edsider-tokens.css and bundle.css are the real EdSider AI design
+      system (copied from design-system/, not reimplemented) - plain
+      stylesheets, loaded the same way as any other CSS. bundle.js is
+      NOT loaded here: it is a plain script that expects window.React
+      to already exist (see src/main.jsx), so it is loaded after React
+      is ready instead of racing it as a second <script> tag.
+    -->
+    <link rel="stylesheet" href="/edsider-tokens.css" />
+    <link rel="stylesheet" href="/bundle.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

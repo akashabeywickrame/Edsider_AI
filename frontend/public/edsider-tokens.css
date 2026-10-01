@@ -1,0 +1,36 @@
+/* CSS variables for the EdSider design system (light theme), mirroring ds/edsider/tokens.json. */
+:root {
+  --primary: #6a1b9a; --primary-dark: #4e1373; --on-primary: #ffffff; --primary-soft: rgba(106, 27, 154, 0.1);
+  --text-dark: #1b1533; --text-muted: #56526b;
+  --surface: #ffffff; --surface-page: #faf7ff; --surface-sunk: #f4efff;
+  --border-soft: #ede8f7; --border-outline: #ddd5f0; --border-strong: #8a82a3;
+  --success: #2fa66a; --success-soft: rgba(47, 166, 106, 0.12);
+  --accent-coral: #e85d8a; --accent-coral-soft: rgba(232, 93, 138, 0.12);
+  --accent-gold: #e8a23d; --accent-gold-soft: rgba(232, 162, 61, 0.14);
+  --accent-blue: #3d9be8; --accent-blue-soft: rgba(61, 155, 232, 0.12);
+  --alert-dot: #ff6b6b;
+  --dup: #b8326a; --dup-soft: #fcedf2; --review: #8a5a00; --review-soft: #fdf1de;
+  --distinct: #1f67b1; --distinct-soft: #e8f2fc; --ok: #1d7a4a; --ok-soft: #e6f5ed;
+  --font-heading: "Poppins", "Noto Sans Sinhala", "Noto Sans Tamil", system-ui, sans-serif;
+  --font-body: "Inter", "Noto Sans Sinhala", "Noto Sans Tamil", system-ui, sans-serif;
+  --space-1: 4px; --space-2: 8px; --space-3: 14px; --space-4: 20px; --space-card: 22px; --space-6: 30px; --space-8: 44px;
+  --radius-md: 12px; --radius-icon: 14px; --radius-card: 16px; --radius-btn: 16px; --radius-pill: 999px;
+  --shadow-soft: 0 8px 24px #1b153312; --shadow-card: 0 20px 40px #1b153317; --shadow-card-hover: 0 24px 46px #1b153321;
+  --shadow-rail: 0 10px 30px #1b15331f; --shadow-primary: 0 10px 25px #6a1b9a47; --shadow-primary-hover: 0 14px 30px #6a1b9a59;
+  --gradient-hero: linear-gradient(135deg, #fff3e6, #fef9f5 40%, #f4efff);
+  --gradient-soft: linear-gradient(135deg, #f4efff, #fdf6ff, #fff8ec);
+}
+/* Screen-level patterns shared by the artboards, built only from the tokens above. */
+.scr-main { padding: 32px 80px 60px; display: flex; flex-direction: column; gap: 28px; }
+.scr-h2 { font-family: var(--font-heading); font-size: 22px; line-height: 28px; font-weight: 700; color: var(--text-dark); margin: 0; }
+.scr-h3 { font-family: var(--font-heading); font-size: 17px; line-height: 24px; font-weight: 600; color: var(--text-dark); margin: 0; }
+.scr-table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 20px; }
+.scr-table th { text-align: left; font-weight: 600; color: var(--text-muted); padding: 12px 16px; border-bottom: 1px solid var(--border-soft); background: var(--surface-sunk); }
+.scr-table td { padding: 14px 16px; border-bottom: 1px solid var(--border-soft); vertical-align: top; color: var(--text-dark); }
+.scr-table tr:last-child td { border-bottom: 0; }
+.scr-chip { display: inline-block; font-size: 13px; line-height: 18px; font-weight: 600; padding: 3px 10px; border-radius: var(--radius-pill); background: var(--surface-sunk); color: var(--text-dark); margin: 0 4px 4px 0; }
+.scr-radio { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; padding: 10px 16px; border: 1.5px solid var(--border-strong); border-radius: var(--radius-pill); cursor: pointer; background: var(--surface); }
+.scr-radio input { accent-color: var(--primary); margin: 0; }
+.scr-range { width: 100%; accent-color: var(--primary); }
+.scr-link { color: var(--primary); font-weight: 600; text-decoration: none; }
+.scr-link:hover { text-decoration: underline; }
