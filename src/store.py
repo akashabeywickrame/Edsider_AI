@@ -1367,6 +1367,15 @@ def record_decision(conn, a, b, verdict, decided_by,
     return cur.fetchone()["id"]
 
 
+def get_decision(conn, decision_id):
+    """One decision row by its own id - the API layer's way to hand
+    back the row record_decision() just created without re-reading the
+    whole decisions table through current_decisions()."""
+    return conn.execute(
+        "SELECT * FROM decisions WHERE id = ?", (decision_id,)
+    ).fetchone()
+
+
 def pair_key(a, b):
     """One key for a pair whichever side each question was shown on - a
     sweep can list A-B today and B-A after the bank changes."""

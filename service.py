@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src import store, dedupe
+from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.intake import extract as intake_extract
 from src.intake import review as intake_review
@@ -46,7 +47,7 @@ from src.normalize import content_hash, extract_text, has_attachments
 # point of this file over the CLI. A plain dict rather than globals so
 # tests can swap in a fake embedder without touching the real model.
 state = {"embedder": None, "index": None, "rows": None,
-         "model_name": DEFAULT_MODEL}
+         "assessment_groups": None, "model_name": DEFAULT_MODEL}
 
 
 def load_state():
@@ -60,9 +61,19 @@ def load_state():
     with store.connect() as conn:
         rows = [dict(r) for r in
                 store.comparable_questions(conn, state["model_name"])]
+        # Groups of more than one comparable question on the same paper
+        # - only those can possibly hold a within-paper repeat. Same
+        # filter app.py's load_assessment_groups() applies, kept here so
+        # /within-paper-duplicates never pays for the 1,960-round-trip
+        # version of this query on every request (see CLAUDE.md, "One
+        # query instead of one per item").
+        groups = store.questions_in_assessments(conn, state["model_name"])
     if state["embedder"] is None:
         state["embedder"] = Embedder(state["model_name"])
     state["rows"] = rows
+    state["assessment_groups"] = {
+        aid: [dict(r) for r in rs] for aid, rs in groups.items() if len(rs) > 1
+    }
     state["index"] = dedupe.VectorIndex(rows)
 
 
@@ -838,6 +849,362 @@ def my_documents(identity: str = Depends(current_identity)):
     with store.connect() as conn:
         docs = store.documents_assigned_to(conn, identity)
     return [_document_out(d) for d in docs]
+
+
+# ===================================================================
+# Find duplicates, duplicates within a paper, reviewed decisions,
+# search by meaning, question bank
+#
+# The rest of app.py's own pages - the original 7-page data-entry tool,
+# not the paper-intake workflow above. Every route here reads from
+# `state` (the bank held in memory since load_state()/lifespan - see
+# the top of this file) rather than re-querying the database per
+# request, the same reasoning app.py's own cache_resource bank already
+# uses: a whole-bank sweep is 128 million pairs, and paying a database
+# round trip for 16,000+ rows on every single request would undo the
+# entire point of this file over the CLI.
+# ===================================================================
+
+class QuestionBrief(BaseModel):
+    id: str
+    text: str
+    grade: Optional[str] = None
+    subject: Optional[str] = None
+    topic: Optional[str] = None
+    contributor: Optional[str] = None
+    title: Optional[str] = None
+
+
+class DecisionOut(BaseModel):
+    id: int
+    question_a: str
+    question_b: str
+    verdict: str
+    similarity: Optional[float] = None
+    guard_flags: Optional[str] = None
+    decided_by: Optional[str] = None
+    decided_at: Optional[str] = None
+    only_in_a: List[str] = []
+    only_in_b: List[str] = []
+    text_a: Optional[str] = None
+    text_b: Optional[str] = None
+
+
+class DuplicatePairOut(BaseModel):
+    a: QuestionBrief
+    b: QuestionBrief
+    score: float
+    raw_score: float
+    penalty: float
+    verdict: str
+    reasons: List[str]
+    assessment_id: Optional[int] = None
+    shared_passage_with: List[int] = []
+    decision: Optional[DecisionOut] = None
+
+
+class DuplicateSweepOut(BaseModel):
+    threshold: float
+    use_guards: bool
+    pairs_with_guards: int
+    pairs_without_guards: int
+    pending: int
+    pairs: List[DuplicatePairOut]
+
+
+class WithinPaperSweepOut(BaseModel):
+    threshold: float
+    use_guards: bool
+    papers_checked: int
+    repeats_found: int
+    pending: int
+    pairs: List[DuplicatePairOut]
+
+
+class DecisionIn(BaseModel):
+    a: str
+    b: str
+    verdict: Literal["duplicate", "distinct"]
+    similarity: Optional[float] = None
+    guard_flags: Optional[str] = None
+
+
+class SearchHitOut(BaseModel):
+    score: float
+    question: QuestionBrief
+
+
+def _question_brief(q):
+    return QuestionBrief(
+        id=q["id"], text=q["text"] or "", grade=q.get("grade"),
+        subject=q.get("subject"), topic=q.get("topic"),
+        contributor=q.get("contributor"), title=q.get("title"),
+    )
+
+
+def _decision_out(d):
+    only_a, only_b = d.get("only_in_a"), d.get("only_in_b")
+    return DecisionOut(
+        id=d["id"], question_a=d["question_a"], question_b=d["question_b"],
+        verdict=d["verdict"], similarity=d.get("similarity"),
+        guard_flags=d.get("guard_flags"), decided_by=d.get("decided_by"),
+        decided_at=str(d["decided_at"]) if d.get("decided_at") else None,
+        only_in_a=only_a or [], only_in_b=only_b or [],
+        text_a=d.get("text_a"), text_b=d.get("text_b"),
+    )
+
+
+def _require_bank():
+    if state["rows"] is None or state["index"] is None:
+        raise HTTPException(503, "Still loading the model - try again shortly.")
+
+
+@app.get("/duplicates", response_model=DuplicateSweepOut,
+        dependencies=[Depends(require_api_key)])
+def find_duplicates(threshold: float = 0.95, use_guards: bool = True,
+                    show_reviewed: bool = False, limit: int = 50):
+    """The whole-bank sweep - app.py's "Find duplicates" page. Both
+    with-guards and without-guards counts come back regardless of
+    `use_guards`, the same "safety checks removed N pairs" comparison
+    the page itself shows.
+    """
+    _require_bank()
+    with_guards = dedupe.find_pairs(state["index"], use_guards=True,
+                                    threshold=threshold)
+    without_guards = dedupe.find_pairs(state["index"], use_guards=False,
+                                       threshold=threshold)
+    results = with_guards if use_guards else without_guards
+
+    with store.connect() as conn:
+        decided = store.current_decisions(conn)
+
+    by_id = {r["id"]: r for r in state["rows"]}
+    pending = []
+    for p in results:
+        key = store.pair_key(p["a"], p["b"])
+        if key in decided:
+            if not show_reviewed:
+                continue
+            p = {**p, "decision": decided[key]}
+        pending.append(p)
+
+    pairs_out = [
+        DuplicatePairOut(
+            a=_question_brief(by_id[p["a"]]), b=_question_brief(by_id[p["b"]]),
+            score=p["score"], raw_score=p["raw_score"], penalty=p["penalty"],
+            verdict=p["verdict"], reasons=p["reasons"],
+            decision=_decision_out(p["decision"]) if p.get("decision") else None,
+        )
+        for p in pending[:limit]
+    ]
+    return DuplicateSweepOut(
+        threshold=threshold, use_guards=use_guards,
+        pairs_with_guards=len(with_guards), pairs_without_guards=len(without_guards),
+        pending=len(pending), pairs=pairs_out,
+    )
+
+
+@app.get("/within-paper-duplicates", response_model=WithinPaperSweepOut,
+        dependencies=[Depends(require_api_key)])
+def within_paper_duplicates(
+    grade: Optional[str] = None, subject: Optional[str] = None,
+    title_contains: Optional[str] = None, assessment_id: Optional[str] = None,
+    use_guards: bool = True, threshold: float = 0.95,
+    show_reviewed: bool = False, limit: int = 50,
+):
+    """The same question appearing twice on one paper - app.py's
+    "Duplicates within a paper" page. Filters narrow WHICH questions are
+    compared (a row that fails a filter is dropped from its paper's
+    group before find_pairs ever sees it), not just which results are
+    shown - a group left with one question after filtering is correctly
+    skipped, same as app.py's own _matches().
+    """
+    if state["assessment_groups"] is None:
+        raise HTTPException(503, "Still loading the model - try again shortly.")
+
+    def matches(r):
+        if grade and r.get("grade") != grade:
+            return False
+        if subject and r.get("subject") != subject:
+            return False
+        if title_contains and title_contains.lower() not in (r.get("title") or "").lower():
+            return False
+        return True
+
+    groups = {}
+    for aid, rs in state["assessment_groups"].items():
+        if assessment_id is not None and str(aid) != assessment_id:
+            continue
+        kept = [r for r in rs if matches(r)]
+        if len(kept) > 1:
+            groups[aid] = kept
+
+    results = dedupe.find_within_assessment_duplicates(
+        groups, use_guards=use_guards, threshold=threshold)
+    papers_hit = {p["assessment_id"] for p in results}
+    passage_groups = {aid: dedupe.find_shared_passage_groups(groups[aid])
+                      for aid in papers_hit}
+
+    def shared_with(aid, qid):
+        for g in passage_groups.get(aid, []):
+            if qid in g["question_ids"]:
+                return list(g["question_numbers"])
+        return []
+
+    with store.connect() as conn:
+        decided = store.current_decisions(conn)
+
+    pending = []
+    for p in results:
+        key = store.pair_key(p["a"], p["b"])
+        if key in decided:
+            if not show_reviewed:
+                continue
+            p = {**p, "decision": decided[key]}
+        pending.append(p)
+
+    pairs_out = []
+    for p in pending[:limit]:
+        by_id = {r["id"]: r for r in groups[p["assessment_id"]]}
+        pairs_out.append(DuplicatePairOut(
+            a=_question_brief(by_id[p["a"]]), b=_question_brief(by_id[p["b"]]),
+            score=p["score"], raw_score=p["raw_score"], penalty=p["penalty"],
+            verdict=p["verdict"], reasons=p["reasons"],
+            assessment_id=p["assessment_id"],
+            shared_passage_with=shared_with(p["assessment_id"], p["a"]),
+            decision=_decision_out(p["decision"]) if p.get("decision") else None,
+        ))
+
+    return WithinPaperSweepOut(
+        threshold=threshold, use_guards=use_guards,
+        papers_checked=len(groups), repeats_found=len(results),
+        pending=len(pending), pairs=pairs_out,
+    )
+
+
+@app.get("/assessments", dependencies=[Depends(require_api_key)])
+def list_assessment_ids() -> List[str]:
+    """Every assessment with more than one comparable question - fills
+    the "Assessment #" filter dropdown on the within-paper duplicate
+    check, same sort as app.py's own assessment_options."""
+    if state["assessment_groups"] is None:
+        raise HTTPException(503, "Still loading the model - try again shortly.")
+    return sorted(
+        (str(a) for a in state["assessment_groups"]),
+        key=lambda x: (0, int(x)) if x.isdigit() else (1, x),
+    )
+
+
+@app.get("/decisions", response_model=List[DecisionOut],
+        dependencies=[Depends(require_api_key)])
+def list_decisions(verdict: Optional[Literal["duplicate", "distinct"]] = None):
+    """Every current verdict, newest first, with both questions' text -
+    app.py's "Reviewed decisions" page."""
+    with store.connect() as conn:
+        decisions = store.list_decisions(conn, verdict=verdict)
+    return [_decision_out(d) for d in decisions]
+
+
+@app.get("/decisions/schema", dependencies=[Depends(require_api_key)])
+def decisions_schema() -> Dict[str, Optional[str]]:
+    """The decisions table's real CREATE TABLE, migrated columns
+    included - the "How this table is built" expander."""
+    with store.connect() as conn:
+        return {"schema": store.table_schema(conn, "decisions")}
+
+
+@app.post("/decisions", response_model=DecisionOut,
+         dependencies=[Depends(require_api_key)])
+def create_decision(body: DecisionIn, identity: str = Depends(current_identity)):
+    """Confirm duplicate / Not a duplicate. "Skip" has no route - it
+    saves nothing even in app.py, it only hides a pair for the current
+    session, which is purely a frontend concern.
+
+    When the verdict is "distinct", the contrasting vocabulary between
+    the two questions is captured automatically (guards.
+    candidate_contrast_terms) - nothing reads it back automatically
+    (see CLAUDE.md, "Known limitations"), but it is there for a person
+    to later promote into the guard layer's contrast list by hand.
+    `decided_by` always comes from the caller's own identity header,
+    never the request body.
+    """
+    contrast = None
+    if body.verdict == "distinct":
+        by_id = {r["id"]: r for r in state["rows"]} if state["rows"] else {}
+        qa, qb = by_id.get(body.a), by_id.get(body.b)
+        if qa is None or qb is None:
+            with store.connect() as conn:
+                qa = qa or store.get(conn, body.a)
+                qb = qb or store.get(conn, body.b)
+        if qa is not None and qb is not None:
+            contrast = guards.candidate_contrast_terms(qa["text"], qb["text"])
+
+    with store.connect() as conn:
+        decision_id = store.record_decision(
+            conn, body.a, body.b, body.verdict, identity,
+            body.similarity, body.guard_flags,
+            candidate_contrast_terms=contrast,
+        )
+        d = store.get_decision(conn, decision_id)
+    out = _decision_out(d)
+    if contrast:
+        out.only_in_a, out.only_in_b = contrast
+    return out
+
+
+@app.delete("/decisions", status_code=204, dependencies=[Depends(require_api_key)])
+def undo_decision(a: str, b: str):
+    """Send a pair back for review - deletes every verdict on it, in
+    either order, same as app.py's "Undo" button."""
+    with store.connect() as conn:
+        store.undo_decision(conn, a, b)
+
+
+@app.get("/search", response_model=List[SearchHitOut],
+        dependencies=[Depends(require_api_key)])
+def search_by_meaning(q: str, top_k: int = 5):
+    """Finds questions by what they ask about, not by matching words -
+    app.py's "Search by meaning" page. Embedded as a `query:`, not a
+    `passage:` - a short query meeting the bank's longer passage
+    vectors, the opposite of check_one's own reasoning (see
+    CLAUDE.md, "The one-question check")."""
+    _require_bank()
+    if state["embedder"] is None:
+        raise HTTPException(503, "Still loading the model - try again shortly.")
+    if not q.strip():
+        raise HTTPException(400, "Query text is required.")
+    qvec = state["embedder"].encode(q, is_query=True)[0]
+    hits = dedupe.search(qvec, state["index"], top_k=top_k)
+    return [SearchHitOut(score=h["score"], question=_question_brief(h["question"]))
+           for h in hits]
+
+
+@app.get("/questions", response_model=List[QuestionBrief],
+        dependencies=[Depends(require_api_key)])
+def list_bank_questions(grade: Optional[str] = None, subject: Optional[str] = None,
+                        limit: int = 200, offset: int = 0):
+    """Browse the bank - app.py's "Question bank" page. Comparable,
+    fingerprinted rows only, same set every other page compares against
+    - not every row EdSider has (see store.COMPARABLE)."""
+    _require_bank()
+    rows = state["rows"]
+    if grade:
+        rows = [r for r in rows if r.get("grade") == grade]
+    if subject:
+        rows = [r for r in rows if r.get("subject") == subject]
+    return [_question_brief(r) for r in rows[offset:offset + limit]]
+
+
+@app.get("/questions/facets", dependencies=[Depends(require_api_key)])
+def question_facets() -> Dict[str, List[str]]:
+    """Distinct grades and subjects in the comparable bank - fills the
+    Question bank page's filter dropdowns without shipping every row to
+    compute them client-side."""
+    _require_bank()
+    return {
+        "grades": sorted({r["grade"] for r in state["rows"] if r.get("grade")}),
+        "subjects": sorted({r["subject"] for r in state["rows"] if r.get("subject")}),
+    }
 
 
 if __name__ == "__main__":
