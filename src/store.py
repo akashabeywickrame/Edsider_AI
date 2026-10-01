@@ -1641,16 +1641,22 @@ def add_intake_question(conn, document_id, seq, text, question_number=None,
     """`parent_seq` is the seq of the question this is a part of, within
     the same document - not a row id, so a whole paper can be inserted in
     one pass without reading back the ids it just wrote, and a re-split
-    rebuilds the same links from the extractor's own output."""
-    conn.execute(
+    rebuilds the same links from the extractor's own output.
+
+    Returns the new row's id - a whole-paper insert (add_extracted_questions
+    below) has no use for it and ignores it, but the API layer's "add one
+    question by hand" does, to hand the caller back the row it just made."""
+    cur = conn.execute(
         """INSERT INTO intake_questions
            (document_id, seq, question_number, text, grade, subject,
             marks, topic, answer, extraction_confidence, section,
             parent_seq, depth)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+           RETURNING id""",
         (document_id, seq, question_number, text, grade, subject, marks,
          topic, answer, extraction_confidence, section, parent_seq, depth),
     )
+    return cur.fetchone()["id"]
 
 
 def add_extracted_questions(conn, document_id, drafts,
@@ -1685,6 +1691,15 @@ def intake_documents(conn):
 def get_intake_document(conn, doc_id):
     return conn.execute(
         "SELECT * FROM intake_documents WHERE id = ?", (doc_id,)
+    ).fetchone()
+
+
+def get_intake_question(conn, q_id):
+    """One draft by its own row id - the API layer's single-resource
+    GET, needed once a request addresses one question directly rather
+    than a whole document's list (intake_questions() above)."""
+    return conn.execute(
+        "SELECT * FROM intake_questions WHERE id = ?", (q_id,)
     ).fetchone()
 
 
@@ -1742,12 +1757,23 @@ def intake_questions(conn, doc_id):
 def add_question_comment(conn, question_id, author, comment):
     """A teacher's note on one question - see intake_question_comments.
     Never edited or deleted once left: a changed mind is a new comment,
-    the same reasoning record_decision() already uses for verdicts."""
-    conn.execute(
+    the same reasoning record_decision() already uses for verdicts.
+    Returns the new comment's id - the Streamlit pages don't need it
+    (they just st.rerun()), but the API layer does, to hand the caller
+    back the row it just created."""
+    cur = conn.execute(
         """INSERT INTO intake_question_comments (question_id, author, comment)
-           VALUES (?, ?, ?)""",
+           VALUES (?, ?, ?)
+           RETURNING id""",
         (question_id, author, comment),
     )
+    return cur.fetchone()["id"]
+
+
+def get_question_comment(conn, comment_id):
+    return conn.execute(
+        "SELECT * FROM intake_question_comments WHERE id = ?", (comment_id,)
+    ).fetchone()
 
 
 def question_comments_for_document(conn, doc_id):
@@ -1810,6 +1836,21 @@ def question_image_blob(conn, image_id):
         (image_id,),
     ).fetchone()
     return bytes(row["image_blob"]) if row else None
+
+
+def get_question_image(conn, image_id):
+    """Bytes AND content type together, for an HTTP response that must
+    set its own Content-Type header - question_image_blob() stays
+    bytes-only since that is all st.image() ever needed."""
+    row = conn.execute(
+        "SELECT image_blob, content_type, slot FROM intake_question_images "
+        "WHERE id = ?",
+        (image_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {"image_blob": bytes(row["image_blob"]),
+            "content_type": row["content_type"], "slot": row["slot"]}
 
 
 def delete_question_image(conn, image_id):

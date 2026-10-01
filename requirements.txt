@@ -29,6 +29,12 @@ uvicorn[standard]>=0.23
 psycopg2-binary>=2.9
 python-dotenv>=1.0
 
+# FastAPI's own file/form upload support (service.py's /intake/documents
+# and /intake/questions/{id}/images) is a thin wrapper around this -
+# without it, FastAPI raises at route-registration time, before the
+# server ever starts.
+python-multipart>=0.0.9
+
 # Paper intake (src/intake/). Local-only extraction - no text leaves the
 # machine. pytesseract also needs the Tesseract program, which pip cannot
 # install - on Windows `winget install UB-Mannheim.TesseractOCR` (found

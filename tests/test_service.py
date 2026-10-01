@@ -68,16 +68,27 @@ def test_a_configured_api_key_must_be_sent_and_match(monkeypatch):
     service.require_api_key("s3cret-key")
 
 
-def test_check_and_reload_need_the_key_but_health_does_not():
+def test_every_data_route_needs_the_key_except_health_and_docs():
     """The host's uptime probe cannot send a header, so /health stays
-    open; the two routes that read or reload the bank do not."""
-    gated = set()
+    open, and so does FastAPI's own generated documentation - but every
+    route that reads or writes the database (the duplicate check, and
+    the whole paper-intake/teacher/admin API) must require it once a
+    key is configured. Written as "everything except this short list",
+    not an enumeration of every route, so a newly added route defaults
+    to gated and this test catches the day someone forgets the
+    dependency rather than needing to be remembered itself."""
+    ungated_allowed = {"/health", "/docs", "/docs/oauth2-redirect",
+                      "/redoc", "/openapi.json"}
+    ungated = set()
     for route in service.app.routes:
+        path = getattr(route, "path", None)
+        if path is None or path in ungated_allowed:
+            continue
         dependant = getattr(route, "dependant", None)
-        if dependant and any(d.call is service.require_api_key
-                             for d in dependant.dependencies):
-            gated.add(route.path)
-    assert gated == {"/check", "/reload"}
+        if not (dependant and any(d.call is service.require_api_key
+                                  for d in dependant.dependencies)):
+            ungated.add(path)
+    assert not ungated
 
 
 @pytest.fixture
