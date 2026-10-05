@@ -3,6 +3,10 @@ import Landing from './pages/Landing.jsx'
 import SignIn from './pages/SignIn.jsx'
 import DataEntryLayout from './pages/data-entry/DataEntryLayout.jsx'
 import CheckQuestion from './pages/data-entry/CheckQuestion.jsx'
+import FindDuplicates from './pages/data-entry/FindDuplicates.jsx'
+import WithinPaper from './pages/data-entry/WithinPaper.jsx'
+import Search from './pages/data-entry/Search.jsx'
+import PaperIntake from './pages/data-entry/PaperIntake.jsx'
 import ComingSoon from './pages/data-entry/ComingSoon.jsx'
 
 export default function App() {
@@ -15,12 +19,10 @@ export default function App() {
         <Route path="/app/data-entry" element={<DataEntryLayout />}>
           <Route index element={<Navigate to="check" replace />} />
           <Route path="check" element={<CheckQuestion />} />
-          <Route path="duplicates" element={<ComingSoon title="Find duplicates" />} />
-          <Route path="within-paper" element={<ComingSoon title="Duplicates within a paper" />} />
-          <Route path="decisions" element={<ComingSoon title="Reviewed decisions" />} />
-          <Route path="search" element={<ComingSoon title="Search by meaning" />} />
-          <Route path="questions" element={<ComingSoon title="Question bank" />} />
-          <Route path="paper-intake" element={<ComingSoon title="Paper intake" />} />
+          <Route path="duplicates" element={<FindDuplicates />} />
+          <Route path="within-paper" element={<WithinPaper />} />
+          <Route path="search" element={<Search />} />
+          <Route path="paper-intake" element={<PaperIntake />} />
         </Route>
 
         {/* The teacher and admin apps aren't built yet - SignIn's own

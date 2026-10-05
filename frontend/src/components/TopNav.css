@@ -47,6 +47,27 @@ ul.tn__links {
   white-space: nowrap;
 }
 
+.tn__signout {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border-strong);
+}
+.tn__signout:hover {
+  color: var(--primary);
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.tn__signout:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
 @media (max-width: 1100px) {
   .tn {
     height: auto;

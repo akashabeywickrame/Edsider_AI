@@ -1,0 +1,31 @@
+/* .es-card/.es-field/.es-input/.es-row are already defined in
+   bundle.css - this only lays out the search form and the result list,
+   specific to this page. */
+
+.sr-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.sr-row2 {
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.sr-topk {
+  width: 160px;
+}
+
+.sr-results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sr-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

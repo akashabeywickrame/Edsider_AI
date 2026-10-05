@@ -1,0 +1,127 @@
+/* Ported from design-system/screens/project/PaperIntake.dc.html's own
+   <style> block (the real approved design for this page) plus the page
+   layout (rail position, two-column grid) that file hard-codes as pixel
+   offsets for its static mockup frame - those become normal flow here. */
+
+.pi-rte { border: 1.5px solid var(--border-strong); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.pi-rte:focus-within { border-color: var(--primary); }
+.pi-rte__bar { display: flex; align-items: center; gap: 2px; padding: 6px; border-bottom: 1px solid var(--border-soft); background: var(--surface-page); }
+.pi-rte__bar button { all: unset; box-sizing: border-box; min-width: 32px; height: 30px; padding: 0 8px; border-radius: 8px; font: 600 14px/30px var(--font-body); text-align: center; color: var(--text-dark); cursor: pointer; }
+.pi-rte__bar button:hover { background: var(--primary-soft); color: var(--primary); }
+.pi-rte__bar button:focus-visible { outline: 3px solid var(--primary); outline-offset: 1px; }
+.pi-rte__bar button.ql-active { background: var(--primary-soft); color: var(--primary); }
+.pi-rte__sep { width: 1px; align-self: stretch; background: var(--border-soft); margin: 4px 4px; }
+
+/* Quill replaces .pi-rte__area's own content with its container/editor
+   pair (.ql-container > .ql-editor) once mounted - these style that
+   structure, not a <textarea>. quill/dist/quill.core.css supplies only
+   bare-bones layout (cursor, selection, clipboard), no toolbar or theme
+   skin, since the toolbar here is this file's own markup, not Quill's
+   auto-generated one. */
+.pi-rte__area .ql-container { border: 0; font: 16.8px/29.4px var(--font-body); }
+.pi-rte__area .ql-editor { padding: 12px 14px; color: var(--text-dark); min-height: var(--pi-rte-min-h, 84px); }
+.pi-rte__area .ql-editor.ql-blank::before { color: var(--text-muted); font-style: normal; left: 14px; right: 14px; }
+
+.pi-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+.pi-marks { width: 110px; }
+
+.pi-exp { all: unset; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 11px 14px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface-page); font: 600 14.5px/20px var(--font-body); color: var(--text-dark); cursor: pointer; }
+.pi-exp:hover { border-color: var(--primary); color: var(--primary); }
+.pi-exp:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.pi-exp[aria-expanded='true'] { border-radius: 12px 12px 0 0; border-bottom-color: transparent; }
+.pi-exp__chev { font-size: 12px; color: var(--text-muted); }
+.pi-panel { border: 1px solid var(--border-soft); border-top: 0; border-radius: 0 0 12px 12px; padding: 14px; display: flex; flex-direction: column; gap: 14px; background: var(--surface); }
+
+.pi-imgs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.pi-img { border: 1px solid var(--border-soft); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--surface-page); margin: 0; }
+.pi-img__slot { font: 700 12px/16px var(--font-heading); letter-spacing: .04em; text-transform: uppercase; color: var(--primary); }
+.pi-img__pic { background: #fff; border: 1px solid var(--border-soft); border-radius: 8px; display: flex; align-items: center; justify-content: center; min-height: 120px; overflow: hidden; }
+.pi-img__pic img { max-width: 100%; max-height: 220px; display: block; }
+
+.pi-attach { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: end; padding-top: 12px; border-top: 1px dashed var(--border-soft); }
+.pi-file { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border: 1.5px dashed var(--border-strong); border-radius: 12px; font-size: 14px; color: var(--text-muted); background: var(--surface-page); cursor: pointer; }
+.pi-file input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+
+.pi-parthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 14px 0 6px; border-bottom: 2px solid var(--primary); }
+.pi-label { font: 700 16px/22px var(--font-heading); color: var(--primary); }
+.pi-part { margin-left: 30px; }
+
+/* .es-mcq__opt is a plain div in bundle.css (read-only display) that
+   already sets display:flex/gap/border/padding - reused as-is here, an
+   editable option's text now lives in a real <input> inside it rather
+   than a static <span>, and marking it correct is its own small button
+   so clicking into the text to fix it and marking it correct are never
+   the same click target. */
+.pi-mcq__opt { transition: border-color .15s ease; }
+.pi-mcq__opt:focus-within { border-color: var(--primary); }
+.pi-mcq__input { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; color: inherit; padding: 0; outline: 0; }
+.pi-mcq__input:disabled { opacity: .6; }
+.pi-mcq__mark { all: unset; box-sizing: border-box; flex: none; padding: 4px 10px; border-radius: var(--radius-pill); font: 600 12.5px/18px var(--font-body); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.pi-mcq__mark:hover:not(:disabled) { background: var(--primary-soft); color: var(--primary); }
+.pi-mcq__mark:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.pi-mcq__mark:disabled { cursor: default; opacity: .6; }
+.pi-mcq-count { max-width: 280px; }
+/* .es-mcq's own 10px (bundle.css) reads cramped once each option holds
+   a live input instead of static text - a bit more room between option
+   boxes here, same reasoning as the rest of this block. */
+.pi-mcq { gap: 16px; }
+
+/* .es-draft's own 12px (bundle.css) is tight once a card holds this
+   many distinct fields - the stem editor, the MCQ options block, Topic,
+   Marks/Reviewed, the Answer and Images toggles - each one is its own
+   "text box" a reviewer's eye needs to land on separately. */
+.pi-draft-list .es-draft { gap: 20px; }
+
+/* ----------------------------------------------------- page layout */
+
+.pi-page { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 20px; align-items: start; }
+.pi-rail-col { position: sticky; top: 92px; }
+
+/* .es-card carries its own padding but no margin at all (bundle.css) -
+   without this, Paper details' last field sat flush against the
+   Questions heading right below it, and every other top-level block
+   (Upload, Paper details, the Questions/Duplicate-check/Review-status
+   run) touched its neighbour the same way. One flex gap at the page's
+   own root fixes every one of those seams in a single place, rather
+   than a margin-bottom repeated on each section individually. */
+.pi-main { display: flex; flex-direction: column; gap: 28px; }
+
+.pi-dropzone { border: 2px dashed var(--border-strong); border-radius: 16px; background: var(--surface-sunk); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; text-align: center; }
+.pi-dropzone input[type='file'] { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.pi-upload__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+.pi-upload__opts { display: flex; flex-direction: column; gap: 18px; }
+
+.pi-paper__head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; }
+.pi-paper__picker { width: 460px; }
+.pi-paper__title { font-family: var(--font-heading); font-size: 33.6px; line-height: 40px; font-weight: 800; margin: 8px 0 0; }
+.pi-paper__title .accent { color: var(--primary); }
+.pi-paper__fields { display: grid; grid-template-columns: 2fr 2fr 3fr auto; gap: 14px; align-items: end; }
+
+.pi-questions__head { display: flex; justify-content: space-between; align-items: baseline; }
+
+.pi-two-col { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; }
+.pi-question-list { display: flex; flex-direction: column; gap: 16px; }
+.pi-draft-list { display: flex; flex-direction: column; gap: 18px; margin-bottom: 20px; }
+
+.pi-original { position: sticky; top: 92px; display: flex; flex-direction: column; gap: 14px; }
+.pi-original__head { display: flex; justify-content: space-between; align-items: center; }
+.pi-original__body { max-height: 820px; overflow-y: auto; border-radius: 12px; border: 1px solid var(--border-soft); background: var(--surface); padding: 20px 22px; white-space: pre-wrap; font-size: 13.5px; line-height: 21px; color: var(--text-muted); }
+.pi-original__body--img { padding: 0; display: flex; align-items: flex-start; justify-content: center; background: var(--surface-sunk); }
+.pi-original__body--img img { width: 100%; height: auto; display: block; }
+.pi-original__frame { width: 100%; height: 820px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--surface); }
+
+.pi-add__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+.pi-check__results { display: flex; flex-direction: column; gap: 16px; }
+
+.pi-status { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.pi-status__text { max-width: 820px; }
+
+@media (max-width: 1100px) {
+  .pi-page { grid-template-columns: 1fr; }
+  .pi-rail-col { display: none; }
+  .pi-two-col { grid-template-columns: 1fr; }
+  .pi-original { position: static; }
+  .pi-upload__grid { grid-template-columns: 1fr; }
+  .pi-paper__fields { grid-template-columns: 1fr; }
+}

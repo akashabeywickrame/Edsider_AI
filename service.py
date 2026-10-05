@@ -21,6 +21,7 @@ Then browse to http://localhost:8000/docs for a form to try it by hand,
 or POST to /check. See README.md for the request and response shape.
 """
 
+import mimetypes
 import os
 import secrets
 import sys
@@ -302,6 +303,12 @@ class IntakeDocumentOut(BaseModel):
     status: str
     assigned_to: Optional[str] = None
     sections: List[Dict[str, Any]] = []
+    # Free text, unused until now - repurposed as the paper's own general
+    # instructions (the block printed above every part, e.g. "Answer all
+    # questions"), which has nowhere else to live: intake_extract.structure()
+    # deliberately excludes that preamble from `sections`, since it is not
+    # itself one of the paper's labelled parts (see its own "preamble" flag).
+    notes: Optional[str] = None
 
 
 class IntakeDocumentDetail(IntakeDocumentOut):
@@ -309,6 +316,26 @@ class IntakeDocumentDetail(IntakeDocumentOut):
     # tens of thousands of characters, and a list of papers never
     # needs to show it.
     raw_text: Optional[str] = None
+
+
+class McqOptionOut(BaseModel):
+    label: str
+    marker: str
+    text: str
+
+
+class McqInfoOut(BaseModel):
+    # `stem` is the text with any detected options stripped off the end.
+    # The question's REAL text column still holds stem + options as one
+    # combined string (CLAUDE.md: "MCQ options live inside content", kept
+    # together on purpose for the duplicate-check fingerprint) - this
+    # split exists so a reviewer can correct the stem and each option as
+    # its own field; saving (see /mcq below) reassembles them into that
+    # one combined string again, each option led by its own real printed
+    # `marker`, not a guessed-at substitute.
+    stem: str
+    options: List[McqOptionOut] = []
+    correct: Optional[str] = None
 
 
 class IntakeQuestionOut(BaseModel):
@@ -328,6 +355,15 @@ class IntakeQuestionOut(BaseModel):
     depth: int = 0
     reviewed: bool = False
     teacher_reviewed: bool = False
+    # Computed, not stored - split_mcq_options() run on `text` as this
+    # row is built (see _question_out), not fetched separately per
+    # question. A page with 100+ questions doing that as its own request
+    # per card was measured firing 100+ concurrent GETs that queued
+    # behind each other for over 20 seconds, which then starved an
+    # unrelated save sent while they were still in flight - computing it
+    # inline here costs nothing beyond the regex scan _question_out
+    # already reads `text` for.
+    mcq: Optional[McqInfoOut] = None
 
 
 class QuestionUpdate(BaseModel):
@@ -348,6 +384,16 @@ class QuestionUpdate(BaseModel):
     teacher_reviewed: Optional[bool] = None
 
 
+class McqOptionIn(BaseModel):
+    marker: str
+    text: str
+
+
+class McqUpdateIn(BaseModel):
+    stem: str
+    options: List[McqOptionIn] = []
+
+
 class QuestionCreate(BaseModel):
     """'Add a question the extractor missed' - a whole question, or a
     part of an existing one when parent_seq names it."""
@@ -366,6 +412,15 @@ class DocumentUpdate(BaseModel):
     paper_subject: Optional[str] = None
     paper_title: Optional[str] = None
     status: Optional[str] = None
+    # A part's own `instructions` (the "Answer all the questions..."
+    # block a paper prints under its heading) - store.update_intake_document
+    # already accepts and JSON-encodes this column; only the request
+    # schema was missing it. Sent whole, same as resplit_document writes
+    # it - a part is addressed by matching `label` client-side, not by
+    # a separate per-part endpoint, since there is no part id to address.
+    sections: Optional[List[Dict[str, Any]]] = None
+    # The paper's own general instructions - see IntakeDocumentOut.notes.
+    notes: Optional[str] = None
 
 
 class ResplitPreview(BaseModel):
@@ -422,7 +477,7 @@ def _document_out(doc, detail=False):
         paper_grade=doc["paper_grade"], paper_subject=doc["paper_subject"],
         paper_title=doc["paper_title"], split_style=doc["split_style"],
         status=doc["status"], assigned_to=doc["assigned_to"],
-        sections=store.intake_sections(doc),
+        sections=store.intake_sections(doc), notes=doc["notes"],
     )
     if detail:
         return IntakeDocumentDetail(raw_text=doc["raw_text"], **data)
@@ -433,6 +488,14 @@ def _question_out(q):
     d = dict(q)
     d["reviewed"] = bool(d.get("reviewed"))
     d["teacher_reviewed"] = bool(d.get("teacher_reviewed"))
+    # A part (depth > 0) is never an MCQ - an option is never itself
+    # split further (see intake_extract.split_mcq_options).
+    if not d.get("depth"):
+        stem, options = intake_extract.split_mcq_options(d.get("text") or "")
+        if options:
+            d["mcq"] = McqInfoOut(
+                stem=stem, options=[McqOptionOut(**o) for o in options],
+                correct=intake_extract.mcq_correct_label(d.get("answer")))
     return IntakeQuestionOut(**d)
 
 
@@ -521,6 +584,25 @@ def get_document(doc_id: int):
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
     return _document_out(doc, detail=True)
+
+
+@app.get("/intake/documents/{doc_id}/file", dependencies=[Depends(require_api_key)])
+def get_document_file(doc_id: int):
+    """The uploaded file's own bytes - a PDF embedded directly (real,
+    selectable, copyable text, not a re-typed transcript), an image shown
+    as one. Same Response-with-media_type pattern as get_image below;
+    content type is guessed from the stored filename, since file_type is
+    only the coarse 'pdf'/'docx'/'image'/'other' category.
+    """
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        blob = store.intake_file_blob(conn, doc_id)
+    if blob is None:
+        raise HTTPException(
+            404, "No stored file for this paper - uploaded before this was "
+                "kept, or it predates file_blob.")
+    content_type, _ = mimetypes.guess_type(doc["filename"] or "")
+    return Response(content=blob, media_type=content_type or "application/octet-stream")
 
 
 @app.patch("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
@@ -739,6 +821,34 @@ def remove_question(q_id: int):
     with store.connect() as conn:
         _require_question(conn, q_id)
         store.delete_intake_question(conn, q_id)
+
+
+@app.patch("/intake/questions/{q_id}/mcq", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key)])
+def update_question_mcq(q_id: int, body: McqUpdateIn):
+    """Reassembles an edited stem and options back into this question's
+    one combined text field - the single place that join happens, so a
+    reviewer fixing a wrongly-read option never has to reproduce the
+    paper's own numbering style by hand. Each option is led by its own
+    `marker` exactly as sent (normally round-tripped unchanged from what
+    GET .../mcq returned), not a label-derived guess - see McqInfoOut.
+
+    `marker.rstrip()` matters: _SUB_MARKER's own pattern ends in
+    `[ \\t]*`, so a marker already carries whatever gap the paper printed
+    ("I." plus every space before "Ignoring") - appending another space
+    unconditionally would grow that gap by one character every time a
+    question round-trips through this endpoint, since the next read
+    would capture the now-longer gap as part of the marker again.
+    """
+    combined = body.stem.strip()
+    if body.options:
+        combined += "\n" + "\n".join(
+            f"{o.marker.rstrip()} {o.text}".strip() for o in body.options)
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        store.update_intake_question(conn, q_id, text=combined)
+        q = store.get_intake_question(conn, q_id)
+    return _question_out(q)
 
 
 # ------------------------------------------------------------ comments

@@ -3,7 +3,7 @@
 // (see service.py). No endpoint-specific logic lives here; that stays
 // in the page that calls it.
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 function query(params) {
   const usp = new URLSearchParams()
@@ -15,10 +15,14 @@ function query(params) {
 }
 
 async function request(path, { method = 'GET', body, ...rest } = {}) {
+  // A FormData body (file upload) sets its own multipart Content-Type,
+  // boundary included - JSON.stringify-ing it or overriding the header
+  // would break the upload, so it goes through untouched.
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : undefined,
+    body: body !== undefined ? (isForm ? body : JSON.stringify(body)) : undefined,
     ...rest,
   })
   if (!res.ok) {
@@ -59,7 +63,55 @@ export const api = {
   listQuestions: (params) => request(`/questions${query(params)}`),
   questionFacets: () => request('/questions/facets'),
 
-  // Paper intake/teacher/assignment endpoints (file uploads, multipart
-  // form bodies) are added here once the pages that use them are built -
-  // no point shaping that wrapper before there is a real caller for it.
+  // ---- paper intake ----
+  listIntakeDocuments: (status) => request(`/intake/documents${query({ status })}`),
+  uploadIntakeDocument: (file, lang, style) => {
+    const form = new FormData()
+    form.set('file', file)
+    form.set('lang', lang)
+    form.set('style', style)
+    return request('/intake/documents', { method: 'POST', body: form })
+  },
+  getIntakeDocument: (docId) => request(`/intake/documents/${docId}`),
+  updateIntakeDocument: (docId, fields) =>
+    request(`/intake/documents/${docId}`, { method: 'PATCH', body: fields }),
+  previewResplit: (docId, style) =>
+    request(`/intake/documents/${docId}/resplit/preview`, { method: 'POST', body: { style } }),
+  resplitDocument: (docId, style) =>
+    request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
+  checkDocumentDuplicates: (docId) =>
+    request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
+
+  listIntakeQuestions: (docId) => request(`/intake/documents/${docId}/questions`),
+  createIntakeQuestion: (docId, payload) =>
+    request(`/intake/documents/${docId}/questions`, { method: 'POST', body: payload }),
+  updateIntakeQuestion: (qId, fields) =>
+    request(`/intake/questions/${qId}`, { method: 'PATCH', body: fields }),
+  deleteIntakeQuestion: (qId) => request(`/intake/questions/${qId}`, { method: 'DELETE' }),
+  // MCQ info (stem/options/correct) rides along on every IntakeQuestionOut
+  // already - see service.py's _question_out - so there is no separate
+  // GET here; only saving an edited stem/options needs its own call.
+  updateQuestionMcq: (qId, payload) =>
+    request(`/intake/questions/${qId}/mcq`, { method: 'PATCH', body: payload }),
+
+  // GET /intake/documents/{id}/file returns the uploaded file's own raw
+  // bytes (a real PDF, not a transcript) - used directly as an <iframe>/
+  // <img> src, never through request().
+  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file`,
+
+  // ---- question images (attached to a question or its answer) ----
+  listDocumentImages: (docId) => request(`/intake/documents/${docId}/images`),
+  attachQuestionImage: (qId, slot, file) => {
+    const form = new FormData()
+    form.set('slot', slot)
+    form.set('file', file)
+    return request(`/intake/questions/${qId}/images`, { method: 'POST', body: form })
+  },
+  deleteImage: (imageId) => request(`/intake/images/${imageId}`, { method: 'DELETE' }),
+  // GET /intake/images/{id} returns raw image bytes, not JSON - used
+  // directly as an <img src>, never through request().
+  imageUrl: (imageId) => `${API_BASE}/intake/images/${imageId}`,
+
+  // Teacher/assignment endpoints (assign, finish, comments) belong to the
+  // teacher and admin apps, not built yet - added once those pages exist.
 }

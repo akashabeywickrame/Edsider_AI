@@ -1,0 +1,44 @@
+/* .es-card/.es-row/.es-toggle/.es-stat/.es-pair are already defined in
+   bundle.css - this only lays out the controls bar and the pair list,
+   which are specific to this page. */
+
+.fd-controls {
+  margin-bottom: 20px;
+}
+.fd-controls__row {
+  justify-content: space-between;
+  gap: 28px;
+}
+
+.fd-slider {
+  flex: 1;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fd-slider input[type='range'] {
+  width: 100%;
+}
+
+.fd-metrics {
+  margin-bottom: 4px;
+}
+.fd-metrics .es-stat {
+  flex: 1;
+  min-width: 200px;
+}
+
+.fd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+@media (max-width: 720px) {
+  .fd-controls__row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

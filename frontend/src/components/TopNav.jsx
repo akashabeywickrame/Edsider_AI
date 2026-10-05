@@ -1,4 +1,5 @@
 import { Link, NavLink } from 'react-router-dom'
+import { isDevAuth, logoutUrl } from '../lib/auth.js'
 import './TopNav.css'
 
 // Mirrors design-system/screens/project/Header.dc.html's own per-app
@@ -9,9 +10,7 @@ const LINKS = {
     { to: '/app/data-entry/check', label: 'Check a question' },
     { to: '/app/data-entry/duplicates', label: 'Find duplicates' },
     { to: '/app/data-entry/within-paper', label: 'Within a paper' },
-    { to: '/app/data-entry/decisions', label: 'Decisions' },
     { to: '/app/data-entry/search', label: 'Search' },
-    { to: '/app/data-entry/questions', label: 'Question bank' },
     { to: '/app/data-entry/paper-intake', label: 'Paper intake' },
   ],
   teacher: [{ to: '/app/teacher', label: 'My papers' }],
@@ -40,6 +39,9 @@ export default function TopNav({ app, who }) {
         ))}
       </ul>
       {who ? <span className="es-nav__who">{who}</span> : null}
+      <Link className="tn__signout" to={isDevAuth ? '/' : logoutUrl('/')}>
+        Sign out
+      </Link>
     </nav>
   )
 }

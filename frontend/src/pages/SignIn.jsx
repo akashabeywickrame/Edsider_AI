@@ -1,10 +1,7 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
+import { isDevAuth as isDev, loginUrl as authUrl } from '../lib/auth.js'
 import './SignIn.css'
-
-// True for `npm run dev`, false for a real production build (`vite
-// build`) - Vite sets this, not something this file invents.
-const isDev = import.meta.env.DEV
 
 // Where each role lands once signed in. These routes don't exist in
 // the app yet (same as /sign-in itself didn't exist before this page
@@ -30,18 +27,6 @@ const ROLES = [
     dest: '/app/admin',
   },
 ]
-
-// Azure App Service's own Easy Auth - the same identity provider this
-// whole project already relies on (see CLAUDE.md, "current_reviewer()").
-// /.auth/login/<provider> is a REAL endpoint Azure publishes automatically
-// once an identity provider is configured on the App Service; it is not
-// an endpoint this app defines. It only exists once this is actually
-// deployed behind Easy Auth - there is no local dev server for it, so
-// these links 404 on localhost, the same gap every other page here has
-// for identity until Easy Auth is switched on.
-function authUrl(provider, dest) {
-  return `/.auth/login/${provider}?post_login_redirect_uri=${encodeURIComponent(dest)}`
-}
 
 export default function SignIn() {
   const [params] = useSearchParams()

@@ -1,7 +1,3 @@
-/* Built only from edsider-tokens.css's variables and bundle.css's
-   shared classes (.es-pill, .es-stat__icon, .es-accent--*) - nothing
-   here invents a new colour or shadow. */
-
 .ld-sec {
   scroll-margin-top: 76px;
 }
@@ -37,13 +33,13 @@
 .ld-nav a {
   font-size: 14px;
   font-weight: 500;
-  color: var(--text-dark);
+  color: white;
   text-decoration: none;
   padding: 8px 14px;
   border-radius: 999px;
 }
 .ld-nav a:hover {
-  color: var(--primary);
+  color: rgb(193, 189, 189);
 }
 .ld-nav a[aria-current='page'] {
   background: var(--primary-soft);
@@ -98,11 +94,25 @@
   outline-offset: 2px;
 }
 
+/* The gradient bands (.ld-hero/.ld-how/.ld-who) stay full-bleed - only
+   their actual content is capped and centered, per the design system's
+   own "content in a column up to 1200px" rule (design-system/project/README.md). */
+.ld-container {
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 .ld-hero {
   background: var(--gradient-hero);
-  padding: 64px 120px 96px;
+  padding: 72px 24px 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ld-hero__inner {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 460px;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 620px);
   gap: 64px;
   align-items: center;
 }
@@ -130,9 +140,9 @@
 }
 .ld-lede {
   margin: 0 0 30px;
-  max-width: 540px;
-  font-size: 16.8px;
-  line-height: 29.4px;
+  max-width: 560px;
+  font-size: 19px;
+  line-height: 30px;
   color: var(--text-muted);
 }
 .ld-langs {
@@ -153,59 +163,151 @@
   flex-wrap: wrap;
 }
 
+/* No card/background behind the photo - www.edsider.com's own hero
+   photo is a plain cutout sitting straight on the gradient, not boxed
+   in a white frame. hero2.png already has real transparency (checked
+   directly - not assumed), so this just lets it sit on the page. */
 .ld-hero__art {
-  background: #fff;
-  border-radius: 20px;
-  box-shadow: var(--shadow-card-hover);
-  padding: 6px;
+  display: flex;
+  justify-content: center;
 }
 .ld-hero__art img {
   display: block;
   width: 100%;
-  height: 400px;
-  object-fit: cover;
-  border-radius: 16px;
+  height: auto;
+  max-width: 640px;
 }
 
 .ld-sec h2 {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   font-family: var(--font-heading);
-  font-size: 33.6px;
-  line-height: 40px;
+  font-size: 42px;
+  line-height: 48px;
   font-weight: 800;
 }
+.ld-sec h2 .accent {
+  color: var(--primary);
+}
 .ld-sec > p {
-  margin: 0 auto 44px;
-  max-width: 620px;
-  font-size: 16px;
-  line-height: 26px;
+  margin: 0 auto 48px;
+  max-width: 660px;
+  font-size: 18px;
+  line-height: 28px;
   color: var(--text-muted);
 }
+
+/* -------------------------------------------------- why it matters */
+.ld-why {
+  padding: 88px 24px;
+  background: #fff;
+}
+.ld-why__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 56px;
+  align-items: start;
+}
+.ld-why h2 {
+  margin-bottom: 18px;
+}
+.ld-rule {
+  width: 96px;
+  height: 7px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #6a2db9, #e6ca8f);
+  margin-bottom: 22px;
+}
+.ld-why .ld-p {
+  margin-bottom: 16px;
+  font-size: 16px;
+  line-height: 27px;
+}
+.ld-why__img {
+  display: block;
+  width: 100%;
+  max-width: 440px;
+  height: auto;
+  margin-top: 28px;
+}
+.ld-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.ld-compare__card {
+  background: var(--surface-sunk);
+  border-radius: var(--radius-card);
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ld-compare__card--accent {
+  background: var(--primary);
+}
+.ld-compare__num {
+  font-family: var(--font-heading);
+  font-size: 40px;
+  font-weight: 800;
+  color: var(--text-dark);
+  font-variant-numeric: tabular-nums;
+}
+.ld-compare__card--accent .ld-compare__num {
+  color: var(--on-primary);
+}
+.ld-compare__label {
+  font-size: 14.5px;
+  line-height: 21px;
+  color: var(--text-muted);
+}
+.ld-compare__card--accent .ld-compare__label {
+  color: #fff;
+  opacity: 0.9;
+}
+
+/* ---------------------------------------------- hero stats, floating
+   on the gradient the way www.edsider.com's own "1000+ / 50K+ / ..."
+   row does - no separate band needed, the hero's own bottom padding
+   gives them room to sit inside the gradient. */
+.ld-stats__row {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.ld-stats__row--float {
+  margin-top: 56px;
+}
+.ld-stats__row .es-stat {
+  flex: 1;
+  min-width: 240px;
+}
+
 .ld-how {
-  padding: 96px 120px 40px;
+  padding: 104px 24px 56px;
   text-align: center;
 }
 .ld-who {
-  margin-top: 56px;
-  padding: 72px 120px 96px;
+  margin-top: 64px;
+  padding: 88px 24px 112px;
   background: var(--gradient-soft);
   text-align: center;
 }
 .ld-grid3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
+  gap: 26px;
   text-align: left;
 }
 
 .ld-card {
   background: #fff;
   border-radius: var(--radius-card);
-  padding: 26px;
+  padding: 32px;
   box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 .ld-num {
   font: 800 13px/18px var(--font-heading);
@@ -214,28 +316,25 @@
 }
 .ld-h3 {
   margin: 0;
-  font: 700 20px/26px var(--font-heading);
+  font: 700 22px/28px var(--font-heading);
   color: var(--text-dark);
 }
 .ld-p {
   margin: 0;
-  font-size: 15.5px;
-  line-height: 25px;
+  font-size: 17px;
+  line-height: 27px;
   color: var(--text-muted);
 }
 
 @media (max-width: 900px) {
-  .ld-hero,
-  .ld-how,
-  .ld-who {
-    padding-left: 24px;
-    padding-right: 24px;
-  }
-  .ld-hero {
+  .ld-hero__inner {
     grid-template-columns: 1fr;
   }
   .ld-hero__art img {
-    height: 220px;
+    max-width: 320px;
+  }
+  .ld-why__inner {
+    grid-template-columns: 1fr;
   }
   .ld-grid3 {
     grid-template-columns: 1fr;
@@ -249,5 +348,9 @@
   .ld-h1 {
     font-size: 36px;
     line-height: 42px;
+  }
+  .ld-sec h2 {
+    font-size: 32px;
+    line-height: 38px;
   }
 }

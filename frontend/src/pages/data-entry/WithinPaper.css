@@ -1,0 +1,42 @@
+/* .es-card/.es-field/.es-toggle/.es-stat are already defined in
+   bundle.css. .fd-slider/.fd-metrics/.fd-list come from
+   FindDuplicates.css, shared with this page since both are sweep-review
+   screens built the same way. This file is only the filter grid, which
+   is specific to this page (Find duplicates has no grade/subject/title/
+   assessment filters). */
+
+.wp-filters {
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.wp-filters__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.wp-filters__row2 {
+  justify-content: space-between;
+  gap: 28px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-soft);
+}
+
+@media (max-width: 900px) {
+  .wp-filters__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .wp-filters__grid {
+    grid-template-columns: 1fr;
+  }
+  .wp-filters__row2 {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

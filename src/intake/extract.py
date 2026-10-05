@@ -530,7 +530,8 @@ def _split_parts(body, depth=0):
 
 
 def split_mcq_options(body):
-    """An MCQ question's body -> (stem, [{"label": tag, "text": ...}, ...]).
+    """An MCQ question's body -> (stem, [{"label": tag, "marker": ...,
+    "text": ...}, ...]).
 
     An MCQ is never split by structure() itself - its stem and options
     stay one piece of text, because the duplicate-check fingerprint needs
@@ -544,6 +545,12 @@ def split_mcq_options(body):
     list at all. Unlike a part, an option is never split further and
     never gets its own marks or answer - just text and a printed label.
 
+    `marker` is the exact printed text of the marker itself ("(1)", "I.",
+    "A)" - whatever this paper actually used), not a reconstruction from
+    `label` - a reviewer correcting option text and saving it back as one
+    combined body again needs the paper's own punctuation preserved, not
+    a guessed-at substitute in some other style.
+
     Returns (body, []) - not an error - when nothing looks like an
     option list, so a caller can fall back to showing the text as-is.
     """
@@ -553,7 +560,8 @@ def split_mcq_options(body):
     options = []
     for i, (pos, end, tag) in enumerate(starts):
         stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
-        options.append({"label": tag, "text": body[end:stop].strip()})
+        options.append({"label": tag, "marker": body[pos:end],
+                        "text": body[end:stop].strip()})
     return body[:starts[0][0]].strip(), options
 
 

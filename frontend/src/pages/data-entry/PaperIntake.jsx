@@ -1,0 +1,918 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { api } from '../../lib/api.js'
+import PaperIntakeQuestion from './PaperIntakeQuestion.jsx'
+import './PaperIntake.css'
+
+const OCR_LANGS = [
+  { key: 'eng', label: 'English' },
+  { key: 'sin', label: 'Sinhala' },
+  { key: 'tam', label: 'Tamil' },
+]
+const SPLIT_STYLES = [
+  { key: 'number', label: 'Numbered at the left margin (1.  2.  01.  Q1  (1))' },
+  { key: 'question_word', label: "Lines containing the word 'Question'" },
+]
+const RAIL = [
+  { id: 'upload', icon: 'upload', label: 'Upload' },
+  { id: 'paper', icon: 'paper', label: 'Questions' },
+  { id: 'dup', icon: 'copy', label: 'Duplicate check' },
+  { id: 'status', icon: 'check', label: 'Review status' },
+]
+const KIND_LABEL = { mcq: 'Multiple choice', structured: 'Structured' }
+
+function gradeLabel(code) {
+  const m = /^G(\d{2})$/.exec(code || '')
+  return m ? `Grade ${Number(m[1])}` : code
+}
+
+// Depth-0 questions in seq order, each followed immediately by its own
+// children (parent_seq pointing at it) - a flat list from the API
+// becomes the tree a reviewer actually reads.
+function orderedTree(questions) {
+  const childrenOf = new Map()
+  questions.forEach((q) => {
+    if (q.parent_seq != null) {
+      if (!childrenOf.has(q.parent_seq)) childrenOf.set(q.parent_seq, [])
+      childrenOf.get(q.parent_seq).push(q)
+    }
+  })
+  const out = []
+  function visit(q) {
+    out.push(q)
+    for (const child of childrenOf.get(q.seq) || []) visit(child)
+  }
+  questions.filter((q) => q.parent_seq == null).forEach((q) => visit(q))
+  const seen = new Set(out.map((q) => q.id))
+  questions.forEach((q) => {
+    if (!seen.has(q.id)) out.push(q)
+  })
+  return out
+}
+
+// Groups the tree back into the paper's own parts, in document order -
+// a run of consecutive questions sharing one `section` value is one
+// part, with that part's own metadata (kind, instructions, marks_each)
+// from doc.sections when a label matches.
+function groupByPart(tree, sectionsMeta) {
+  const byLabel = Object.fromEntries((sectionsMeta || []).map((s) => [s.label, s]))
+  const groups = []
+  let current = null
+  for (const q of tree) {
+    const key = q.section || null
+    if (!current || current.key !== key) {
+      current = { key, meta: key ? byLabel[key] : null, questions: [] }
+      groups.push(current)
+    }
+    current.questions.push(q)
+  }
+  return groups
+}
+
+export default function PaperIntake() {
+  const { PageHeader, Button, Notice, StatusPill, PairReview, QuestionCard, Icon } = window.EdSider
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedId = searchParams.get('doc')
+
+  const [facets, setFacets] = useState({ grades: [], subjects: [] })
+
+  const [file, setFile] = useState(null)
+  const [lang, setLang] = useState('eng')
+  const [uploadStyle, setUploadStyle] = useState('number')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState(null)
+
+  const [docs, setDocs] = useState(null)
+  const [docsError, setDocsError] = useState(null)
+
+  const [doc, setDoc] = useState(null)
+  const [questions, setQuestions] = useState(null)
+  const [images, setImages] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(null)
+
+  const [title, setTitle] = useState('')
+  const [grade, setGrade] = useState('')
+  const [subject, setSubject] = useState('')
+  const [notes, setNotes] = useState('')
+  const [applyBusy, setApplyBusy] = useState(false)
+
+  const [splitStyle, setSplitStyle] = useState('number')
+  const [resplitOpen, setResplitOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [resplitBusy, setResplitBusy] = useState(false)
+  const [resplitError, setResplitError] = useState(null)
+
+  const [instrOpenKey, setInstrOpenKey] = useState(null)
+  const [instrText, setInstrText] = useState('')
+  const [instrBusy, setInstrBusy] = useState(false)
+  const [instrError, setInstrError] = useState(null)
+
+  const [addOpen, setAddOpen] = useState(false)
+  const [newText, setNewText] = useState('')
+  const [newNumber, setNewNumber] = useState('')
+  const [newMarks, setNewMarks] = useState('')
+  const [newParentSeq, setNewParentSeq] = useState('')
+  const [newSection, setNewSection] = useState('')
+  const [addBusy, setAddBusy] = useState(false)
+  const [addError, setAddError] = useState(null)
+
+  const [checkBusy, setCheckBusy] = useState(false)
+  const [checkError, setCheckError] = useState(null)
+  const [checkResult, setCheckResult] = useState(null)
+
+  const [previewMode, setPreviewMode] = useState('file')
+
+  useEffect(() => {
+    api.questionFacets().then(setFacets).catch(() => {})
+  }, [])
+
+  function loadDocs(andSelect) {
+    api
+      .listIntakeDocuments()
+      .then((list) => {
+        setDocs(list)
+        if (andSelect && list.length) setSearchParams({ doc: String(list[0].id) })
+        else if (!selectedId && list.length) setSearchParams({ doc: String(list[0].id) }, { replace: true })
+      })
+      .catch((err) => setDocsError(err.message))
+  }
+  useEffect(() => loadDocs(false), [])
+
+  function loadSelected(id) {
+    if (!id) {
+      setDoc(null)
+      setQuestions(null)
+      setImages({})
+      return
+    }
+    setLoading(true)
+    setLoadError(null)
+    setCheckResult(null)
+    Promise.all([api.getIntakeDocument(id), api.listIntakeQuestions(id), api.listDocumentImages(id)])
+      .then(([d, qs, imgs]) => {
+        setDoc(d)
+        setQuestions(qs)
+        setImages(imgs)
+        setTitle(d.paper_title || '')
+        setGrade(d.paper_grade || '')
+        setSubject(d.paper_subject || '')
+        setNotes(d.notes || '')
+        setSplitStyle(d.split_style || 'number')
+        setPreview(null)
+        setResplitOpen(false)
+        setInstrOpenKey(null)
+        setAddOpen(false)
+        setPreviewMode('file')
+      })
+      .catch((err) => setLoadError(err.message))
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => {
+    loadSelected(selectedId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId])
+
+  async function handleUpload(e) {
+    e.preventDefault()
+    if (!file) return
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const d = await api.uploadIntakeDocument(file, lang, uploadStyle)
+      e.target.reset()
+      setFile(null)
+      loadDocs(false)
+      setSearchParams({ doc: String(d.id) })
+    } catch (err) {
+      setUploadError(err.message)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function saveMeta(fields) {
+    try {
+      const d = await api.updateIntakeDocument(selectedId, fields)
+      setDoc(d)
+      loadDocs(false)
+    } catch (err) {
+      setLoadError(err.message)
+    }
+  }
+
+  async function handleApplyToAll() {
+    if (!questions?.length) return
+    setApplyBusy(true)
+    try {
+      const updated = await Promise.all(
+        questions.map((q) => api.updateIntakeQuestion(q.id, { grade, subject })),
+      )
+      setQuestions(updated)
+    } catch (err) {
+      setLoadError(err.message)
+    } finally {
+      setApplyBusy(false)
+    }
+  }
+
+  function handleQuestionChanged(updated) {
+    setQuestions((prev) => prev.map((q) => (q.id === updated.id ? updated : q)))
+  }
+  function handleQuestionRemoved(id) {
+    setQuestions((prev) => prev.filter((q) => q.id !== id))
+  }
+  function handleImagesChanged(qid, next) {
+    setImages((prev) => ({ ...prev, [String(qid)]: next }))
+  }
+
+  async function handlePreview() {
+    setResplitBusy(true)
+    setResplitError(null)
+    try {
+      setPreview(await api.previewResplit(selectedId, splitStyle))
+    } catch (err) {
+      setResplitError(err.message)
+    } finally {
+      setResplitBusy(false)
+    }
+  }
+  async function handleApplyResplit() {
+    setResplitBusy(true)
+    setResplitError(null)
+    try {
+      await api.resplitDocument(selectedId, splitStyle)
+      setPreview(null)
+      loadSelected(selectedId)
+      loadDocs(false)
+    } catch (err) {
+      setResplitError(err.message)
+    } finally {
+      setResplitBusy(false)
+    }
+  }
+
+  function toggleInstructions(key, current) {
+    if (instrOpenKey === key) {
+      setInstrOpenKey(null)
+      return
+    }
+    setInstrOpenKey(key)
+    setInstrText(current || '')
+    setInstrError(null)
+  }
+  async function saveInstructions(key) {
+    setInstrBusy(true)
+    setInstrError(null)
+    try {
+      const nextSections = (doc.sections || []).map((s) =>
+        s.label === key ? { ...s, instructions: instrText || null } : s,
+      )
+      const d = await api.updateIntakeDocument(selectedId, { sections: nextSections })
+      setDoc(d)
+      setInstrOpenKey(null)
+    } catch (err) {
+      setInstrError(err.message)
+    } finally {
+      setInstrBusy(false)
+    }
+  }
+
+  async function handleAddQuestion(e) {
+    e.preventDefault()
+    if (!newText.trim()) return
+    setAddBusy(true)
+    setAddError(null)
+    try {
+      const q = await api.createIntakeQuestion(selectedId, {
+        text: newText,
+        question_number: newNumber || undefined,
+        marks: newMarks === '' ? undefined : Number(newMarks),
+        parent_seq: newParentSeq === '' ? undefined : Number(newParentSeq),
+        section: newSection || undefined,
+      })
+      setQuestions((prev) => [...prev, q])
+      setNewText('')
+      setNewNumber('')
+      setNewMarks('')
+      setNewParentSeq('')
+      setNewSection('')
+    } catch (err) {
+      setAddError(err.message)
+    } finally {
+      setAddBusy(false)
+    }
+  }
+
+  async function handleCheckDuplicates() {
+    setCheckBusy(true)
+    setCheckError(null)
+    try {
+      const res = await api.checkDocumentDuplicates(selectedId)
+      setCheckResult(res)
+      setDoc(await api.getIntakeDocument(selectedId))
+      loadDocs(false)
+    } catch (err) {
+      setCheckError(err.message)
+    } finally {
+      setCheckBusy(false)
+    }
+  }
+
+  const pending = questions ? questions.filter((q) => !q.reviewed).length : 0
+  const lowConf = questions ? questions.filter((q) => q.extraction_confidence === 'low').length : 0
+  const tree = questions ? orderedTree(questions) : []
+  const parts = doc ? groupByPart(tree, doc.sections) : []
+  const byId = useMemo(() => Object.fromEntries((questions || []).map((q) => [q.id, q])), [questions])
+
+  function brief(id) {
+    const q = byId[id]
+    if (!q) return { id: String(id), text: '(question no longer on this paper)' }
+    return {
+      id: String(q.id),
+      text: q.text || '',
+      grade: doc.paper_grade,
+      subject: doc.paper_subject,
+      number: q.question_number || q.seq,
+    }
+  }
+
+  return (
+    <div className="pi-page">
+      <nav className="pi-rail-col" aria-label="Paper intake sections">
+        <ul className="es-rail">
+          {RAIL.map((r) => (
+            <li key={r.id}>
+              <a href={`#${r.id}`} aria-label={r.label} title={r.label}>
+                <Icon name={r.icon} />
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="pi-main">
+        <PageHeader
+          accent="Paper"
+          title="intake"
+          subtitle="Upload a question paper - PDF, Word, or an image of a handwritten one. Its questions are pulled out, you correct them, then the batch is checked for repeats against itself before any of it joins the bank. Nothing here is trusted until you have confirmed it."
+        />
+
+        <section id="upload" className="es-card pi-upload__grid" aria-label="Upload a paper">
+          <label className="pi-dropzone">
+            <input
+              type="file"
+              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+            <span className="es-stat__icon es-accent--primary">
+              <Icon name="upload" />
+            </span>
+            <p className="scr-h3">{file ? file.name : 'Drop the question paper here'}</p>
+            <p className="es-caption">PDF, Word (.docx, .doc), or an image of the paper - PNG, JPG, TIFF or BMP</p>
+            <span className="es-btn es-btn--secondary es-btn--sm">Choose a file</span>
+          </label>
+
+          <form className="pi-upload__opts" onSubmit={handleUpload}>
+            <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
+              <legend className="es-field__label" style={{ marginBottom: 8 }}>
+                Language of the paper
+              </legend>
+              <div className="es-row">
+                {OCR_LANGS.map((l) => (
+                  <label className="scr-radio" key={l.key}>
+                    <input type="radio" name="ul" checked={lang === l.key} onChange={() => setLang(l.key)} />
+                    {l.label}
+                  </label>
+                ))}
+              </div>
+              <p className="es-caption" style={{ marginTop: 6 }}>
+                Used to read scanned pages and questions pasted in as pictures. Typed text is read
+                directly whatever this says.
+              </p>
+            </fieldset>
+
+            <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
+              <legend className="es-field__label" style={{ marginBottom: 8 }}>
+                Where does a new question start in this paper?
+              </legend>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+                {SPLIT_STYLES.map((s) => (
+                  <label className="scr-radio" key={s.key}>
+                    <input
+                      type="radio"
+                      name="us"
+                      checked={uploadStyle === s.key}
+                      onChange={() => setUploadStyle(s.key)}
+                    />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+              <p className="es-caption" style={{ marginTop: 6 }}>
+                Pick "Question" for a worked-solutions or marking-scheme document, where the
+                numbered lists are answer steps rather than questions.
+              </p>
+            </fieldset>
+
+            <div>
+              <Button variant="primary" arrow type="submit" disabled={!file || uploading}>
+                {uploading ? 'Uploading and extracting...' : 'Extract questions'}
+              </Button>
+            </div>
+            {uploadError ? (
+              <Notice tone="error" title="Could not upload this paper">
+                {uploadError}
+              </Notice>
+            ) : null}
+          </form>
+        </section>
+
+        {docsError ? (
+          <Notice tone="error" title="Could not load uploaded papers">
+            {docsError}
+          </Notice>
+        ) : null}
+
+        <section id="paper" className="es-card" aria-label="Paper details" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <div className="pi-paper__head">
+            <div className="es-field pi-paper__picker">
+              <label className="es-field__label" htmlFor="pi-picker">
+                Uploaded papers
+              </label>
+              <select
+                id="pi-picker"
+                className="es-input"
+                value={selectedId || ''}
+                onChange={(e) => setSearchParams({ doc: e.target.value })}
+              >
+                {(docs || []).map((d) => (
+                  <option key={d.id} value={d.id}>
+                    #{d.id} - {d.filename} ({d.status})
+                  </option>
+                ))}
+              </select>
+            </div>
+            {doc ? <StatusPill status={doc.status} /> : null}
+          </div>
+
+          {loadError ? (
+            <Notice tone="error" title="Could not load this paper">
+              {loadError}
+            </Notice>
+          ) : null}
+          {loading ? <Notice tone="info">Loading...</Notice> : null}
+
+          {!loading && !doc ? <Notice tone="info">Upload a paper above to get started.</Notice> : null}
+
+          {doc ? (
+            <>
+              <p className="es-caption" style={{ marginTop: -8 }}>
+                Extractor: {doc.extractor || 'unknown'}
+                {doc.uploaded_at ? ` - uploaded ${doc.uploaded_at.slice(0, 10)}` : ''}
+              </p>
+
+              <button
+                className="pi-exp"
+                type="button"
+                aria-expanded={resplitOpen}
+                onClick={() => setResplitOpen((v) => !v)}
+              >
+                Split it differently
+                <span className="pi-exp__chev">{resplitOpen ? 'Hide' : 'Show'}</span>
+              </button>
+              {resplitOpen ? (
+                <div className="pi-panel" style={{ marginTop: -18 }}>
+                  <p className="es-caption" style={{ margin: 0 }}>
+                    The paper's text is kept, so it can be re-split without uploading it again.
+                    Re-splitting REPLACES the questions below, including any edits already made to
+                    them.
+                  </p>
+                  <div className="es-row">
+                    <select className="es-input" value={splitStyle} onChange={(e) => setSplitStyle(e.target.value)}>
+                      {SPLIT_STYLES.map((s) => (
+                        <option key={s.key} value={s.key}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                    <Button variant="secondary" size="sm" onClick={handlePreview} disabled={resplitBusy}>
+                      Preview
+                    </Button>
+                  </div>
+                  {preview ? (
+                    <p style={{ margin: 0, fontSize: 15 }}>
+                      That style finds <b>{preview.question_count}</b> question(s) across{' '}
+                      {preview.sections.length} part(s). Currently stored: <b>{preview.currently_stored}</b>.
+                    </p>
+                  ) : null}
+                  {resplitError ? (
+                    <Notice tone="error" title="Could not re-split">
+                      {resplitError}
+                    </Notice>
+                  ) : null}
+                  {preview ? (
+                    <div>
+                      <Button variant="primary" size="sm" onClick={handleApplyResplit} disabled={resplitBusy}>
+                        {resplitBusy ? 'Re-splitting...' : 'Re-split this paper'}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <h2 className="pi-paper__title">
+                {doc.paper_subject || 'Subject not set'}{' '}
+                <span className="accent">
+                  - {doc.paper_grade ? gradeLabel(doc.paper_grade) : 'grade not set'} -{' '}
+                  {title || 'title not set'}
+                </span>
+              </h2>
+              <h3 className="scr-h3" style={{ marginTop: 4 }}>
+                Paper details
+              </h3>
+              <div className="pi-paper__fields">
+                <div className="es-field">
+                  <label className="es-field__label" htmlFor="pi-grade">
+                    Grade
+                  </label>
+                  <select
+                    id="pi-grade"
+                    className="es-input"
+                    value={grade}
+                    onChange={(e) => {
+                      setGrade(e.target.value)
+                      saveMeta({ paper_grade: e.target.value })
+                    }}
+                  >
+                    <option value="">Not set</option>
+                    {facets.grades.map((g) => (
+                      <option key={g} value={g}>
+                        {gradeLabel(g)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="es-field">
+                  <label className="es-field__label" htmlFor="pi-subject">
+                    Subject
+                  </label>
+                  <select
+                    id="pi-subject"
+                    className="es-input"
+                    value={subject}
+                    onChange={(e) => {
+                      setSubject(e.target.value)
+                      saveMeta({ paper_subject: e.target.value })
+                    }}
+                  >
+                    <option value="">Not set</option>
+                    {facets.subjects.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="es-field">
+                  <label className="es-field__label" htmlFor="pi-title">
+                    Title
+                  </label>
+                  <input
+                    id="pi-title"
+                    className="es-input"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    onBlur={() => title !== (doc.paper_title || '') && saveMeta({ paper_title: title })}
+                  />
+                </div>
+                <Button variant="secondary" size="sm" onClick={handleApplyToAll} disabled={applyBusy}>
+                  {applyBusy ? 'Applying...' : 'Apply to all'}
+                </Button>
+              </div>
+
+              <div className="es-field">
+                <label className="es-field__label" htmlFor="pi-notes">
+                  General instructions for this paper
+                </label>
+                <textarea
+                  id="pi-notes"
+                  className="es-input"
+                  rows={3}
+                  value={notes}
+                  placeholder={
+                    'The block printed above every part, not tied to one of them - ' +
+                    'e.g. "This paper consists of 50 questions. Answer all the questions. ' +
+                    'Time: 2 hours." The extractor does not capture this; add it by hand if it matters.'
+                  }
+                  onChange={(e) => setNotes(e.target.value)}
+                  onBlur={() => notes !== (doc.notes || '') && saveMeta({ notes: notes || null })}
+                />
+              </div>
+            </>
+          ) : null}
+        </section>
+
+        {doc && questions ? (
+          <>
+            <div className="pi-questions__head">
+              <h2 className="scr-h2">Questions ({questions.length})</h2>
+              <p className="es-caption">
+                {questions.length - pending} of {questions.length} marked reviewed
+              </p>
+            </div>
+            {lowConf > 0 ? (
+              <Notice tone="warning" title={`${lowConf} of ${questions.length} came out low-confidence`}>
+                Almost no text was read for these. They are marked below.
+              </Notice>
+            ) : null}
+            <p className="es-caption" style={{ marginTop: -12 }}>
+              Grade and subject come from Paper details above - use "Apply to all" there if the
+              extractor set them per question differently. Set the marks per question, fix the
+              text, and tick Reviewed once a question is correct.
+            </p>
+
+            <div className="pi-two-col">
+              <section aria-label="Questions" className="pi-question-list">
+                {parts.map((part, pi) => {
+                  const hasHeader = !!part.key
+                  const meta = part.meta
+                  const caption = meta
+                    ? [
+                        KIND_LABEL[meta.kind] || 'Mixed',
+                        `${meta.questions} question(s)`,
+                        meta.marks_each ? `${meta.marks_each} marks each` : null,
+                      ]
+                        .filter(Boolean)
+                        .join('  |  ')
+                    : null
+                  const childrenSeqs = new Set(questions.map((q) => q.parent_seq).filter((x) => x != null))
+                  return (
+                    <div key={`${part.key}-${pi}`}>
+                      {hasHeader ? (
+                        <>
+                          <div className="pi-parthead">
+                            <div>
+                              <p className="scr-h2" style={{ color: 'var(--primary)' }}>
+                                {part.key}
+                              </p>
+                              {caption ? <p className="es-caption">{caption}</p> : null}
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => toggleInstructions(part.key, meta?.instructions)}
+                            >
+                              Instructions for this part
+                            </Button>
+                          </div>
+                          {instrOpenKey === part.key ? (
+                            <div className="pi-panel" style={{ marginBottom: 12 }}>
+                              <textarea
+                                className="es-input"
+                                rows={3}
+                                value={instrText}
+                                placeholder="e.g. Answer all questions. Each question carries 2 marks."
+                                onChange={(e) => setInstrText(e.target.value)}
+                              />
+                              {instrError ? (
+                                <Notice tone="error" title="Could not save">
+                                  {instrError}
+                                </Notice>
+                              ) : null}
+                              <div>
+                                <Button
+                                  variant="primary"
+                                  size="sm"
+                                  onClick={() => saveInstructions(part.key)}
+                                  disabled={instrBusy}
+                                >
+                                  {instrBusy ? 'Saving...' : 'Save instructions'}
+                                </Button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                      <div className="pi-draft-list">
+                        {part.questions.map((q) => (
+                          <PaperIntakeQuestion
+                            key={q.id}
+                            q={q}
+                            isStem={childrenSeqs.has(q.seq)}
+                            images={images[String(q.id)] || []}
+                            onChanged={handleQuestionChanged}
+                            onRemoved={handleQuestionRemoved}
+                            onImagesChanged={handleImagesChanged}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                <button
+                  className="pi-exp"
+                  type="button"
+                  aria-expanded={addOpen}
+                  onClick={() => setAddOpen((v) => !v)}
+                >
+                  Add a question the extractor missed
+                  <span className="pi-exp__chev">{addOpen ? 'Hide' : 'Show'}</span>
+                </button>
+                {addOpen ? (
+                  <form className="pi-panel" onSubmit={handleAddQuestion}>
+                    <div className="es-field">
+                      <label className="es-field__label">Question text</label>
+                      <textarea
+                        className="es-input"
+                        rows={3}
+                        value={newText}
+                        onChange={(e) => setNewText(e.target.value)}
+                      />
+                    </div>
+                    <div className="pi-add__grid">
+                      <div className="es-field">
+                        <label className="es-field__label">Part of which question? (optional)</label>
+                        <select
+                          className="es-input"
+                          value={newParentSeq}
+                          onChange={(e) => setNewParentSeq(e.target.value)}
+                        >
+                          <option value="">Standalone question</option>
+                          {questions.map((q) => (
+                            <option key={q.seq} value={q.seq}>
+                              {q.question_number || q.seq}: {(q.text || '').slice(0, 60)}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="es-field">
+                        <label className="es-field__label">Which part of the paper?</label>
+                        <select className="es-input" value={newSection} onChange={(e) => setNewSection(e.target.value)}>
+                          <option value="">No specific part</option>
+                          {(doc.sections || []).map((s) => (
+                            <option key={s.label} value={s.label}>
+                              {s.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="es-field">
+                        <label className="es-field__label">Number (optional - auto-filled for a part)</label>
+                        <input
+                          className="es-input"
+                          value={newNumber}
+                          onChange={(e) => setNewNumber(e.target.value)}
+                          placeholder="e.g. 51"
+                        />
+                      </div>
+                      <div className="es-field">
+                        <label className="es-field__label">Marks</label>
+                        <input
+                          className="es-input"
+                          type="number"
+                          min="0"
+                          value={newMarks}
+                          onChange={(e) => setNewMarks(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    {addError ? (
+                      <Notice tone="error" title="Could not add this question">
+                        {addError}
+                      </Notice>
+                    ) : null}
+                    <div>
+                      <Button variant="primary" type="submit" disabled={!newText.trim() || addBusy}>
+                        {addBusy ? 'Adding...' : 'Add question'}
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+              </section>
+
+              <aside className="es-card pi-original" aria-label="Original paper">
+                <div className="pi-original__head">
+                  <h2 className="scr-h3">Original paper</h2>
+                  <div className="es-row" style={{ gap: 6 }}>
+                    <Button
+                      variant={previewMode === 'file' ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setPreviewMode('file')}
+                    >
+                      File
+                    </Button>
+                    <Button
+                      variant={previewMode === 'text' ? 'secondary' : 'ghost'}
+                      size="sm"
+                      onClick={() => setPreviewMode('text')}
+                    >
+                      Extracted text
+                    </Button>
+                  </div>
+                </div>
+
+                {previewMode === 'file' ? (
+                  doc.file_type === 'pdf' ? (
+                    <iframe
+                      className="pi-original__frame"
+                      title="Original uploaded PDF"
+                      src={api.documentFileUrl(selectedId)}
+                    />
+                  ) : doc.file_type === 'image' ? (
+                    <div className="pi-original__body pi-original__body--img">
+                      <img src={api.documentFileUrl(selectedId)} alt="The uploaded paper" />
+                    </div>
+                  ) : (
+                    <Notice tone="info">
+                      {doc.file_type === 'docx'
+                        ? "This is a Word document - there is no in-browser preview for it, only the text the extractor read. Switch to \"Extracted text\", or open the original .docx file directly."
+                        : 'No file preview available for this upload. Switch to "Extracted text" instead.'}
+                    </Notice>
+                  )
+                ) : (
+                  <div className="pi-original__body">
+                    {doc.raw_text || 'No stored text for this paper (uploaded before this was kept).'}
+                  </div>
+                )}
+
+                <p className="es-caption" style={{ margin: 0 }}>
+                  {previewMode === 'file'
+                    ? 'The real uploaded file, scrollable and (for a PDF) selectable - check a suspect read against it without losing your place in the list.'
+                    : 'The plain text the extractor actually read from the file, for comparing against a suspect question.'}
+                </p>
+              </aside>
+            </div>
+
+            <section id="dup" className="es-card" aria-label="Duplicate check" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <h2 className="scr-h2">Duplicate check within this paper</h2>
+              <p className="es-caption">
+                The same question must not appear twice on one paper. Runs only once every
+                question is marked reviewed, because it is meaningless on text that has not been
+                corrected yet.
+              </p>
+              {pending > 0 ? (
+                <Notice tone="info">{pending} question(s) still not marked reviewed.</Notice>
+              ) : null}
+              {checkError ? (
+                <Notice tone="error" title="Could not run the check">
+                  {checkError}
+                </Notice>
+              ) : null}
+              <div>
+                <Button variant="primary" onClick={handleCheckDuplicates} disabled={pending > 0 || checkBusy}>
+                  {checkBusy ? 'Checking...' : 'Check for duplicates'}
+                </Button>
+              </div>
+
+              {checkResult ? (
+                <div className="pi-check__results">
+                  {checkResult.exact_groups.length === 0 && checkResult.similar_pairs.length === 0 ? (
+                    <Notice tone="success">No repeats found on this paper.</Notice>
+                  ) : null}
+
+                  {checkResult.exact_groups.map((ids, i) => (
+                    <div className="es-card" key={`exact-${i}`} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      <span className="es-pill es-tone--dup">Exact copies</span>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+                        {ids.map((id) => (
+                          <QuestionCard key={id} {...brief(id)} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  {checkResult.similar_pairs.map((p, i) => (
+                    <PairReview
+                      key={`pair-${i}`}
+                      verdict={p.verdict}
+                      score={p.score}
+                      raw={p.raw_score}
+                      reasons={p.reasons}
+                      a={brief(p.a)}
+                      b={brief(p.b)}
+                      readOnly
+                    />
+                  ))}
+                </div>
+              ) : null}
+            </section>
+
+            <section id="status" className="es-card pi-status" aria-label="Review status">
+              <div>
+                <h2 className="scr-h2">Review status</h2>
+                <p className="es-caption pi-status__text" style={{ marginTop: 4 }}>
+                  Data entry's own job stops at the duplicate check above. Assigning a checked
+                  paper to a teacher is a separate person's job, in the paper-assignment app. Run
+                  the duplicate check above first.
+                </p>
+              </div>
+              <StatusPill status={doc.status} />
+            </section>
+          </>
+        ) : null}
+      </div>
+    </div>
+  )
+}
