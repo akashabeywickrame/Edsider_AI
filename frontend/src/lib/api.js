@@ -1,3 +1,4 @@
+import { devIdentity } from './auth.js'
 // A thin wrapper around service.py's FastAPI routes - one function per
 // endpoint, matching exactly what each one actually takes and returns
 // (see service.py). No endpoint-specific logic lives here; that stays
@@ -19,9 +20,14 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
   // boundary included - JSON.stringify-ing it or overriding the header
   // would break the upload, so it goes through untouched.
   const isForm = typeof FormData !== 'undefined' && body instanceof FormData
+  const headers = {}
+  if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json'
+  // Dev-only identity (see auth.js) - in production Easy Auth sets this header.
+  const who = devIdentity()
+  if (who) headers['x-ms-client-principal-name'] = who
   const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body !== undefined ? (isForm ? body : JSON.stringify(body)) : undefined,
     ...rest,
   })
@@ -65,11 +71,12 @@ export const api = {
 
   // ---- paper intake ----
   listIntakeDocuments: (status) => request(`/intake/documents${query({ status })}`),
-  uploadIntakeDocument: (file, lang, style) => {
+  uploadIntakeDocument: (file, lang, style, forceOcr = false) => {
     const form = new FormData()
     form.set('file', file)
     form.set('lang', lang)
     form.set('style', style)
+    form.set('force_ocr', forceOcr ? 'true' : 'false')
     return request('/intake/documents', { method: 'POST', body: form })
   },
   getIntakeDocument: (docId) => request(`/intake/documents/${docId}`),
@@ -112,6 +119,25 @@ export const api = {
   // directly as an <img src>, never through request().
   imageUrl: (imageId) => `${API_BASE}/intake/images/${imageId}`,
 
-  // Teacher/assignment endpoints (assign, finish, comments) belong to the
-  // teacher and admin apps, not built yet - added once those pages exist.
+  // ---- teacher review (the subject teacher's app) ----
+  // Registers the signed-in teacher the first time the page opens, so the
+  // assigning administrator can name them (see teachers/me/touch).
+  touchTeacher: () => request('/teachers/me/touch', { method: 'POST' }),
+  listMyDocuments: () => request('/teachers/me/documents'),
+  // The uploaded file itself, for an <iframe> or <img> - like imageUrl, not JSON.
+  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file`,
+  listDocumentComments: (docId) => request(`/intake/documents/${docId}/comments`),
+  addQuestionComment: (qId, comment) =>
+    request(`/intake/questions/${qId}/comments`, { method: 'POST', body: { comment } }),
+  finishReview: (docId, status) =>
+    request(`/intake/documents/${docId}/finish`, { method: 'POST', body: { status } }),
+
+  // ---- paper assignment (the assigning administrator's app) ----
+  // Teachers appear here once they have opened the teacher app at least once.
+  listTeachers: () => request('/teachers'),
+  assignDocument: (docId, teacherIdentity) =>
+    request(`/intake/documents/${docId}/assign`, {
+      method: 'POST',
+      body: { teacher_identity: teacherIdentity },
+    }),
 }

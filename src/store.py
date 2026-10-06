@@ -688,6 +688,16 @@ MIGRATIONS = [
     # Which teacher a checked paper has been handed to - see
     # assign_document() and the `teachers` table.
     ("intake_documents", "assigned_to", "TEXT"),
+    # A reviewer's correction to a question's type ('descriptive', 'mcq',
+    # 'sub') - NULL means the automatic detection stands. Stored as an
+    # override, not as the detected value, so an improved detector later
+    # still applies to every question nobody has corrected.
+    ("intake_questions", "question_type", "TEXT"),
+    # The assessment's schedule and configuration (time limit, pause and
+    # restart, part notation, ...) as one JSON object - the fields EdSider's
+    # own assessment screen asks for. Only what the paper states is filled in
+    # automatically; the rest is entered by the data-entry person.
+    ("intake_documents", "assessment_settings", "TEXT"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -1869,8 +1879,21 @@ def delete_question_image(conn, image_id):
 _INTAKE_Q_EDITABLE = {
     "question_number", "text", "grade", "subject", "marks", "topic",
     "answer", "reviewed", "extraction_confidence", "section",
-    "teacher_reviewed",
+    "teacher_reviewed", "question_type",
 }
+
+
+def intake_question_has_children(conn, q_id):
+    """Whether any other question on this paper names this one as its
+    parent - the test for a stem, which is a sub-question if it has parts.
+    Read per row where the caller holds one question, not a whole list."""
+    row = conn.execute(
+        """SELECT 1 FROM intake_questions c
+           JOIN intake_questions p ON p.document_id = c.document_id
+                                  AND c.parent_seq = p.seq
+           WHERE p.id = ? LIMIT 1""",
+        (q_id,)).fetchone()
+    return row is not None
 
 
 def update_intake_question(conn, q_id, **fields):
@@ -1958,7 +1981,14 @@ def replace_intake_questions(conn, doc_id, drafts,
 
 
 _INTAKE_DOC_EDITABLE = {"paper_grade", "paper_subject", "notes", "status",
-                        "raw_text", "split_style", "paper_title", "sections"}
+                        "raw_text", "split_style", "paper_title", "sections",
+                        "assessment_settings"}
+
+
+def intake_assessment_settings(doc):
+    """The saved assessment settings, or {} for a paper not configured yet."""
+    raw = doc["assessment_settings"] if "assessment_settings" in doc.keys() else None
+    return json.loads(raw) if raw else {}
 
 
 def update_intake_document(conn, doc_id, **fields):
@@ -1969,6 +1999,9 @@ def update_intake_document(conn, doc_id, **fields):
         return
     if fields.get("sections") is not None and not isinstance(fields["sections"], str):
         fields["sections"] = json.dumps(fields["sections"])
+    if fields.get("assessment_settings") is not None and not isinstance(
+            fields["assessment_settings"], str):
+        fields["assessment_settings"] = json.dumps(fields["assessment_settings"])
     cols = ", ".join(f"{k} = ?" for k in fields)
     conn.execute(
         f"UPDATE intake_documents SET {cols} WHERE id = ?",

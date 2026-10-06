@@ -402,7 +402,11 @@ def _question_word_starts(text, start=0, end=None):
 _SUB_MARKER = re.compile(
     r"^[ \t]*(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|\d{1,2})\)"
     r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z])(?P<close>[.)]))"
-    r"[ \t]*(?=\S)",
+    # `$` as well as a following character: an option the reviewer has
+    # just added and not yet typed into is "III." alone on its line. It
+    # must still count as a marker - otherwise it is folded into the
+    # option above it, which is how a new option was lost before.
+    r"[ \t]*(?=\S|$)",
     re.MULTILINE,
 )
 
@@ -446,7 +450,7 @@ def _expected(kind, index):
     return chr(ord("a") + index) if index < 26 else None
 
 
-def _sub_starts(body):
+def _sub_starts(body, prefer="first"):
     """(position, end of marker, printed marker) for one question's parts.
 
     Every style is tried on its own - bracketed or not, and read as
@@ -454,6 +458,14 @@ def _sub_starts(body):
     furthest wins, the same reasoning as _number_starts(): a real part
     list counts a, b, c while anything else (a stray "e.g.", a number
     inside the text) does not continue.
+
+    `prefer` breaks a tie between two lists that both count up. "first"
+    (the default, for structured parts) takes the one that starts earliest.
+    "last" (for MCQ options) takes the one that starts latest - an MCQ's
+    options always come after its stem, and a stem can hold its own
+    lettered list of statements ("a. ... b. ... c. ...") before the
+    options ("I. ... II. ..."). Taking the earliest mis-read those
+    statements as the options.
     """
     found = []
     for m in _SUB_MARKER.finditer(body):
@@ -484,10 +496,24 @@ def _sub_starts(body):
             # inner letters outnumber the outer numbers 6 to 2. Picking
             # the longer run split it at the letters and hung "(2)"'s own
             # parts under "(d)". Length only breaks a tie.
-            score = (-run[0][0], len(run))
+            score = ((-run[0][0] if prefer == "first" else run[0][0]),
+                     len(run))
             if best_score is None or score > best_score:
                 best, best_score = run, score
     return best
+
+
+# A line of dots is where the student writes, not a part to answer. Also the
+# "(.........)" printed at the end of a question to show where its mark or
+# answer goes.
+_ANSWER_BLANK = re.compile(r"(?:\.{4,}|…{2,}|_{4,})\s*$")
+_BLANK_MARKER = re.compile(r"\(\s*(?:\.{3,}|…{2,})\s*\)\s*$")
+
+
+def _strip_blank_marker(text):
+    """The printed "(.........)" at a question's end - the space for its answer,
+    not part of the question."""
+    return _BLANK_MARKER.sub("", text).rstrip()
 
 
 def _split_parts(body, depth=0):
@@ -511,6 +537,20 @@ def _split_parts(body, depth=0):
     for i, (pos, end, tag) in enumerate(starts):
         stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
         pieces.append((tag, body[end:stop].strip()))
+
+    # "(1) ........ (2) ........" is one question with two lines to write on -
+    # one answer box serves all of them, so nothing here is split into parts.
+    if all(_ANSWER_BLANK.search(p) for _, p in pieces):
+        return body.strip(), []
+
+    # Four or more numbered items with no marks and nothing under any of them
+    # are an option list, not parts - the shape of a multiple-choice question
+    # numbered (1)-(5). Measured on the Sinhala Part A paper, where its section
+    # heading does not read, so this is what keeps its options from becoming
+    # sub-questions. A structured part has marks or parts of its own.
+    if (len(pieces) >= 4 and all(tag.isdigit() for tag, _ in pieces)
+            and not any(_find_marks(p) or _sub_starts(p) for _, p in pieces)):
+        return body.strip(), []
 
     # An MCQ's options and a list of choices look exactly like a part
     # list. What tells them apart is that a part is a question in its own
@@ -554,7 +594,7 @@ def split_mcq_options(body):
     Returns (body, []) - not an error - when nothing looks like an
     option list, so a caller can fall back to showing the text as-is.
     """
-    starts = _sub_starts(body)
+    starts = _sub_starts(body, prefer="last")
     if not starts:
         return body.strip(), []
     options = []
@@ -586,6 +626,119 @@ def mcq_correct_label(answer):
         return None
     m = _MCQ_ANSWER_LABEL.match(answer.strip())
     return m.group(1).lower() if m else None
+
+
+_DURATION = re.compile(
+    r"(?:time|duration)\s*(?:allowed)?\s*[:\-]?\s*(\d+(?:\.\d+)?)\s*"
+    r"(hours?|hrs?|minutes?|mins?)\b",
+    re.IGNORECASE,
+)
+
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+                 "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+_ANSWER_COUNT = re.compile(
+    r"answer\s+(?:all|any)?\s*(\d+|[a-z]+)?\s*(?:of\s+(?:the\s+)?)?questions",
+    re.IGNORECASE,
+)
+_ONE_MARK = re.compile(r"(?:carr(?:y|ies)|worth|each)\s+(?:one|1)\s+marks?", re.IGNORECASE)
+
+
+def _answer_count(instructions, question_count):
+    """How many of a part's questions a student answers. "Answer all 40
+    questions" and "Answer all questions" mean every question; "Answer FOUR
+    questions only" means four. None when the instructions say nothing."""
+    m = _ANSWER_COUNT.search(instructions or "")
+    if not m:
+        return None
+    word = (m.group(1) or "").lower()
+    if not word or word == "all":
+        return question_count or None
+    if word.isdigit():
+        return int(word)
+    return _NUMBER_WORDS.get(word)
+
+
+def part_marks(sections):
+    """Each part's total, worked out from what the paper says about it:
+    questions answered x marks each. A multiple-choice part with no marks
+    stated is read as one mark a question - the usual rule for these papers,
+    flagged as assumed so the form can show it. None where the paper gives
+    neither the count nor the marks, rather than a guess."""
+    out = []
+    for sec in sections or []:
+        kind = sec.get("kind")
+        each = sec.get("marks_each")
+        assumed = False
+        if each is None and kind == "mcq":
+            each = 1
+            assumed = True
+        if each is None and _ONE_MARK.search(sec.get("instructions") or ""):
+            each = 1
+        count = _answer_count(sec.get("instructions"), sec.get("questions") or 0)
+        total = count * each if count and each is not None else None
+        out.append({"label": sec.get("label"), "questions": sec.get("questions"),
+                    "answer_count": count, "marks_each": each,
+                    "assumed_marks": assumed, "total": total})
+    return out
+
+
+def suggest_settings(raw_text, sections):
+    """What a paper itself states, for the assessment settings form to fill
+    in - and nothing else. A paper that does not print a duration gets none
+    back, so the data-entry person enters it rather than receiving a guess.
+
+    Duration is read from a labelled "Time: 2 hours" / "Duration: 120 min"
+    line only; a bare "2 hours" in the body is too easily a question's own
+    wording to trust.
+    """
+    out = {"parts": len(sections) if sections else None}
+    breakdown = part_marks(sections)
+    totals = [b["total"] for b in breakdown]
+    out["parts_marks"] = breakdown
+    out["total_marks"] = sum(totals) if breakdown and all(t is not None for t in totals) else None
+    m = _DURATION.search(raw_text or "")
+    if m:
+        value = float(m.group(1))
+        is_hours = m.group(2).lower().startswith("h")
+        out["duration_minutes"] = int(round(value * 60 if is_hours else value))
+    else:
+        out["duration_minutes"] = None
+    return out
+
+
+QUESTION_TYPES = {"descriptive": "Descriptive", "mcq": "MCQ",
+                  "sub": "Sub-questions"}
+
+
+def detect_question_type(text, depth=0, has_parts=False):
+    """'sub' for a part or a question with parts, 'mcq' for one whose
+    text holds an option list, else 'descriptive' - a question with its
+    own answer and no options or parts. A picture-only MCQ has no text
+    options, so it reads as descriptive until a reviewer corrects it."""
+    if depth or has_parts:
+        return "sub"
+    _stem, options = split_mcq_options(text or "")
+    return "mcq" if options else "descriptive"
+
+
+# How several correct options are written in one answer: "1, 3", "1 and 3",
+# "A/C", "I; III". Split on these, then each piece is read as one label.
+_MCQ_ANSWER_SPLIT = re.compile(r"\s*(?:,|/|&|;|\band\b)\s*", re.IGNORECASE)
+
+
+def mcq_correct_labels(answer):
+    """Every correct option label an answer names, in the order written -
+    a question can have more than one correct option ("1, 3"). [] when the
+    answer names none. A single label gives a one-item list."""
+    if not answer:
+        return []
+    labels = []
+    for piece in _MCQ_ANSWER_SPLIT.split(answer.strip()):
+        label = mcq_correct_label(piece)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
 
 
 def _bold_mcq_answer(text, bold_runs):
@@ -1057,7 +1210,7 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
         for i, (pos, _n, raw) in enumerate(sp["starts"]):
             end = (sp["starts"][i + 1][0] if i + 1 < len(sp["starts"])
                    else sp["end"])
-            body = text[pos:end].strip()
+            body = _strip_blank_marker(text[pos:end].strip())
             # Drop the leading "5." / "Q5" / "(5)" / "Question 5:" - it
             # is the printed marker, captured separately as
             # question_number, not part of the question. Leaving it in
@@ -1206,7 +1359,7 @@ def _prepare_for_ocr(image):
     return image
 
 
-def ocr_image(source, lang=DEFAULT_OCR_LANG):
+def ocr_image(source, lang=DEFAULT_OCR_LANG, psm=None):
     """Text from an image via Tesseract. `source` is a path, a file-like
     object, or an already-open PIL image (a rendered PDF page).
 
@@ -1224,7 +1377,12 @@ def ocr_image(source, lang=DEFAULT_OCR_LANG):
 
     image = source if isinstance(source, Image.Image) else Image.open(source)
     try:
-        text = pytesseract.image_to_string(_prepare_for_ocr(image), lang=lang)
+        # psm picks Tesseract's page layout. The default reads a page of
+        # separate blocks; psm 6 (one uniform block) reads the dense typed pages
+        # the default missed - measured on the Sinhala paper's question pages,
+        # 88 characters by default against 506 with psm 6.
+        config = f"--psm {psm}" if psm else ""
+        text = pytesseract.image_to_string(_prepare_for_ocr(image), lang=lang, config=config)
     except pytesseract.TesseractNotFoundError as e:
         raise ExtractionUnavailable(_TESSERACT_HINT) from e
     except pytesseract.TesseractError as e:
@@ -1251,6 +1409,9 @@ _UNMAPPED_GLYPH = re.compile(r"\(cid:\d+\)")
 # page number as text ("9") on pages that are otherwise one big picture
 # of the questions, and the Grade 12 term papers carry nothing at all.
 _SPARSE_PAGE = 20
+# A page under this many characters in the default OCR layout is retried in the
+# uniform-block layout (see extract()).
+_SPARSE_BLOCK = 400
 
 # An embedded picture smaller than this (PDF points, 72 per inch) is a
 # logo, bullet or rule rather than question content - not worth OCR.
@@ -1370,7 +1531,59 @@ def _pdf_bold_runs(page):
     return [r for r in runs if len(r.strip()) >= _MIN_BOLD_ANSWER_CHARS]
 
 
-def read_pdf(path, ocr):
+_NUMBERED_HEAD = re.compile(r"^\s*(\d{1,2})\s*[.)]\s")
+
+
+def recover_missing_numbers(text):
+    """Put back the question numbers OCR dropped from the start of a line.
+
+    Tesseract reads a Sinhala question header such as "4. දේශපාලන..." as the
+    words alone, so the number is lost and the question is merged into the one
+    before it. A header of that kind is a short line ending in a comma, with
+    its first part "(1)" directly under it. Between two numbers that were read,
+    if the headers found equal the numbers missing, they are numbered in order;
+    any other gap is left as it is, because a guessed number would be worse than
+    a merged question the reviewer can see and split.
+
+    Measured on the Grade 12 Political Science paper (force-OCR): 5 of its 6
+    gaps in Part A match this rule exactly.
+    """
+    lines = text.split("\n")
+    found = []
+    for i, line in enumerate(lines):
+        m = _NUMBERED_HEAD.match(line)
+        if m:
+            found.append((i, int(m.group(1))))
+    if len(found) < 2:
+        return text
+
+    candidates = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if (not stripped or len(stripped) > 90 or _NUMBERED_HEAD.match(line)
+                or stripped[0] in "(.0123456789" or not stripped.endswith((",", ":"))):
+            continue
+        nxt = next((x.strip() for x in lines[i + 1:] if x.strip()), "")
+        if nxt.startswith("(1)"):
+            candidates.append(i)
+
+    # Question 1 has nothing before it to measure from - the top of the paper
+    # stands in as "question 0", so a dropped first header is found the same way.
+    bounded = [(-1, 0)] + found
+    changed = False
+    for (ia, a), (ib, b) in zip(bounded, bounded[1:]):
+        if b <= a + 1:
+            continue
+        between = [c for c in candidates if ia < c < ib]
+        missing = list(range(a + 1, b))
+        if len(between) == len(missing):
+            for c, n in zip(between, missing):
+                lines[c] = f"{n}. {lines[c].lstrip()}"
+                changed = True
+    return "\n".join(lines) if changed else text
+
+
+def read_pdf(path, ocr, force_ocr=False):
     """(text, note, bold_runs). Each page is read the cheapest way that
     actually captures it - see _pdf_page_route. `ocr` is image -> text.
 
@@ -1383,6 +1596,13 @@ def read_pdf(path, ocr):
     If OCR is unavailable, the pages that needed it keep whatever text
     layer they had and the note says how many were not read - one
     missing program should not throw away the pages that did have text.
+
+    `force_ocr` reads every page as a picture, whatever its text layer says.
+    Needed for Sinhala papers whose PDF was typed in a legacy font: the text
+    layer holds the font's own codes, not Sinhala, and Tesseract's Sinhala
+    reading of the rendered page is the only reliable text (measured on a
+    Grade 12 Political Science paper - the text layer read "තේශොලනය" where
+    the paper says "දේශපාලනය", and OCR read it correctly).
     """
     try:
         import pdfplumber
@@ -1400,7 +1620,7 @@ def read_pdf(path, ocr):
             text = _fix_ligatures(page.extract_text() or "")
             boxes = _pictures_on(page)
             bold_runs.extend(_pdf_bold_runs(page))
-            route = _pdf_page_route(text, boxes)
+            route = "page" if force_ocr else _pdf_page_route(text, boxes)
             if route != "text" and reason is None:
                 try:
                     if route == "page":
@@ -1684,7 +1904,7 @@ def was_incomplete(extractor):
 
 
 def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
-            filename=None):
+            filename=None, force_ocr=False):
     """Uploaded file -> {file_type, extractor, raw_text,
     paper: {grade, subject, title}, sections: [part, ...],
     questions: [draft, ...]} - see structure() for parts and drafts.
@@ -1711,14 +1931,21 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
     suffix = path.suffix.lower()
     if ocr is None:
         def ocr(image):
-            return ocr_image(image, lang=lang)
+            text = ocr_image(image, lang=lang)
+            # A dense typed page can come back nearly empty in the default layout
+            # mode - try the uniform-block mode and keep whichever read more.
+            if force_ocr and len(re.sub(r"\s", "", text)) < _SPARSE_BLOCK:
+                retry = ocr_image(image, lang=lang, psm=6)
+                if len(re.sub(r"\s", "", retry)) > len(re.sub(r"\s", "", text)):
+                    text = retry
+            return text
 
     text = ""
     extractor = "none"
     bold_runs = []
     try:
         if suffix == ".pdf":
-            text, extractor, bold_runs = read_pdf(path, ocr)
+            text, extractor, bold_runs = read_pdf(path, ocr, force_ocr=force_ocr)
         elif suffix == ".docx":
             text, extractor, bold_runs = read_docx(path, ocr)
         elif suffix == ".doc":
@@ -1745,6 +1972,8 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
         else "other"
     )
 
+    if force_ocr:
+        text = recover_missing_numbers(text)
     meta = detect_paper_meta(text, filename=filename or path.name)
     parsed = structure(text, style=style)
     for q in parsed["questions"]:

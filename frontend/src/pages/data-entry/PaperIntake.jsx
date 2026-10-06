@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
-import PaperIntakeQuestion from './PaperIntakeQuestion.jsx'
+import PaperIntakeQuestion, { paperOptionStyle } from './PaperIntakeQuestion.jsx'
+import AssessmentSettings from './AssessmentSettings.jsx'
+import { useToast } from '../../components/Toast.jsx'
+import MarksSection from './MarksSection.jsx'
 import './PaperIntake.css'
 
 const OCR_LANGS = [
@@ -71,6 +74,8 @@ function groupByPart(tree, sectionsMeta) {
 
 export default function PaperIntake() {
   const { PageHeader, Button, Notice, StatusPill, PairReview, QuestionCard, Icon } = window.EdSider
+  const navigate = useNavigate()
+  const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('doc')
 
@@ -78,6 +83,9 @@ export default function PaperIntake() {
 
   const [file, setFile] = useState(null)
   const [lang, setLang] = useState('eng')
+  // A PDF typed in a legacy Sinhala font has a text layer of font codes, not
+  // Sinhala - reading each page as a picture is the only reliable text for it.
+  const [forceOcr, setForceOcr] = useState(false)
   const [uploadStyle, setUploadStyle] = useState('number')
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
@@ -87,6 +95,7 @@ export default function PaperIntake() {
 
   const [doc, setDoc] = useState(null)
   const [questions, setQuestions] = useState(null)
+  const optionStyle = useMemo(() => paperOptionStyle(questions), [questions])
   const [images, setImages] = useState({})
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(null)
@@ -179,13 +188,15 @@ export default function PaperIntake() {
     setUploading(true)
     setUploadError(null)
     try {
-      const d = await api.uploadIntakeDocument(file, lang, uploadStyle)
+      const d = await api.uploadIntakeDocument(file, lang, uploadStyle, forceOcr)
       e.target.reset()
       setFile(null)
       loadDocs(false)
       setSearchParams({ doc: String(d.id) })
+      toast.success(`${d.filename} uploaded - its questions have been extracted.`)
     } catch (err) {
       setUploadError(err.message)
+      toast.error(`Upload failed: ${err.message}`)
     } finally {
       setUploading(false)
     }
@@ -245,8 +256,10 @@ export default function PaperIntake() {
       setPreview(null)
       loadSelected(selectedId)
       loadDocs(false)
+      toast.success('Paper re-split - its questions have been replaced.')
     } catch (err) {
       setResplitError(err.message)
+      toast.error(`Re-split failed: ${err.message}`)
     } finally {
       setResplitBusy(false)
     }
@@ -292,6 +305,7 @@ export default function PaperIntake() {
         section: newSection || undefined,
       })
       setQuestions((prev) => [...prev, q])
+      toast.success('Question added.')
       setNewText('')
       setNewNumber('')
       setNewMarks('')
@@ -312,14 +326,35 @@ export default function PaperIntake() {
       setCheckResult(res)
       setDoc(await api.getIntakeDocument(selectedId))
       loadDocs(false)
+      const exact = res.exact_groups.length
+      const similar = res.similar_pairs.length
+      toast.success(
+        exact || similar
+          ? `Duplicate check completed - ${exact} exact repeat group(s) and ${similar} similar pair(s) found.`
+          : 'Duplicate check completed - no repeats found.',
+      )
     } catch (err) {
       setCheckError(err.message)
+      toast.error(`Duplicate check failed: ${err.message}`)
     } finally {
       setCheckBusy(false)
     }
   }
 
   const pending = questions ? questions.filter((q) => !q.reviewed).length : 0
+  // The student view is only offered once the paper has been through both
+  // checks the workflow requires: every question reviewed, and the
+  // duplicate check run (which sets the status to 'checked' or later).
+  const DUPLICATES_CHECKED = ['checked', 'teacher_review', 'refer_back', 'review_done', 'published']
+  const duplicatesChecked = !!doc && DUPLICATES_CHECKED.includes(doc.status)
+  const previewReady = !!doc && !!questions && pending === 0 && duplicatesChecked
+  const previewBlocker = !questions
+    ? ''
+    : pending > 0
+      ? `Mark the remaining ${pending} question(s) as reviewed to preview the paper as a student.`
+      : !duplicatesChecked
+        ? 'Run the duplicate check to preview the paper as a student.'
+        : ''
   const lowConf = questions ? questions.filter((q) => q.extraction_confidence === 'low').length : 0
   const tree = questions ? orderedTree(questions) : []
   const parts = doc ? groupByPart(tree, doc.sections) : []
@@ -391,6 +426,17 @@ export default function PaperIntake() {
                 directly whatever this says.
               </p>
             </fieldset>
+
+            <label className="scr-radio" style={{ alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={forceOcr} onChange={(e) => setForceOcr(e.target.checked)} />
+              <span>
+                Read every page as a picture
+                <span className="es-caption" style={{ display: 'block' }}>
+                  Use for a PDF whose Sinhala or Tamil text looks like wrong letters after upload - the page is
+                  read from its picture instead. Slower.
+                </span>
+              </span>
+            </label>
 
             <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
               <legend className="es-field__label" style={{ marginBottom: 8 }}>
@@ -613,14 +659,41 @@ export default function PaperIntake() {
           ) : null}
         </section>
 
+        {doc ? <AssessmentSettings key={doc.id} doc={doc} onSaved={setDoc} /> : null}
+
+        {doc && questions ? (
+          <MarksSection
+            key={`marks-${doc.id}`}
+            doc={doc}
+            questions={questions}
+            onQuestionChanged={handleQuestionChanged}
+            onSaved={setDoc}
+          />
+        ) : null}
+
         {doc && questions ? (
           <>
             <div className="pi-questions__head">
               <h2 className="scr-h2">Questions ({questions.length})</h2>
-              <p className="es-caption">
-                {questions.length - pending} of {questions.length} marked reviewed
-              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                <p className="es-caption" style={{ margin: 0 }}>
+                  {questions.length - pending} of {questions.length} marked reviewed
+                </p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!previewReady}
+                  onClick={() => navigate(`/app/data-entry/paper-intake/preview?doc=${doc.id}`)}
+                >
+                  Preview as student
+                </Button>
+              </div>
             </div>
+            {!previewReady ? (
+              <p className="es-caption" style={{ marginTop: -8 }}>
+                {previewBlocker}
+              </p>
+            ) : null}
             {lowConf > 0 ? (
               <Notice tone="warning" title={`${lowConf} of ${questions.length} came out low-confidence`}>
                 Almost no text was read for these. They are marked below.
@@ -701,6 +774,7 @@ export default function PaperIntake() {
                             q={q}
                             isStem={childrenSeqs.has(q.seq)}
                             images={images[String(q.id)] || []}
+                            optionStyle={optionStyle}
                             onChanged={handleQuestionChanged}
                             onRemoved={handleQuestionRemoved}
                             onImagesChanged={handleImagesChanged}

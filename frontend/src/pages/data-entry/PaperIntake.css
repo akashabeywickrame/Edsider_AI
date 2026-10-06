@@ -54,13 +54,18 @@
    the same click target. */
 .pi-mcq__opt { transition: border-color .15s ease; }
 .pi-mcq__opt:focus-within { border-color: var(--primary); }
-.pi-mcq__input { flex: 1; min-width: 0; border: 0; background: transparent; font: inherit; color: inherit; padding: 0; outline: 0; }
+.pi-mcq { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* width:0 stops an input's own default width (about 20 characters) from
+   setting its column's minimum size; flex:1 then fills the real space. */
+.pi-mcq__input { flex: 1; width: 0; min-width: 0; border: 0; background: transparent; font: inherit; color: inherit; padding: 0; outline: 0; }
 .pi-mcq__input:disabled { opacity: .6; }
 .pi-mcq__mark { all: unset; box-sizing: border-box; flex: none; padding: 4px 10px; border-radius: var(--radius-pill); font: 600 12.5px/18px var(--font-body); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .pi-mcq__mark:hover:not(:disabled) { background: var(--primary-soft); color: var(--primary); }
 .pi-mcq__mark:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 .pi-mcq__mark:disabled { cursor: default; opacity: .6; }
 .pi-mcq-count { max-width: 280px; }
+.pi-type { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pi-type__select { width: auto; min-width: 150px; padding: 4px 8px; }
 /* .es-mcq's own 10px (bundle.css) reads cramped once each option holds
    a live input instead of static text - a bit more room between option
    boxes here, same reasoning as the rest of this block. */
@@ -101,6 +106,16 @@
 
 .pi-two-col { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; align-items: start; }
 .pi-question-list { display: flex; flex-direction: column; gap: 16px; }
+/* Grid and flex children default to min-width:auto, so a long option or
+   the editor forced its track wider than the column it sits in and ran
+   under the Original paper pane at laptop widths. Letting them shrink
+   keeps everything inside its own card. */
+.pi-two-col > *, .pi-question-list, .pi-draft-list, .pi-draft-list .es-draft { min-width: 0; }
+/* Makes the question column its own container, so the MCQ option grid
+   below can respond to how much room the column has rather than to the
+   viewport - the same column is narrower on a laptop with the paper
+   pane open than on a wide monitor. */
+.pi-question-list { container-type: inline-size; }
 .pi-draft-list { display: flex; flex-direction: column; gap: 18px; margin-bottom: 20px; }
 
 .pi-original { position: sticky; top: 92px; display: flex; flex-direction: column; gap: 14px; }
@@ -117,6 +132,18 @@
 .pi-status { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .pi-status__text { max-width: 820px; }
 
+/* Laptop widths (about 1280-1440px): the Original paper pane keeps a fixed
+   share, so the questions get the rest rather than being halved with it. */
+@media (max-width: 1440px) {
+  .pi-two-col { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
+}
+
+/* Two option columns need about 400px each to keep an option's text
+   readable beside its "Mark correct" button; under that, one column. */
+@container (max-width: 820px) {
+  .pi-mcq { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 1100px) {
   .pi-page { grid-template-columns: 1fr; }
   .pi-rail-col { display: none; }
@@ -125,3 +152,41 @@
   .pi-upload__grid { grid-template-columns: 1fr; }
   .pi-paper__fields { grid-template-columns: 1fr; }
 }
+
+/* ----------------------------------------------------- student preview */
+
+.pi-preview__pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.pi-preview__text { font-size: 19px; line-height: 30px; color: var(--text-dark); margin: 0; }
+.pi-preview__q { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--border-soft); }
+.pi-preview__qhead { display: flex; align-items: baseline; gap: 10px; }
+.pi-preview__num { font: 700 15px/22px var(--font-heading); color: var(--text-dark); }
+.pi-preview__option { display: flex; align-items: baseline; gap: 10px; padding: 4px 0; font-size: 15px; line-height: 24px; color: var(--text-dark); }
+.pi-preview__key { min-width: 38px; font-weight: 600; color: var(--primary); white-space: nowrap; }
+/* Width is capped by the column, never set together with a height - setting
+   both stretches a picture of a table out of shape, and a child cannot read
+   what the table says. Height follows from the width by itself. */
+.pi-preview__img { display: block; width: auto; max-width: min(100%, 520px); height: auto; margin-top: 6px; border: 1px solid var(--border-soft); border-radius: 8px; background: #fff; }
+.pi-preview__marks { font: 600 13px/18px var(--font-body); color: var(--primary); }
+.pi-preview__choices { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.pi-preview__choice { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border: 1.5px solid var(--border-soft); border-radius: 12px; background: var(--surface); cursor: pointer; font-size: 15px; line-height: 24px; color: var(--text-dark); }
+.pi-preview__choice:hover { border-color: var(--primary); }
+.pi-preview__choice:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.pi-preview__choice input { margin-top: 6px; }
+.pi-preview__answer { margin-top: 8px; }
+.pi-preview__choice--correct { border-color: #1f7a4a; background: #eaf7ef; }
+.pi-preview__scheme { margin-top: 10px; padding: 10px 14px; border-left: 3px solid var(--primary); border-radius: 8px; background: var(--primary-soft); display: flex; flex-direction: column; gap: 4px; }
+.pi-preview__scheme-line { margin: 8px 0 0; font-size: 16px; line-height: 24px; color: var(--text-dark); }
+.pi-preview__scheme-label { font: 700 13px/18px var(--font-heading); letter-spacing: .04em; text-transform: uppercase; color: var(--primary); margin-right: 6px; }
+.pi-preview__scheme p { font-size: 17px; line-height: 27px; }
+
+/* The header follows EdSider's assessment screen: logo on the left, the
+   title centred over a double rule, and the facts underneath it. */
+.pi-preview__header { display: flex; align-items: stretch; background: var(--surface); border: 1px solid var(--border-soft); border-radius: 16px; overflow: hidden; }
+.pi-preview__brand { flex: 0 0 220px; display: flex; align-items: center; justify-content: center; padding: 16px; border-right: 1px solid var(--border-soft); }
+.pi-preview__brand img { max-width: 100%; height: 48px; object-fit: contain; }
+.pi-preview__titlebox { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; padding: 18px 24px; }
+.pi-preview__title { margin: 0; font: 600 26px/34px var(--font-heading); text-align: center; color: var(--text-dark); padding-bottom: 8px; border-bottom: 3px double var(--text-dark); }
+.pi-preview__pills { justify-content: flex-start; }
+
+/* Marks section - one card per question's marks, in a tidy grid. */
+.pi-marks-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }

@@ -1,11 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import RichEditor from '../../components/RichEditor.jsx'
+import { useToast } from '../../components/Toast.jsx'
 
 function slotLabel(slot) {
   if (slot === 'question') return 'Question'
   if (slot === 'answer') return 'Answer'
   return `Option ${slot.replace('option:', '')}`
+}
+
+// Every label an answer names - "1, 3" -> ["1", "3"], "A/C" -> ["a", "c"] -
+// each read the same way bareLabel() reads one.
+function answerLabels(answer) {
+  if (!answer) return []
+  return answer.split(/\s*(?:,|\/|&|;|\band\b)\s*/i).map(bareLabel).filter(Boolean)
 }
 
 // "(3)", " 3 " -> "3" - the same bare-label shape mcq_correct_label()
@@ -19,6 +27,128 @@ function bareLabel(answer) {
   return m ? m[1].toLowerCase() : null
 }
 
+// Same wording the server's QUESTION_TYPES uses - kept in step by hand, since
+// the page only needs labels, not the detection rule.
+const TYPE_LABELS = { descriptive: 'Descriptive', mcq: 'MCQ', sub: 'Sub-questions' }
+
+const optionsFrom = (mcq) =>
+  (mcq?.options || []).map((o) => ({ label: o.label, marker: o.marker, text: o.text }))
+
+// The next printed marker in the same style as the last one - "III." after
+// "II.", "(4)" after "(3)", "D)" after "C)". Falls back to "A." for a list
+// with nothing to copy the style from.
+function toRoman(n) {
+  const table = [[10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']]
+  let out = ''
+  for (const [value, digits] of table) {
+    while (n >= value) {
+      out += digits
+      n -= value
+    }
+  }
+  return out
+}
+
+function fromRoman(s) {
+  const value = { I: 1, V: 5, X: 10, L: 50, C: 100 }
+  let total = 0
+  for (let i = 0; i < s.length; i++) {
+    const cur = value[s[i]]
+    const next = value[s[i + 1]]
+    total += next && next > cur ? -cur : cur
+  }
+  return total
+}
+
+// "(3)" -> { open: "(", label: "3", close: ")" }, or null for anything else.
+function splitMarker(marker) {
+  const m = /^(\(?)([A-Za-z0-9]+)([.)]?\)?)$/.exec((marker || '').trim())
+  return m ? { open: m[1], label: m[2], close: m[3] } : null
+}
+
+// The label after `lab` in the same style - "II" -> "III", "c" -> "d", "9" -> "10".
+// Roman is tried before letters, so "I" after "H" is never misread as a letter.
+function stepLabel(lab) {
+  if (/^\d+$/.test(lab)) return String(Number(lab) + 1)
+  if (/^[IVX]+$/.test(lab)) return toRoman(fromRoman(lab) + 1)
+  if (/^[ivx]+$/.test(lab)) return toRoman(fromRoman(lab.toUpperCase()) + 1).toLowerCase()
+  if (/^[A-Z]$/.test(lab) && lab !== 'Z') return String.fromCharCode(lab.charCodeAt(0) + 1)
+  if (/^[a-z]$/.test(lab) && lab !== 'z') return String.fromCharCode(lab.charCodeAt(0) + 1)
+  return null
+}
+
+function nextMarker(options) {
+  const last = options[options.length - 1]
+  const parts = last && splitMarker(last.marker)
+  const next = parts && stepLabel(parts.label)
+  return next ? `${parts.open}${next}${parts.close}` : 'A.'
+}
+
+// The numbering style this paper's own MCQs use - "I.", "1.", "A)" and so
+// on - taken from the most common first-option marker across the paper, so
+// options typed in for one question match its neighbours.
+export function paperOptionStyle(questions) {
+  const tally = new Map()
+  for (const q of questions || []) {
+    const parts = q.mcq?.options?.[0] && splitMarker(q.mcq.options[0].marker)
+    if (!parts) continue
+    const lab = parts.label
+    const kind = /^\d+$/.test(lab) ? 'digit'
+      : /^[IVX]+$/.test(lab) ? 'roman'
+      : /^[ivx]+$/.test(lab) ? 'lroman'
+      : /^[A-Z]$/.test(lab) ? 'letter'
+      : /^[a-z]$/.test(lab) ? 'lletter'
+      : null
+    if (!kind) continue
+    const key = `${kind}|${parts.open}|${parts.close}`
+    tally.set(key, (tally.get(key) || 0) + 1)
+  }
+  let best = null
+  let count = 0
+  for (const [key, n] of tally) {
+    if (n > count) {
+      best = key
+      count = n
+    }
+  }
+  if (!best) return null
+  const [kind, open, close] = best.split('|')
+  return { kind, open, close }
+}
+
+// Starter options in the given style - A. to D. when the paper gives no
+// style to copy.
+export function starterOptions(style, count = 4) {
+  const kind = style?.kind ?? 'letter'
+  const open = style?.open ?? ''
+  const close = style?.close ?? '.'
+  const labelAt = (i) => {
+    if (kind === 'digit') return String(i + 1)
+    if (kind === 'roman') return toRoman(i + 1)
+    if (kind === 'lroman') return toRoman(i + 1).toLowerCase()
+    if (kind === 'lletter') return String.fromCharCode(97 + i)
+    return String.fromCharCode(65 + i)
+  }
+  return Array.from({ length: count }, (_, i) => ({
+    label: null,
+    marker: `${open}${labelAt(i)}${close}`,
+    text: '',
+  }))
+}
+
+// Renumbers options one after another from `startLabel`, keeping each
+// option's own punctuation. The parser only reads a list that counts up
+// without a gap, so a removed option must not leave "I, II, IV, V" behind.
+function renumber(options, startLabel) {
+  let lab = startLabel
+  return options.map((o) => {
+    const parts = splitMarker(o.marker)
+    const next = { ...o, label: lab, marker: parts ? `${parts.open}${lab}${parts.close}` : o.marker }
+    lab = stepLabel(lab) ?? lab
+    return next
+  })
+}
+
 // One draft question (or part) on an uploaded paper. Marks and topic
 // save on blur; text and answer (RichEditor) save on blur too, but each
 // carries its own current value straight from the editor rather than
@@ -26,7 +156,15 @@ function bareLabel(answer) {
 // 100+ question paper is ever left unsaved by a missed click. Images
 // attach/detach immediately, same reasoning as Remove: one-shot actions,
 // not something to leave pending.
-export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRemoved, onImagesChanged }) {
+export default function PaperIntakeQuestion({
+  q,
+  isStem,
+  images,
+  optionStyle,
+  onChanged,
+  onRemoved,
+  onImagesChanged,
+}) {
   const { Button, Notice } = window.EdSider
 
   const [marks, setMarks] = useState(q.marks ?? '')
@@ -35,7 +173,9 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
-  const [answerOpen, setAnswerOpen] = useState(false)
+  // Open straight away when this question already has an answer picture, so
+  // it is not hidden behind a closed panel.
+  const [answerOpen, setAnswerOpen] = useState(() => (images || []).some((i) => i.slot === 'answer'))
   const [imagesOpen, setImagesOpen] = useState(false)
   const [slot, setSlot] = useState('question')
   const [file, setFile] = useState(null)
@@ -53,10 +193,13 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
   // so a question someone already marked correct by typing a number
   // does not silently lose that under a count of zero.
   const [manualOptionCount, setManualOptionCount] = useState(() => {
-    const n = Number(bareLabel(q.answer))
-    return Number.isInteger(n) && n > 0 && n <= 8 ? n : 0
+    // The highest number named, so a question with several correct
+    // numbered options still seeds the count they imply.
+    const named = answerLabels(q.answer).map(Number).filter((x) => Number.isInteger(x) && x > 0 && x <= 8)
+    return named.length ? Math.max(...named) : 0
   })
   const [correctBusy, setCorrectBusy] = useState(false)
+  const toast = useToast()
 
   // Mirrors the stem editor's live content (RichEditor's onChange) and
   // each option's current text - an option field's own blur needs the
@@ -67,10 +210,17 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
   // `q` changing later (a save this component made itself already has
   // the latest value locally; a save mounting a NEW q.id remounts this
   // whole component instead, via PaperIntake.jsx's key={q.id}).
-  const [stemText, setStemText] = useState(() => q.mcq?.stem ?? '')
-  const [optionTexts, setOptionTexts] = useState(() =>
-    Object.fromEntries((q.mcq?.options || []).map((o) => [o.label, o.text])),
-  )
+  // The option list is editable here - options can be removed, added, or
+  // typed in from scratch - so it is kept as its own array, and resynced
+  // from the server whenever a save hands back a new `q.mcq`.
+  const [stemText, setStemText] = useState(() => q.mcq?.stem ?? q.text ?? '')
+  const [draftOptions, setDraftOptions] = useState(() => optionsFrom(q.mcq))
+  useEffect(() => {
+    setDraftOptions(optionsFrom(q.mcq))
+  }, [q.mcq])
+  // Bumped by "Clear and re-enter" so the uncontrolled editors remount with
+  // their new empty content - RichEditor reads its initial value only once.
+  const [resetKey, setResetKey] = useState(0)
   const [mcqSaveError, setMcqSaveError] = useState(null)
   const [mcqBusy, setMcqBusy] = useState(false)
 
@@ -98,19 +248,18 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
   // the question's one combined text field - the server does the actual
   // join (see /intake/questions/{id}/mcq), so correcting an option's
   // text never has to reproduce the paper's own numbering by hand.
-  async function saveMcq(nextStem, nextOptionTexts) {
-    if (!q.mcq) return
+  // `answer` (when given) replaces the stored answer in the same save - a
+  // removed option's answer is cleared, and a renumbered one moves to its
+  // option's new label, so the answer never names an option that is gone.
+  async function saveOptions(nextStem, nextOptions, { answer } = {}) {
     setMcqBusy(true)
     setMcqSaveError(null)
     try {
-      const payload = {
+      let updated = await api.updateQuestionMcq(q.id, {
         stem: nextStem,
-        options: q.mcq.options.map((o) => ({
-          marker: o.marker,
-          text: nextOptionTexts[o.label] ?? o.text,
-        })),
-      }
-      const updated = await api.updateQuestionMcq(q.id, payload)
+        options: nextOptions.map((o) => ({ marker: o.marker, text: o.text })),
+      })
+      if (answer !== undefined) updated = await api.updateIntakeQuestion(q.id, { answer })
       onChanged(updated)
     } catch (err) {
       setMcqSaveError(err.message)
@@ -119,11 +268,79 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
     }
   }
 
-  async function handleMarkCorrect(label) {
+  function addOption() {
+    const next = [...draftOptions, { label: null, marker: nextMarker(draftOptions), text: '' }]
+    setDraftOptions(next)
+    saveOptions(stemText, next)
+  }
+
+  function removeOption(index) {
+    const kept = draftOptions.filter((_, i) => i !== index)
+    // Renumber from the list's original first label, so removing the first
+    // option leaves the next one as the first, not as a second "II".
+    const start = draftOptions[0].label || splitMarker(draftOptions[0].marker)?.label
+    const renumbered = renumber(kept, start)
+    // A question can have several correct options - keep every one that
+    // survives the removal, under its renumbered label.
+    const correctNow = answerLabels(q.answer)
+    const keptCorrect = renumbered
+      .filter((o, j) => kept[j].label && correctNow.includes(kept[j].label.toLowerCase()))
+      .map((o) => o.label)
+    const removedKey = draftOptions[index].label?.toLowerCase()
+    let answer
+    if (keptCorrect.length) answer = keptCorrect.join(', ')
+    else if (removedKey && correctNow.includes(removedKey)) answer = null
+    setDraftOptions(renumbered)
+    saveOptions(stemText, renumbered, answer === undefined ? {} : { answer })
+  }
+
+  // For a question whose options were not read at all, or were read as
+  // nothing usable: starts a lettered list the reviewer then fills in.
+  function addOptionsAsText() {
+    const starter = starterOptions(optionStyle)
+    setDraftOptions(starter)
+    saveOptions(stemText, starter)
+  }
+
+  // Clears the question's text, options and answer, so a question with too
+  // many wrong pieces can be typed in again rather than repaired piece by
+  // piece. The question keeps its number, place and marks.
+  async function handleRecreate() {
+    if (!window.confirm("Clear this question's text, options and answer so it can be typed in again?")) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const updated = await api.updateIntakeQuestion(q.id, { text: '', answer: null, reviewed: false })
+      setStemText('')
+      setDraftOptions([])
+      setManualOptionCount(0)
+      setReviewed(false)
+      setResetKey((k) => k + 1)
+      onChanged(updated)
+      toast.success('Question cleared - type it in again.')
+    } catch (err) {
+      setError(err.message)
+      toast.error(`Could not clear the question: ${err.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Marks one option correct, or unmarks it - a question can have several
+  // correct options, so each click changes only its own option. The stored
+  // answer lists them in the paper's printed order.
+  async function handleMarkCorrect(label, order) {
+    const key = String(label).toLowerCase()
+    const current = new Set(answerLabels(q.answer))
+    if (current.has(key)) current.delete(key)
+    else current.add(key)
+    const chosen = order.filter((l) => current.has(String(l).toLowerCase()))
     setCorrectBusy(true)
     setError(null)
     try {
-      const updated = await api.updateIntakeQuestion(q.id, { answer: label })
+      const updated = await api.updateIntakeQuestion(q.id, { answer: chosen.length ? chosen.join(', ') : null })
       onChanged(updated)
     } catch (err) {
       setError(err.message)
@@ -138,8 +355,10 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
     try {
       await api.deleteIntakeQuestion(q.id)
       onRemoved(q.id)
+      toast.success('Question removed.')
     } catch (err) {
       setError(err.message)
+      toast.error(`Could not remove the question: ${err.message}`)
       setBusy(false)
     }
   }
@@ -176,7 +395,12 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
 
   const label = q.question_number ? `Question ${q.question_number}` : `Question ${q.seq}`
   const imgCount = (images || []).length
+  const answerImages = (images || []).filter((i) => i.slot === 'answer')
   const detectedOptions = q.mcq?.options || []
+  // Every option a student could see as correct, read from the stored answer.
+  const correctSet = new Set(answerLabels(q.answer))
+  // Picture-only MCQs have no text options - numbered by the manual count.
+  const manualLabels = Array.from({ length: manualOptionCount }, (_, i) => String(i + 1))
   // A picture-only MCQ - the options are photos next to a bare roman
   // numeral with nothing split_mcq_options() can key on - still needs
   // somewhere to attach an image per option, so a manual count stands
@@ -199,6 +423,25 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
           <span className="es-pill es-tone--review">Low-confidence read</span>
         ) : null}
         <span style={{ flex: 1 }} />
+        <label className="pi-type">
+          <span className="es-caption">Type</span>
+          <select
+            className="es-input pi-type__select"
+            aria-label={`${label} type`}
+            value={q.question_type || q.detected_type || 'descriptive'}
+            disabled={busy}
+            onChange={(e) => save({ question_type: e.target.value })}
+          >
+            {Object.entries(TYPE_LABELS).map(([key, text]) => (
+              <option key={key} value={key}>
+                {text}
+              </option>
+            ))}
+          </select>
+          {q.question_type !== q.detected_type && q.detected_type ? (
+            <span className="es-caption">detected as {TYPE_LABELS[q.detected_type]}</span>
+          ) : null}
+        </label>
         <span className={`es-pill ${reviewed ? 'es-tone--ok' : 'es-tone--neutral'}`}>
           {reviewed ? 'Reviewed' : 'Not reviewed'}
         </span>
@@ -211,66 +454,84 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
         </p>
       ) : null}
 
-      {detectedOptions.length > 0 ? (
+      {draftOptions.length > 0 ? (
         <RichEditor
+          key={`stem-opt-${resetKey}`}
           initialValue={stemText}
           onChange={setStemText}
-          onBlur={(plain) => saveMcq(plain, optionTexts)}
+          onBlur={(plain) => saveOptions(plain, draftOptions)}
           ariaLabel={`${label} text`}
         />
       ) : (
         <RichEditor
+          key={`stem-txt-${resetKey}`}
           initialValue={q.text || ''}
+          onChange={setStemText}
           onBlur={(plain) => saveIfChanged('text', plain, q.text || '')}
           ariaLabel={`${label} text`}
         />
       )}
 
-      {detectedOptions.length > 0 ? (
+      {draftOptions.length > 0 ? (
         <div className="es-field">
           <label className="es-field__label">
             Answer options - correct any that were read wrong, and click the right one if it
             is not already marked
           </label>
           <div className="es-mcq pi-mcq">
-            {detectedOptions.map((o) => {
-              const isCorrect = q.mcq.correct === o.label.toLowerCase()
+            {draftOptions.map((o, i) => {
+              const key = o.label || o.marker.trim()
+              const isCorrect = !!o.label && correctSet.has(o.label.toLowerCase())
               return (
                 <div
-                  key={o.label}
+                  key={i}
                   className={`es-mcq__opt pi-mcq__opt${isCorrect ? ' es-mcq__opt--correct' : ''}`}
                 >
-                  <span className="es-mcq__key">{o.label}</span>
+                  <span className="es-mcq__key">{key}</span>
                   <input
                     className="pi-mcq__input"
-                    value={optionTexts[o.label] ?? o.text}
-                    aria-label={`${label} option ${o.label} text`}
+                    value={o.text}
+                    aria-label={`${label} option ${key} text`}
                     disabled={mcqBusy}
                     onChange={(e) =>
-                      setOptionTexts((prev) => ({ ...prev, [o.label]: e.target.value }))
+                      setDraftOptions((prev) =>
+                        prev.map((p, j) => (j === i ? { ...p, text: e.target.value } : p)),
+                      )
                     }
-                    onBlur={() => saveMcq(stemText, optionTexts)}
+                    onBlur={() => saveOptions(stemText, draftOptions)}
                   />
-                  {isCorrect ? (
-                    <span className="es-mcq__correct">Correct</span>
-                  ) : (
+                  {isCorrect ? <span className="es-mcq__correct">Correct</span> : null}
+                  {o.label ? (
                     <button
                       type="button"
                       className="pi-mcq__mark"
-                      onClick={() => handleMarkCorrect(o.label)}
-                      disabled={correctBusy}
+                      onClick={() => handleMarkCorrect(o.label, detectedOptions.map((x) => x.label))}
+                      disabled={correctBusy || mcqBusy}
                     >
-                      Mark correct
+                      {isCorrect ? 'Unmark' : 'Mark correct'}
                     </button>
-                  )}
+                  ) : null}
+                  <button
+                    type="button"
+                    className="pi-mcq__mark"
+                    onClick={() => removeOption(i)}
+                    disabled={mcqBusy}
+                  >
+                    Remove
+                  </button>
                 </div>
               )
             })}
           </div>
+          <div style={{ marginTop: 8 }}>
+            <Button variant="secondary" size="sm" onClick={addOption} disabled={mcqBusy}>
+              Add option
+            </Button>
+          </div>
           <p className="es-caption" style={{ marginTop: 6 }}>
-            {q.mcq.correct
-              ? "Marked from the paper's own answer key or bolded option - click a different one if it is wrong."
-              : 'No correct answer found in the paper yet - click "Mark correct" on the right option.'}
+            {correctSet.size
+              ? 'Click Mark correct on every option that is right - a question can have more than one. Unmark takes one back.'
+              : 'No correct answer found in the paper yet - click "Mark correct" on each right option.'}
           </p>
           {mcqSaveError ? (
             <Notice tone="error" title="Could not save the options">
@@ -296,14 +557,19 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
               </option>
             ))}
           </select>
+          <div style={{ marginTop: 10 }}>
+            <Button variant="secondary" size="sm" onClick={addOptionsAsText} disabled={mcqBusy}>
+              Type the options in instead
+            </Button>
+          </div>
           {manualOptionCount > 0 ? (
             <>
               <p className="es-caption" style={{ marginTop: 10 }}>
                 Attach each option's picture below under Images, then mark the correct one here.
               </p>
               <div className="es-mcq pi-mcq">
-                {Array.from({ length: manualOptionCount }, (_, i) => String(i + 1)).map((n) => {
-                  const isCorrect = bareLabel(q.answer) === n
+                {manualLabels.map((n) => {
+                  const isCorrect = correctSet.has(n)
                   return (
                     <div
                       key={n}
@@ -311,18 +577,15 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
                     >
                       <span className="es-mcq__key">{n}</span>
                       <span>Option {n}</span>
-                      {isCorrect ? (
-                        <span className="es-mcq__correct">Correct</span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="pi-mcq__mark"
-                          onClick={() => handleMarkCorrect(n)}
-                          disabled={correctBusy}
-                        >
-                          Mark correct
-                        </button>
-                      )}
+                      {isCorrect ? <span className="es-mcq__correct">Correct</span> : null}
+                      <button
+                        type="button"
+                        className="pi-mcq__mark"
+                        onClick={() => handleMarkCorrect(n, manualLabels)}
+                        disabled={correctBusy}
+                      >
+                        {isCorrect ? 'Unmark' : 'Mark correct'}
+                      </button>
                     </div>
                   )
                 })}
@@ -390,10 +653,28 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
       {answerOpen ? (
         <div className="pi-panel" style={{ marginTop: -16 }}>
           <RichEditor
+            key={`answer-${resetKey}`}
             initialValue={q.answer || ''}
             onBlur={(plain) => saveIfChanged('answer', plain, q.answer || '')}
             ariaLabel={`${label} answer`}
           />
+          {/* A table or a picture of the answer - shown here too, so the
+              reviewer sees exactly what the student's marking scheme will hold. */}
+          {answerImages.length > 0 ? (
+            <div className="pi-imgs">
+              {answerImages.map((im) => (
+                <figure className="pi-img" key={im.id}>
+                  <figcaption className="pi-img__slot">Answer picture</figcaption>
+                  <div className="pi-img__pic">
+                    <img src={api.imageUrl(im.id)} alt={`Answer picture for ${label}`} />
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
+                    Remove picture
+                  </Button>
+                </figure>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -461,7 +742,10 @@ export default function PaperIntakeQuestion({ q, isStem, images, onChanged, onRe
         </div>
       ) : null}
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button variant="ghost" size="sm" onClick={handleRecreate} disabled={busy}>
+          Clear and re-enter
+        </Button>
         <Button variant="ghost" size="sm" onClick={handleRemove} disabled={busy}>
           Remove
         </Button>

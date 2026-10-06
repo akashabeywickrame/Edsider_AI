@@ -309,6 +309,7 @@ class IntakeDocumentOut(BaseModel):
     # deliberately excludes that preamble from `sections`, since it is not
     # itself one of the paper's labelled parts (see its own "preamble" flag).
     notes: Optional[str] = None
+    assessment_settings: Dict[str, Any] = {}
 
 
 class IntakeDocumentDetail(IntakeDocumentOut):
@@ -316,6 +317,10 @@ class IntakeDocumentDetail(IntakeDocumentOut):
     # tens of thousands of characters, and a list of papers never
     # needs to show it.
     raw_text: Optional[str] = None
+    # What the paper itself states (see intake_extract.suggest_settings) -
+    # offered to the assessment form as its starting values, never saved
+    # until the data-entry person saves the form.
+    suggested_settings: Dict[str, Any] = {}
 
 
 class McqOptionOut(BaseModel):
@@ -335,6 +340,9 @@ class McqInfoOut(BaseModel):
     # `marker`, not a guessed-at substitute.
     stem: str
     options: List[McqOptionOut] = []
+    # Every correct option's label, lowercase - a question can have more than
+    # one. `correct` is the first of them, kept for callers that read one.
+    correct_labels: List[str] = []
     correct: Optional[str] = None
 
 
@@ -364,6 +372,11 @@ class IntakeQuestionOut(BaseModel):
     # inline here costs nothing beyond the regex scan _question_out
     # already reads `text` for.
     mcq: Optional[McqInfoOut] = None
+    # 'descriptive', 'mcq' or 'sub' - the effective type: a reviewer's
+    # correction if one was made, else detected_type. Both are sent so the
+    # page can say "detected as X" next to a correction.
+    question_type: Optional[str] = None
+    detected_type: Optional[str] = None
 
 
 class QuestionUpdate(BaseModel):
@@ -382,6 +395,8 @@ class QuestionUpdate(BaseModel):
     section: Optional[str] = None
     reviewed: Optional[bool] = None
     teacher_reviewed: Optional[bool] = None
+    # null clears the correction, so the detected type applies again.
+    question_type: Optional[Literal["descriptive", "mcq", "sub"]] = None
 
 
 class McqOptionIn(BaseModel):
@@ -421,6 +436,9 @@ class DocumentUpdate(BaseModel):
     sections: Optional[List[Dict[str, Any]]] = None
     # The paper's own general instructions - see IntakeDocumentOut.notes.
     notes: Optional[str] = None
+    # The assessment form's values - stored whole, see store's
+    # assessment_settings column.
+    assessment_settings: Optional[Dict[str, Any]] = None
 
 
 class ResplitPreview(BaseModel):
@@ -478,13 +496,19 @@ def _document_out(doc, detail=False):
         paper_title=doc["paper_title"], split_style=doc["split_style"],
         status=doc["status"], assigned_to=doc["assigned_to"],
         sections=store.intake_sections(doc), notes=doc["notes"],
+        assessment_settings=store.intake_assessment_settings(doc),
     )
     if detail:
-        return IntakeDocumentDetail(raw_text=doc["raw_text"], **data)
+        suggested = intake_extract.suggest_settings(doc["raw_text"], data["sections"])
+        return IntakeDocumentDetail(raw_text=doc["raw_text"],
+                                    suggested_settings=suggested, **data)
     return IntakeDocumentOut(**data)
 
 
-def _question_out(q):
+def _question_out(q, has_parts=False):
+    """`has_parts` is passed in rather than looked up here - a whole
+    paper's list knows it from one pass over the rows, and a single
+    question asks the store once, instead of a query per row."""
     d = dict(q)
     d["reviewed"] = bool(d.get("reviewed"))
     d["teacher_reviewed"] = bool(d.get("teacher_reviewed"))
@@ -493,9 +517,13 @@ def _question_out(q):
     if not d.get("depth"):
         stem, options = intake_extract.split_mcq_options(d.get("text") or "")
         if options:
+            labels = intake_extract.mcq_correct_labels(d.get("answer"))
             d["mcq"] = McqInfoOut(
                 stem=stem, options=[McqOptionOut(**o) for o in options],
-                correct=intake_extract.mcq_correct_label(d.get("answer")))
+                correct_labels=labels, correct=labels[0] if labels else None)
+    d["detected_type"] = intake_extract.detect_question_type(
+        d.get("text"), d.get("depth") or 0, has_parts)
+    d["question_type"] = d.get("question_type") or d["detected_type"]
     return IntakeQuestionOut(**d)
 
 
@@ -535,6 +563,7 @@ def upload_document(
     file: UploadFile = File(...),
     lang: str = Form(intake_extract.DEFAULT_OCR_LANG),
     style: str = Form(intake_extract.DEFAULT_SPLIT_STYLE),
+    force_ocr: bool = Form(False),
     identity: str = Depends(current_identity),
 ):
     """Upload a paper and extract its questions in one call - app.py's
@@ -555,7 +584,8 @@ def upload_document(
         tmp_path = tmp.name
     try:
         result = intake_extract.extract(
-            tmp_path, style=style, lang=lang, filename=file.filename)
+            tmp_path, style=style, lang=lang, filename=file.filename,
+            force_ocr=force_ocr)
     finally:
         os.unlink(tmp_path)
 
@@ -759,7 +789,8 @@ def list_questions(doc_id: int):
     with store.connect() as conn:
         _require_document(conn, doc_id)
         qs = store.intake_questions(conn, doc_id)
-    return [_question_out(q) for q in qs]
+    parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
+    return [_question_out(q, has_parts=q["seq"] in parent_seqs) for q in qs]
 
 
 @app.post("/intake/documents/{doc_id}/questions", response_model=IntakeQuestionOut,
@@ -812,7 +843,8 @@ def update_question(q_id: int, body: QuestionUpdate):
         if fields:
             store.update_intake_question(conn, q_id, **fields)
         q = store.get_intake_question(conn, q_id)
-    return _question_out(q)
+        has_parts = store.intake_question_has_children(conn, q_id)
+    return _question_out(q, has_parts=has_parts)
 
 
 @app.delete("/intake/questions/{q_id}", status_code=204,
@@ -848,7 +880,8 @@ def update_question_mcq(q_id: int, body: McqUpdateIn):
         _require_question(conn, q_id)
         store.update_intake_question(conn, q_id, text=combined)
         q = store.get_intake_question(conn, q_id)
-    return _question_out(q)
+        has_parts = store.intake_question_has_children(conn, q_id)
+    return _question_out(q, has_parts=has_parts)
 
 
 # ------------------------------------------------------------ comments

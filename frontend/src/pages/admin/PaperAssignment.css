@@ -1,0 +1,12 @@
+/* Assignment screen layout, from design-system/screens/project/AssignPapers.dc.html. */
+.pa-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.pa-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.pa-card { display: flex; flex-direction: column; gap: 16px; }
+.pa-card__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.pa-card__meta { border-top: 1px solid var(--border-soft); padding-top: 12px; margin: 0; }
+.pa-section { margin-top: 12px; }
+.pa-table-card { padding: 0; overflow: hidden; }
+.pa-bold { font-weight: 600; }
+@media (max-width: 1100px) {
+  .pa-grid { grid-template-columns: 1fr; }
+}

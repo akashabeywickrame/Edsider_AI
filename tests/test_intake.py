@@ -560,6 +560,30 @@ def test_split_mcq_options_handles_capital_roman_numerals():
     assert [o["label"] for o in options2] == ["I", "II", "III", "IV"]
 
 
+def test_split_mcq_options_keeps_lettered_statements_in_the_stem():
+    """A stem can hold its own lettered list of statements before a
+    Roman-numeral option list. The statements are part of the question,
+    not options - the options are the list that comes last."""
+    body = ("Identify the correct combination of associated factors "
+            "related to ornamental fish breeding.\n"
+            "a. Platty and Swordtail are live bearing fish, during breeding "
+            "they give birth to fry.\n"
+            "b. In ornamental fish breeding, it is necessary to maintain a "
+            "suitable environment with proper water quality.\n"
+            "c. When transporting ornamental fish in a plastic bag, the "
+            "water should be enriched with oxygen.\n"
+            "d. When ornamental fish are injured, fungal infections can be "
+            "observed in wounds.\n"
+            "The correct combination of associated factors is,\n"
+            "I. a,c only\nII. c,d only\nIII. a,b only\nIV. b,c only\n"
+            "V. a,d only")
+    stem, options = extract.split_mcq_options(body)
+    assert [o["label"] for o in options] == ["I", "II", "III", "IV", "V"]
+    assert options[2]["text"] == "a,b only"
+    assert stem.startswith("Identify the correct combination")
+    assert "d. When ornamental fish" in stem
+
+
 def test_mcq_correct_label_matches_every_real_label_style():
     assert extract.mcq_correct_label("(2)") == "2"
     assert extract.mcq_correct_label("A") == "a"
