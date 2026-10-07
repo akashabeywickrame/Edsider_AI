@@ -399,6 +399,17 @@ class QuestionUpdate(BaseModel):
     question_type: Optional[Literal["descriptive", "mcq", "sub"]] = None
 
 
+class MarkItemIn(BaseModel):
+    question_id: int
+    marks: Optional[int] = None
+
+
+class MarksBulkIn(BaseModel):
+    """Marks for many questions of one paper at once - a whole part set in one
+    request, not one request per question (a 1000-mark paper has hundreds)."""
+    marks: List[MarkItemIn] = Field(..., min_length=1)
+
+
 class McqOptionIn(BaseModel):
     marker: str
     text: str
@@ -845,6 +856,26 @@ def update_question(q_id: int, body: QuestionUpdate):
         q = store.get_intake_question(conn, q_id)
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
+
+
+@app.post("/intake/documents/{doc_id}/marks", response_model=List[IntakeQuestionOut],
+         dependencies=[Depends(require_api_key)])
+def set_question_marks(doc_id: int, body: MarksBulkIn):
+    """Sets each named question's marks in one transaction and returns the
+    paper's questions as they now stand. A question that is not on this paper
+    refuses the whole request, so a partial save never happens silently."""
+    with store.connect() as conn:
+        _require_document(conn, doc_id)
+        on_paper = {q["id"] for q in store.intake_questions(conn, doc_id)}
+        stray = [m.question_id for m in body.marks if m.question_id not in on_paper]
+        if stray:
+            raise HTTPException(
+                404, f"Questions {stray} are not on paper {doc_id}.")
+        for m in body.marks:
+            store.update_intake_question(conn, m.question_id, marks=m.marks)
+        qs = store.intake_questions(conn, doc_id)
+        parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
+    return [_question_out(q, has_parts=q["seq"] in parent_seqs) for q in qs]
 
 
 @app.delete("/intake/questions/{q_id}", status_code=204,

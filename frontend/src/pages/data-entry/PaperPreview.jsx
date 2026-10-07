@@ -22,11 +22,11 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
   const questionImages = (images || []).filter((i) => i.slot === 'question')
   const answerImages = (images || []).filter((i) => i.slot === 'answer')
   const stemText = joinSoftBreaks(q.mcq ? q.mcq.stem : q.text)
+  const correctLabels = q.mcq?.correct_labels || []
   const choices = q.mcq
     ? q.mcq.options.map((o) => ({ key: o.label, marker: o.marker.trim(), text: joinSoftBreaks(o.text), img: optionImages[o.label], correct: showAnswers && !!o.label && correctLabels.includes(o.label.toLowerCase()) }))
     : Object.entries(optionImages).map(([label, img]) => ({ key: label, marker: label, text: '', img }))
   const isMcq = q.question_type === 'mcq' && choices.length > 0
-  const correctLabels = q.mcq?.correct_labels || []
   const number = q.question_number || `Q${q.seq}`
 
   return (

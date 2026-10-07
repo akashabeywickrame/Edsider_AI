@@ -80,6 +80,9 @@ export const api = {
     return request('/intake/documents', { method: 'POST', body: form })
   },
   getIntakeDocument: (docId) => request(`/intake/documents/${docId}`),
+  // Many questions' marks in one request - [{question_id, marks}] - returns the paper's questions.
+  setQuestionMarks: (docId, items) =>
+    request(`/intake/documents/${docId}/marks`, { method: 'POST', body: { marks: items } }),
   updateIntakeDocument: (docId, fields) =>
     request(`/intake/documents/${docId}`, { method: 'PATCH', body: fields }),
   previewResplit: (docId, style) =>

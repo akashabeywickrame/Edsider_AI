@@ -26,7 +26,8 @@ export function totalMarks(questions) {
 // The paper's total: the figure the paper states (questions to answer x marks
 // each, per part), else what its questions add up to.
 export function paperTotalOf(doc, questions) {
-  return doc.assessment_settings?.marking?.total ?? doc.suggested_settings?.total_marks ?? totalMarks(questions)
+  const marking = doc.assessment_settings?.marking
+  return marking?.target_total ?? marking?.total ?? doc.suggested_settings?.total_marks ?? totalMarks(questions)
 }
 
 export default function PaperSummary({ doc, questions }) {

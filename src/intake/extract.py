@@ -450,7 +450,7 @@ def _expected(kind, index):
     return chr(ord("a") + index) if index < 26 else None
 
 
-def _sub_starts(body, prefer="first"):
+def _sub_starts(body, prefer="first", allowed=None):
     """(position, end of marker, printed marker) for one question's parts.
 
     Every style is tried on its own - bracketed or not, and read as
@@ -472,6 +472,8 @@ def _sub_starts(body, prefer="first"):
         tag = m.group("btag") or m.group("tag")
         bracketed = m.group("btag") is not None
         style = (bracketed, m.group("close") or ")")
+        if allowed is not None and not allowed(tag):
+            continue
         found.append((m.start(), m.end(), tag, style))
 
     best, best_score = [], None
@@ -569,6 +571,10 @@ def _split_parts(body, depth=0):
     return body[:starts[0][0]].strip(), parts
 
 
+def _is_roman(tag):
+    return bool(re.fullmatch(r"[ivxIVX]{1,4}", tag))
+
+
 def split_mcq_options(body):
     """An MCQ question's body -> (stem, [{"label": tag, "marker": ...,
     "text": ...}, ...]).
@@ -594,7 +600,17 @@ def split_mcq_options(body):
     Returns (body, []) - not an error - when nothing looks like an
     option list, so a caller can fall back to showing the text as-is.
     """
-    starts = _sub_starts(body, prefer="last")
+    # A numbered list (1), 2., ...) is the answer options. Any other list in
+    # the question - lettered statements A-E, roman points - is part of the
+    # question's text, so it is only used when there is no numbered list at all
+    # (Tamil papers number their options (i)-(v)).
+    starts = (_sub_starts(body, prefer="last", allowed=str.isdigit)
+              or _sub_starts(body, prefer="last", allowed=_is_roman))
+    # Lettered options (A. B. C. ...) are kept for papers that use them. A question
+    # that also carries a numbered answer key - "(1) ABCD (2) ACDE" - is different:
+    # its lettered lines are statements to judge, not options.
+    if not starts and not re.search(r"\(\s*\d\s*\)", body):
+        starts = _sub_starts(body, prefer="last")
     if not starts:
         return body.strip(), []
     options = []

@@ -3,6 +3,15 @@ import Footer from '../components/Footer.jsx'
 import { isDevAuth as isDev, loginUrl as authUrl } from '../lib/auth.js'
 import './SignIn.css'
 
+// Easy Auth is not wired up on the current deployment yet - there is
+// nothing live at /.auth/login/* there either, so sending people through
+// it 404s instead of signing them in (see CLAUDE.md on Easy Auth and the
+// App Service it needs). Until that is set up for real, both buttons go
+// straight to the role's app, the same way local dev already does.
+// TEMPORARY: set back to `isDev` alone once Easy Auth is live, so these
+// buttons go through real sign-in in production again.
+const BYPASS_SIGN_IN = true
+
 // Where each role lands once signed in. These routes don't exist in
 // the app yet (same as /sign-in itself didn't exist before this page
 // was built) - they're the real destination to come back to once the
@@ -69,12 +78,12 @@ export default function SignIn() {
             <p className="si-blurb">{role.blurb}</p>
 
             {/* Real Easy Auth only exists once this is deployed behind
-                it (see authUrl's own note) - in local dev there is
-                nothing at /.auth/login/* to redirect through, so these
-                go straight to the role's app instead. This is a dev-only
-                convenience, not a second auth system: isDev is false in
-                any real build. */}
-            <Link className="si-btn" to={isDev ? role.dest : authUrl('aad', role.dest)}>
+                it, with an identity provider configured (see authUrl's
+                own note) - in local dev, and on the current deployment
+                until that is set up, there is nothing at /.auth/login/*
+                to redirect through, so these go straight to the role's
+                app instead. See BYPASS_SIGN_IN above. */}
+            <Link className="si-btn" to={isDev || BYPASS_SIGN_IN ? role.dest : authUrl('aad', role.dest)}>
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
                 <rect x="0" y="0" width="8.5" height="8.5" fill="#ffffff" />
                 <rect x="9.5" y="0" width="8.5" height="8.5" fill="#ffffff" opacity=".85" />
@@ -86,7 +95,7 @@ export default function SignIn() {
             <div className="si-or" aria-hidden="true">
               or
             </div>
-            <Link className="si-google" to={isDev ? role.dest : authUrl('google', role.dest)}>
+            <Link className="si-google" to={isDev || BYPASS_SIGN_IN ? role.dest : authUrl('google', role.dest)}>
               <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
                 <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
@@ -96,8 +105,8 @@ export default function SignIn() {
               Sign in with Google
             </Link>
             <p className="es-caption">
-              {isDev
-                ? "Local dev - these buttons skip real sign-in and go straight to the role's app."
+              {isDev || BYPASS_SIGN_IN
+                ? "Sign-in is not set up on this deployment yet - these buttons go straight to the role's app."
                 : 'Use the Microsoft or Google account your EdSider profile is linked to. New here? Ask the EdSider team to add you.'}
             </p>
           </div>
