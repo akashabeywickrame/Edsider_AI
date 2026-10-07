@@ -5,6 +5,19 @@ import { devIdentity } from './auth.js'
 // in the page that calls it.
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// Matches EDSIDER_API_KEY on the server, when one is set there - a build-time
+// setting (frontend/.env), never committed. Unset, the service stays open and
+// this is simply never sent, exactly as it already works locally and in the
+// tests. A key baked into a browser bundle is visible to anyone who opens the
+// network tab or the page source - this is a gate on casual public access to
+// the API, not a substitute for real sign-in.
+const API_KEY = import.meta.env.VITE_API_KEY || null
+
+// The key as a URL query parameter, for the few endpoints used directly as a
+// src (see require_api_key's own note on why a header cannot reach these).
+function keyParam() {
+  return API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : ''
+}
 
 function query(params) {
   const usp = new URLSearchParams()
@@ -25,6 +38,7 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
   // Dev-only identity (see auth.js) - in production Easy Auth sets this header.
   const who = devIdentity()
   if (who) headers['x-ms-client-principal-name'] = who
+  if (API_KEY) headers['X-API-Key'] = API_KEY
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: Object.keys(headers).length ? headers : undefined,
@@ -107,7 +121,7 @@ export const api = {
   // GET /intake/documents/{id}/file returns the uploaded file's own raw
   // bytes (a real PDF, not a transcript) - used directly as an <iframe>/
   // <img> src, never through request().
-  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file`,
+  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file${keyParam()}`,
 
   // ---- question images (attached to a question or its answer) ----
   listDocumentImages: (docId) => request(`/intake/documents/${docId}/images`),
@@ -120,7 +134,7 @@ export const api = {
   deleteImage: (imageId) => request(`/intake/images/${imageId}`, { method: 'DELETE' }),
   // GET /intake/images/{id} returns raw image bytes, not JSON - used
   // directly as an <img src>, never through request().
-  imageUrl: (imageId) => `${API_BASE}/intake/images/${imageId}`,
+  imageUrl: (imageId) => `${API_BASE}/intake/images/${imageId}${keyParam()}`,
 
   // ---- teacher review (the subject teacher's app) ----
   // Registers the signed-in teacher the first time the page opens, so the
@@ -128,7 +142,7 @@ export const api = {
   touchTeacher: () => request('/teachers/me/touch', { method: 'POST' }),
   listMyDocuments: () => request('/teachers/me/documents'),
   // The uploaded file itself, for an <iframe> or <img> - like imageUrl, not JSON.
-  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file`,
+  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file${keyParam()}`,
   listDocumentComments: (docId) => request(`/intake/documents/${docId}/comments`),
   addQuestionComment: (qId, comment) =>
     request(`/intake/questions/${qId}/comments`, { method: 'POST', body: { comment } }),

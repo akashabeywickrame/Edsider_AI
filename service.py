@@ -151,9 +151,9 @@ class CheckResponse(BaseModel):
 
 # ---------------------------------------------------------------- routes
 
-def require_api_key(x_api_key: Optional[str] = Header(None)):
-    """Refuse a request without the right X-API-Key header - when a key
-    is configured.
+def require_api_key(x_api_key: Optional[str] = Header(None),
+                    api_key: Optional[str] = None):
+    """Refuse a request without the right key - when one is configured.
 
     The service answers from EdSider's whole question bank, and /reload
     makes it re-read that bank; neither belongs open to anyone who can
@@ -162,14 +162,22 @@ def require_api_key(x_api_key: Optional[str] = Header(None)):
     With no key set (a laptop, the tests) everything stays open, exactly
     as before. /health is never gated: the host's uptime probe cannot
     send a header.
+
+    Accepted two ways: the `X-API-Key` header (every JSON call the
+    frontend makes), or an `api_key` query parameter (the few routes used
+    directly as a URL - an <img> or <iframe> src, which a browser never
+    attaches a custom header to). Checking the header first means a
+    caller that can send one never falls back to leaving the key sitting
+    in a URL, which turns up in logs and browser history, for nothing.
     """
     expected = os.environ.get("EDSIDER_API_KEY")
     if not expected:
         return
+    got = x_api_key or api_key
     # compare_digest, not ==, so response timing does not reveal how much
     # of a guessed key was right.
-    if not x_api_key or not secrets.compare_digest(
-            x_api_key.encode("utf-8"), expected.encode("utf-8")):
+    if not got or not secrets.compare_digest(
+            got.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(401, "Missing or wrong X-API-Key header.")
 
 
