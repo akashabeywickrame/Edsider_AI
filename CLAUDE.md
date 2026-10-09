@@ -1190,6 +1190,116 @@ orders drafts by their position in the tree rather than by seq, so a part
 added later still renders under its own question instead of at the end of
 the paper.
 
+**Fill-in-the-blank questions - English papers have no MCQ options at
+all.** A real Grade 12 General English paper (intake upload #66) has no
+multiple-choice questions in the usual sense: a question is a whole
+paragraph with several numbered gaps running through it -
+"(1) ______ an important tournament. He walked (2) ______ the field..." -
+each needing its own word, not a choice from a list. Read as one draft
+it was a single box for the whole paragraph; a student needs one small
+box per numbered gap instead, each prefilled from the paper's own
+marking scheme. `split_fill_blanks(text)` finds each gap (`_BLANK_RUN`,
+matched uncapped on purpose - a quantifier cap like `{3,50}` does not
+exclude a longer run, it only splits it into several shorter matches
+that would each still count; the length check happens separately in
+Python) and the number labelling it (`_BLANK_NUMBER`, found either
+right before the gap or starting its sentence), rejecting a candidate
+whose nearest text on both sides is itself just more dots or ellipses
+(`_WORD_NEARBY` - the paper's own long writing-space lines mix in short
+runs of literal periods that are, on length alone, indistinguishable
+from a real one-word gap). `fill_blank_answers(answer)` parses the
+paper's own flat numbered answer key ("1. for\n2. across...") into
+`{"1": "for", ...}`. The marking scheme for this paper has no label at
+all ("Answers:", "Marking Scheme:") - just a repeated "Part I" heading -
+so `_looks_like_marking_scheme()` finds it by shape instead: a heading
+immediately followed by a flat numbered answer line, something a real
+question's own heading never has. Answer blocks pair to questions by
+POSITION, not by the printed number - "Question 1" restarts inside each
+major part, so matching by number would pair the wrong blocks together.
+
+**The data-entry page shows the paragraph and one answer box - never a
+box per blank.** A reviewer corrects the paper's own answer key as one
+piece of text (the same generic Answer panel every other question type
+already has), not by juggling N separate inputs - splitting that key
+apart and back together on every keystroke would be more work than the
+feature was meant to save. Only the **student view**
+(`PaperPreview.jsx`, the "Student view"/"Final view" toggle) renders one
+small input box per blank, matching the count the paper's own text
+implies; the final view's marking-scheme line shows each blank's number
+and expected answer inline instead of the raw stored text.
+
+**A fill-blank gap and an MCQ's inline options are the same marker
+shape, and one real paper has both.** The Tamil physics paper's inline
+MCQ fix (a whole option list printed on one line, "(1) X (2) Y") and
+this English paper's fill-blank gaps ("(1) ______ ... (2) ______...")
+are textually identical by marker shape alone - both are "(N) ...".
+`split_mcq_options()` now rejects a candidate option list whenever any
+option's own text contains a blank run anywhere (not just right after
+the marker), or is itself separated by a blank line into several
+unlabelled items stacked together - three distinct real false-positive
+shapes measured directly on this paper: a blank run right after the
+marker, real prose first and a blank run further into the same item (a
+"respond to each situation" question, one answer per item, not a choice
+among them), and no blank run at all but 4-5 unlabelled words stacked
+with blank lines between them (a vocabulary-in-context question). A
+genuine option is written as continuous text; the blank line always
+falls BETWEEN options, never inside one. Confirmed on the real bank:
+zero false MCQs remain on this paper, all 6 real fill-blank questions
+still match their answers, and the original Tamil paper's 25 MCQ
+questions are unaffected.
+
+**"Underline the option..." - a part's own lettered list can BE the
+MCQ, not further parts.** The same paper's question 6: "Underline the
+option that best expresses the meaning of each of the sentences given
+below" then five sentences, each followed by four lettered paraphrases
+to pick from - a. AI has no impact on business, b. AI is slowly
+changing business methods, and so on. Read as parts, `_split_parts()`
+split each lettered paraphrase into its own one-line "question", each
+wanting a separate answer box - wrong, since a student picks ONE of the
+four, exactly like any other MCQ. The existing "four or more numbered
+items with no marks are an option list, not parts" guard (built for a
+different paper's digit-numbered options) does not fire here - these
+are lettered, not numbered, and only two or three line up at this
+level, not four. What does tell them apart is the question's own
+wording: `_UNDERLINE_WORD` ("underline") is checked once, from the
+instruction text no recursive call still has access to, and carried
+down as `mcq_hint` through every nested `_split_parts()` call. A list
+under an "underline"-worded question, with no marks of its own and
+nothing further nested inside it, is kept merged rather than split -
+the same shape the digit guard already looks for, generalized by this
+measured keyword rather than by count and numbering style alone. A
+genuinely two-part "underline..." question whose parts carry marks (or
+their own further nested list) is still split normally - the keyword
+alone is not enough; "choose"/"select" are the same instruction in
+other words but not yet added, since neither has been seen on a real
+paper.
+
+**A part one level deep can itself be a leaf MCQ or fill-blank
+question - depth alone no longer decides.** Keeping question 6's
+lettered choices merged only fixed half of it: each of its five
+sentences (6(1) through 6(5), depth 1, no children of its own) still
+needed to be independently detected as MCQ and rendered with its own
+four option cards. `detect_question_type()` and `service.py`'s
+`_question_out()` both assumed only a depth-0 question could ever be
+mcq or fill_blank; literally any part, at any depth, was unconditionally
+"sub" - safe for every paper measured before this one, where a part was
+always a further open-ended sub-question, never itself a complete MCQ.
+Both now key on `has_parts` alone: a draft with children is a
+container holding a shared stem, never answered directly, and stays
+"sub"; a LEAF draft - a whole question or one part of a structured
+question, whatever its depth - gets the same real detection either way.
+Measured on the real paper: all ten nested "Underline" questions (five
+under question 6, five more under a poem-interpretation question of the
+same shape) now come back `mcq` with four options each, where before
+every one of them was a "sub" container hiding four fake child drafts.
+The data-entry page's "type the options in by hand" fallback (for a
+picture-only MCQ, or one the extractor missed entirely) was restricted
+to depth-0 questions for the same old reason; it is now available on any
+leaf question - gated on not being a stem/container, via the page's
+existing `isStem` flag - so a wrongly-typed sub-part can be corrected to
+MCQ and given options exactly the way a top-level question already
+could.
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question
