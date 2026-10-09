@@ -105,6 +105,10 @@ export const api = {
     request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
   checkDocumentDuplicates: (docId) =>
     request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
+  // Informational only - runs before anyone has reviewed a single
+  // question, so never requires it and never changes the document's status.
+  precheckDocumentDuplicates: (docId) =>
+    request(`/intake/documents/${docId}/precheck-duplicates`, { method: 'POST' }),
 
   listIntakeQuestions: (docId) => request(`/intake/documents/${docId}/questions`),
   createIntakeQuestion: (docId, payload) =>
@@ -117,6 +121,10 @@ export const api = {
   // GET here; only saving an edited stem/options needs its own call.
   updateQuestionMcq: (qId, payload) =>
     request(`/intake/questions/${qId}/mcq`, { method: 'PATCH', body: payload }),
+  // Blanks (one per fill-in-the-blank gap) ride along the same way -
+  // only saving an edited answer needs its own call.
+  updateQuestionBlanks: (qId, payload) =>
+    request(`/intake/questions/${qId}/blanks`, { method: 'PATCH', body: payload }),
 
   // GET /intake/documents/{id}/file returns the uploaded file's own raw
   // bytes (a real PDF, not a transcript) - used directly as an <iframe>/

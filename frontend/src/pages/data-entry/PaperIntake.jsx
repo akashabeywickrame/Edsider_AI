@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import PaperIntakeQuestion, { paperOptionStyle } from './PaperIntakeQuestion.jsx'
 import AssessmentSettings from './AssessmentSettings.jsx'
+import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
 import './PaperIntake.css'
@@ -97,6 +98,12 @@ export default function PaperIntake() {
   const [questions, setQuestions] = useState(null)
   const optionStyle = useMemo(() => paperOptionStyle(questions), [questions])
   const [images, setImages] = useState({})
+  // Keyed by question id (string) - a teacher's comments from the Teacher
+  // review app, read-only here. Fetched whenever a paper reaches this page
+  // without regard to its status: a paper most needs them right after the
+  // teacher sends it back (status "refer_back"), but nothing stops a
+  // comment existing earlier either.
+  const [comments, setComments] = useState({})
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(null)
 
@@ -153,16 +160,23 @@ export default function PaperIntake() {
       setDoc(null)
       setQuestions(null)
       setImages({})
+      setComments({})
       return
     }
     setLoading(true)
     setLoadError(null)
     setCheckResult(null)
-    Promise.all([api.getIntakeDocument(id), api.listIntakeQuestions(id), api.listDocumentImages(id)])
-      .then(([d, qs, imgs]) => {
+    Promise.all([
+      api.getIntakeDocument(id),
+      api.listIntakeQuestions(id),
+      api.listDocumentImages(id),
+      api.listDocumentComments(id),
+    ])
+      .then(([d, qs, imgs, cmts]) => {
         setDoc(d)
         setQuestions(qs)
         setImages(imgs)
+        setComments(cmts)
         setTitle(d.paper_title || '')
         setGrade(d.paper_grade || '')
         setSubject(d.paper_subject || '')
@@ -502,6 +516,14 @@ export default function PaperIntake() {
             {doc ? <StatusPill status={doc.status} /> : null}
           </div>
 
+          {doc && doc.status === 'refer_back' ? (
+            <Notice tone="warning" title="Referred back by the teacher">
+              This paper was sent back for correction. The teacher's comments are shown on
+              the questions they apply to, below - fix what they flagged, then run the
+              duplicate check again to send it back to assignment.
+            </Notice>
+          ) : null}
+
           {loadError ? (
             <Notice tone="error" title="Could not load this paper">
               {loadError}
@@ -659,6 +681,10 @@ export default function PaperIntake() {
           ) : null}
         </section>
 
+        {doc && questions ? (
+          <EarlyDuplicateCheck key={`precheck-${doc.id}`} doc={doc} questions={questions} />
+        ) : null}
+
         {doc ? <AssessmentSettings key={doc.id} doc={doc} onSaved={setDoc} /> : null}
 
         {doc && questions ? (
@@ -774,6 +800,7 @@ export default function PaperIntake() {
                             q={q}
                             isStem={childrenSeqs.has(q.seq)}
                             images={images[String(q.id)] || []}
+                            comments={comments[String(q.id)] || []}
                             optionStyle={optionStyle}
                             onChanged={handleQuestionChanged}
                             onRemoved={handleQuestionRemoved}

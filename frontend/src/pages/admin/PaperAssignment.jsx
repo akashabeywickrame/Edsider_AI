@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 import './PaperAssignment.css'
@@ -29,6 +29,11 @@ export default function PaperAssignment() {
   const [busy, setBusy] = useState({})
   const [message, setMessage] = useState(null)
   const [error, setError] = useState(null)
+  // Fetched on demand, one paper at a time, when its comments are opened -
+  // not every paper in the table needs them, and most never will.
+  const [openComments, setOpenComments] = useState(null)
+  const [commentsByDoc, setCommentsByDoc] = useState({})
+  const [commentsBusy, setCommentsBusy] = useState(false)
 
   useEffect(() => {
     let live = true
@@ -64,6 +69,22 @@ export default function PaperAssignment() {
       toast.error(`Assignment failed: ${err.message}`)
     } finally {
       setBusy((b) => ({ ...b, [doc.id]: false }))
+    }
+  }
+
+  function toggleComments(docId) {
+    if (openComments === docId) {
+      setOpenComments(null)
+      return
+    }
+    setOpenComments(docId)
+    if (!commentsByDoc[docId]) {
+      setCommentsBusy(true)
+      api
+        .listDocumentComments(docId)
+        .then((cmts) => setCommentsByDoc((prev) => ({ ...prev, [docId]: cmts })))
+        .catch((err) => toast.error(`Could not load comments: ${err.message}`))
+        .finally(() => setCommentsBusy(false))
     }
   }
 
@@ -150,26 +171,69 @@ export default function PaperAssignment() {
                 <th>Teacher</th>
                 <th>Status</th>
                 <th>Uploaded</th>
+                <th>Comments</th>
               </tr>
             </thead>
             <tbody>
               {assigned.map((a) => (
-                <tr key={a.id}>
-                  <td>
-                    <span className="pa-bold">
-                      {a.paper_subject || 'Subject not set'} - {gradeText(a.paper_grade) || 'Grade not set'}
-                    </span>
-                    <br />
-                    <span className="es-caption">
-                      #{a.id} - {a.filename}
-                    </span>
-                  </td>
-                  <td>{a.assigned_to ? nameOf(a.assigned_to) : '-'}</td>
-                  <td>
-                    <StatusPill status={a.status} />
-                  </td>
-                  <td className="es-caption">{when(a.uploaded_at)}</td>
-                </tr>
+                <Fragment key={a.id}>
+                  <tr>
+                    <td>
+                      <span className="pa-bold">
+                        {a.paper_subject || 'Subject not set'} - {gradeText(a.paper_grade) || 'Grade not set'}
+                      </span>
+                      <br />
+                      <span className="es-caption">
+                        #{a.id} - {a.filename}
+                      </span>
+                    </td>
+                    <td>{a.assigned_to ? nameOf(a.assigned_to) : '-'}</td>
+                    <td>
+                      <StatusPill status={a.status} />
+                    </td>
+                    <td className="es-caption">{when(a.uploaded_at)}</td>
+                    <td>
+                      {a.status === 'refer_back' ? (
+                        <Button variant="ghost" size="sm" onClick={() => toggleComments(a.id)}>
+                          {openComments === a.id ? 'Hide' : 'View'}
+                        </Button>
+                      ) : (
+                        <span className="es-caption">-</span>
+                      )}
+                    </td>
+                  </tr>
+                  {openComments === a.id ? (
+                    <tr>
+                      <td colSpan={5}>
+                        {commentsBusy && !commentsByDoc[a.id] ? (
+                          <p className="es-caption" style={{ margin: 0 }}>
+                            Loading comments...
+                          </p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {Object.values(commentsByDoc[a.id] || {}).flat().length === 0 ? (
+                              <p className="es-caption" style={{ margin: 0 }}>
+                                No comments recorded for this paper.
+                              </p>
+                            ) : (
+                              Object.values(commentsByDoc[a.id] || {})
+                                .flat()
+                                .map((c) => (
+                                  <Notice
+                                    key={c.id}
+                                    tone="warning"
+                                    title={`${c.author || 'Teacher'} on question #${c.question_id} - ${when(c.created_at)}`}
+                                  >
+                                    {c.comment}
+                                  </Notice>
+                                ))
+                            )}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>

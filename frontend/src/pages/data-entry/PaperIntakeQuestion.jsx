@@ -29,7 +29,12 @@ function bareLabel(answer) {
 
 // Same wording the server's QUESTION_TYPES uses - kept in step by hand, since
 // the page only needs labels, not the detection rule.
-const TYPE_LABELS = { descriptive: 'Descriptive', mcq: 'MCQ', sub: 'Sub-questions' }
+const TYPE_LABELS = {
+  descriptive: 'Descriptive',
+  mcq: 'MCQ',
+  fill_blank: 'Fill in the blank',
+  sub: 'Sub-questions',
+}
 
 const optionsFrom = (mcq) =>
   (mcq?.options || []).map((o) => ({ label: o.label, marker: o.marker, text: o.text }))
@@ -161,6 +166,7 @@ export default function PaperIntakeQuestion({
   isStem,
   images,
   optionStyle,
+  comments,
   onChanged,
   onRemoved,
   onImagesChanged,
@@ -454,6 +460,20 @@ export default function PaperIntakeQuestion({
         </p>
       ) : null}
 
+      {(comments || []).length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {comments.map((c) => (
+            <Notice
+              key={c.id}
+              tone="warning"
+              title={`${c.author || 'Teacher'} - ${c.created_at ? new Date(c.created_at).toLocaleString() : ''}`}
+            >
+              {c.comment}
+            </Notice>
+          ))}
+        </div>
+      ) : null}
+
       {draftOptions.length > 0 ? (
         <RichEditor
           key={`stem-opt-${resetKey}`}
@@ -539,11 +559,12 @@ export default function PaperIntakeQuestion({
             </Notice>
           ) : null}
         </div>
-      ) : q.depth === 0 ? (
+      ) : !(q.blanks || []).length && !isStem ? (
         <div className="es-field">
           <label className="es-field__label">
             Options not split out automatically - common when every option is a picture rather
-            than text. How many does this question have?
+            than text, or when a question marked MCQ above was not read as one. How many does
+            this question have?
           </label>
           <select
             className="es-input pi-mcq-count"
@@ -705,7 +726,7 @@ export default function PaperIntakeQuestion({
             </div>
           ) : null}
 
-          {detectedOptions.length === 0 && manualOptionCount === 0 && q.depth === 0 ? (
+          {detectedOptions.length === 0 && manualOptionCount === 0 && !isStem ? (
             <Notice tone="info">
               Set "how many options does this question have?" above to attach a picture per
               option here - for now this can only attach to Question or Answer.

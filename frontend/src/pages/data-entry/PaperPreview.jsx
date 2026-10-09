@@ -27,6 +27,8 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
     ? q.mcq.options.map((o) => ({ key: o.label, marker: o.marker.trim(), text: joinSoftBreaks(o.text), img: optionImages[o.label], correct: showAnswers && !!o.label && correctLabels.includes(o.label.toLowerCase()) }))
     : Object.entries(optionImages).map(([label, img]) => ({ key: label, marker: label, text: '', img }))
   const isMcq = q.question_type === 'mcq' && choices.length > 0
+  const blanks = q.blanks || []
+  const isFillBlank = q.question_type === 'fill_blank' && blanks.length > 0
   const number = q.question_number || `Q${q.seq}`
 
   return (
@@ -56,7 +58,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
           <span className="pi-preview__scheme-label">Marking scheme</span> Correct answer: {correctLabels.map((l) => l.toUpperCase()).join(', ')}
         </p>
       ) : null}
-      {showAnswers && !hasParts && !isMcq && (q.answer || answerImages.length) ? (
+      {showAnswers && !hasParts && !isMcq && !isFillBlank && (q.answer || answerImages.length) ? (
         <div className="pi-preview__scheme">
           <span className="pi-preview__scheme-label">Marking scheme</span>
           {q.answer ? <p className="pi-preview__text">{joinSoftBreaks(q.answer)}</p> : null}
@@ -65,9 +67,25 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
           ))}
         </div>
       ) : null}
-      {!hasParts && !isMcq ? (
+      {showAnswers && isFillBlank ? (
+        <p className="pi-preview__scheme-line">
+          <span className="pi-preview__scheme-label">Marking scheme</span>{' '}
+          {blanks.map((b) => `${b.number}. ${b.answer || '-'}`).join('  ')}
+        </p>
+      ) : null}
+      {!hasParts && !isMcq && !isFillBlank ? (
         <div className="pi-preview__answer">
           <RichEditor initialValue="" ariaLabel={`Answer for ${number}`} />
+        </div>
+      ) : null}
+      {!hasParts && isFillBlank ? (
+        <div className="pi-preview__blanks" role="group" aria-label={`Answers for ${number}`}>
+          {blanks.map((b) => (
+            <label className="pi-preview__blank" key={b.number}>
+              <span className="pi-preview__key">{b.number}</span>
+              <input type="text" className="pi-preview__blank-input" aria-label={`${number} blank ${b.number} answer`} />
+            </label>
+          ))}
         </div>
       ) : null}
     </div>
