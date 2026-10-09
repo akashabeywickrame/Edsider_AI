@@ -1,16 +1,7 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
-import { isDevAuth as isDev, loginUrl as authUrl } from '../lib/auth.js'
+import { isDevAuth as isDev, loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
 import './SignIn.css'
-
-// Easy Auth is not wired up on the current deployment yet - there is
-// nothing live at /.auth/login/* there either, so sending people through
-// it 404s instead of signing them in (see CLAUDE.md on Easy Auth and the
-// App Service it needs). Until that is set up for real, both buttons go
-// straight to the role's app, the same way local dev already does.
-// TEMPORARY: set back to `isDev` alone once Easy Auth is live, so these
-// buttons go through real sign-in in production again.
-const BYPASS_SIGN_IN = true
 
 // Where each role lands once signed in. These routes don't exist in
 // the app yet (same as /sign-in itself didn't exist before this page

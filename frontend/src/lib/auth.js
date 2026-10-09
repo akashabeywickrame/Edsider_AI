@@ -8,6 +8,16 @@
 // `npm run dev`; a real production build never takes the bypass.
 export const isDevAuth = import.meta.env.DEV
 
+// Easy Auth is not wired up on the current deployment yet - there is
+// nothing live at /.auth/login/* or /.auth/logout there either, so
+// sending people through either one 404s (or, worse, silently falls
+// through to the app's own router and renders "Not found") instead of
+// actually signing in or out. Until that is set up for real, sign-in
+// and sign-out both bypass it, the same way local dev already does.
+// TEMPORARY: set back to false once Easy Auth is live, so both flows
+// go through real Easy Auth in production again.
+export const BYPASS_SIGN_IN = true
+
 export function loginUrl(provider, dest) {
   return `/.auth/login/${provider}?post_login_redirect_uri=${encodeURIComponent(dest)}`
 }
