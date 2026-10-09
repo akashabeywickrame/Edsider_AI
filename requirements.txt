@@ -43,6 +43,14 @@ python-multipart>=0.0.9
 # Without it, scanned pages and pictures are reported as "not read" and
 # the rest of the paper is still extracted.
 pdfplumber>=0.11
+# A PDF's plain text is read through this, not pdfplumber - pdfplumber's
+# underlying engine extracts some Tamil conjunct-consonant clusters with
+# their glyphs in the wrong order (measured on a real paper: "சர்வதேச"
+# came out as "சரவ் தேச", a silent word-splitting corruption, on a page
+# with no OCR involved at all). pdfplumber is kept for everything else
+# PDF-related (picture boxes, bold-run detection, rendering a page as an
+# image for OCR) - see extract.py's _mupdf_page_text().
+pymupdf>=1.24
 python-docx>=1.1
 pytesseract>=0.3.10
 Pillow>=10.0

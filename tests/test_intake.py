@@ -766,6 +766,229 @@ def test_a_part_title_repeated_on_every_page_is_still_one_part():
     assert [q["question_number"] for q in parsed["questions"]] == ["1", "2"]
 
 
+def test_a_mid_part_instruction_moves_to_the_question_it_applies_to():
+    """A real Grade 13 (A/L) Political Science paper has a bulleted
+    instruction - "For questions 21 to 25, choose..." - sitting between
+    question 20 and question 21, mid Part I, no heading involved.
+    _number_starts() hands everything up to the next marker to the
+    question before it, by construction, which wrongly glued this onto
+    question 20's own text. It belongs to 21 instead - and a reviewer
+    reading question 21 then sees it right there, which is also where it
+    actually governs through to question 25."""
+    text = (
+        "20. A question.\n(1) One\n(2) Two\n\n"
+        "• For questions 21 to 25, choose the correct combination.\n\n"
+        "21. Another question.\n(1) ABCD\n(2) ACDE\n"
+    )
+    parsed = extract.structure(text)
+    by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
+    assert "For questions 21 to 25" not in by_number["20"]
+    assert by_number["20"].strip().endswith("(2) Two")
+    assert by_number["21"].startswith("• For questions 21 to 25")
+    assert "Another question" in by_number["21"]
+
+
+def test_a_garbled_bullet_is_still_recognised_as_an_instruction():
+    """OCR does not always read a bullet as itself - measured on the
+    same real paper, Tesseract read it as a single stray Sinhala
+    dependent vowel sign ("ේ") that cannot start a word on its own. Any
+    Unicode combining mark works the same way, not just this one."""
+    text = (
+        "20. A question.\n(1) One\n(2) Two\n\n"
+        "ෙ For questions 21 to 25, choose the correct combination.\n\n"
+        "21. Another question.\n(1) ABCD\n(2) ACDE\n"
+    )
+    parsed = extract.structure(text)
+    by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
+    assert "For questions 21 to 25" not in by_number["20"]
+    assert by_number["21"].startswith("ෙ For questions 21 to 25")
+
+
+def test_a_normal_short_last_paragraph_is_not_mistaken_for_an_instruction():
+    """A question whose text genuinely ends in a short final paragraph -
+    no bullet, no stray combining mark - must not be cut apart."""
+    text = (
+        "20. A question.\n(1) One\n(2) Two\n\nA final clarifying note.\n\n"
+        "21. Another question.\n(1) ABCD\n(2) ACDE\n"
+    )
+    parsed = extract.structure(text)
+    by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
+    assert "A final clarifying note." in by_number["20"]
+    assert "A final clarifying note." not in by_number["21"]
+
+
+# --------------------------------------------- fill-in-the-blank
+
+def test_split_fill_blanks_finds_numbered_inline_gaps():
+    """A real Grade 12 General English paper: a whole paragraph with a
+    preposition missing at five numbered points."""
+    text = (
+        "He went to the complex to prepare (1) ______ a tournament. He walked "
+        "(2) ______ the field, then had a word (3) ______ his coach. "
+        "(4) ______ the session he focused hard, and went (5) ______ the room."
+    )
+    stem, blanks = extract.split_fill_blanks(text)
+    assert stem == text
+    assert [b["number"] for b in blanks] == ["1", "2", "3", "4", "5"]
+
+
+def test_split_fill_blanks_labels_by_the_enclosing_sentences_number():
+    """A different shape, same paper: one blank per numbered sentence,
+    with brackets of choices rather than a number right next to the gap
+    itself - the label comes from whatever line the blank sits on."""
+    text = (
+        "1. The latest discoveries ______ (uncovered / revealed) evidence.\n"
+        "2. Modern engineers design systems that are ______ (integrated / coordinated).\n"
+    )
+    stem, blanks = extract.split_fill_blanks(text)
+    assert [b["number"] for b in blanks] == ["1", "2"]
+
+
+def test_split_fill_blanks_needs_at_least_two():
+    stem, blanks = extract.split_fill_blanks("Define X. ______")
+    assert blanks == []
+
+
+def test_split_fill_blanks_ignores_long_writing_space_lines():
+    """A real Grade 12 General English paper's own open-ended writing
+    questions use the same dots, just for a whole sentence or more, not
+    one word - "(1) ....................................................
+    .............................................................." runs
+    over 100 characters. Must not be mistaken for a short blank."""
+    text = (
+        "(1) " + "." * 110 + "\n\n(2) " + "." * 110 + "\n\n(3) " + "." * 110
+    )
+    stem, blanks = extract.split_fill_blanks(text)
+    assert blanks == []
+
+
+def test_split_fill_blanks_ignores_dots_with_no_real_word_nearby():
+    """A real Grade 12 General English paper mixes literal periods into
+    an otherwise-ellipsis writing-space line ("...…"), which can be
+    short enough on its own to look like a real blank by length alone -
+    what gives it away is that nothing but more dots and blank lines
+    sit beside it, never an actual word."""
+    text = "…………………" + "." * 4 + "…\n\n…………" + "." * 5 + "…………\n\n" + "…" * 20
+    stem, blanks = extract.split_fill_blanks(text)
+    assert blanks == []
+
+
+def test_fill_blank_answers_parses_bare_numbered_list():
+    answer = "1. for \n2. across \n3. with \n4. During \n5. Into "
+    assert extract.fill_blank_answers(answer) == {
+        "1": "for", "2": "across", "3": "with", "4": "During", "5": "Into",
+    }
+
+
+def test_fill_blank_answers_parses_parenthesised_list():
+    answer = "(1) documentation \n(2) original beginning \n(3) surprise"
+    assert extract.fill_blank_answers(answer) == {
+        "1": "documentation", "2": "original beginning", "3": "surprise",
+    }
+
+
+def test_fill_blank_answers_empty_for_plain_text():
+    assert extract.fill_blank_answers("Paris") == {}
+    assert extract.fill_blank_answers(None) == {}
+
+
+def test_inline_blank_markers_are_not_read_as_mcq_options():
+    """A real Grade 12 General English paper's fill-in-the-blank
+    questions ("(1) ______ an important tournament... (2) ______ the
+    entire field...") look exactly like the inline marker shape
+    split_mcq_options()'s own fallback exists to catch for a real
+    Tamil MCQ's options on one line - the two must not collide."""
+    text = (
+        "He went to prepare (1) ______ a tournament. He walked "
+        "(2) ______ the field, then had a word (3) ______ his coach."
+    )
+    stem, options = extract.split_mcq_options(text)
+    assert options == []
+    assert extract.detect_question_type(text) == "fill_blank"
+
+
+def test_a_blank_run_anywhere_in_an_option_disqualifies_it_too():
+    """Not just right after the marker - a real Grade 12 General English
+    paper's "respond to each situation" question has real prose first,
+    then its own blank run further into the same numbered item (a
+    separate one-sentence-response question, not a choice among
+    options)."""
+    text = (
+        '(1) Your classmate failed an exam. Suggest a way to stay motivated.\n'
+        '"Perhaps you ' + "." * 40 + '"\n'
+        '(2) You won an award. A journalist asks about your feelings.\n'
+        '"I ' + "." * 40 + '"\n'
+        '(3) Someone offers you a dessert, but you are on a diet. Refuse politely.\n'
+        '"No, ' + "." * 40 + '"\n'
+    )
+    stem, options = extract.split_mcq_options(text)
+    assert options == []
+
+
+def test_an_internally_blank_line_separated_option_disqualifies_it():
+    """No blank run at all this time - a real Grade 12 General English
+    vocabulary-in-context question numbers each word, but stacks its
+    (unlabelled) 4-5 choice words with a blank line between them, inside
+    what the marker shape alone makes look like one option. A genuine
+    option is written as continuous text; the blank line always falls
+    BETWEEN options, never inside one."""
+    text = (
+        "(1) reports\n\nspeech\noration\nstory\n\ndocumentation\n"
+        "(2) origin\n\nnew ending\noriginal beginning\nfinal stage\nconclusion\n"
+        "(3) wonder\n\nwalking\nsurprise\npanic\nfear\n"
+    )
+    stem, options = extract.split_mcq_options(text)
+    assert options == []
+
+
+def test_marking_scheme_with_no_label_is_still_found_by_shape():
+    """A real Grade 12 General English paper's marking scheme carries no
+    "Answers:"/"Marking Scheme:" label of its own at all - it just
+    restates the exam's own "Part I" heading, then "Question 1" followed
+    immediately by a flat numbered answer list, which a real question
+    never is (real question text always follows "Question 1" instead)."""
+    text = (
+        "Part I\n"
+        "Question 1\n"
+        "Fill in the blanks using the words given. (05 marks)\n"
+        "A student (1) ______ to the shop. He (2) ______ milk.\n"
+        "Question 2\n"
+        "Fill in each blank with the correct verb form. (05 marks)\n"
+        "He (1) ______ (walk) home. He (2) ______ (buy) bread.\n"
+        "\n\n\n"
+        "Part I\n"
+        "Question 1\n"
+        "1. went\n2. bought\n"
+        "Question 2\n"
+        "1. walked\n2. bought\n"
+    )
+    parsed = extract.structure(text, style="question_word")
+    by_number = {q["question_number"]: q for q in parsed["questions"] if not q.get("parent_seq")}
+    assert len(by_number) == 2  # the scheme's own two "Question 1/2" did not become more questions
+    assert extract.fill_blank_answers(by_number["1"]["answer"]) == {"1": "went", "2": "bought"}
+    assert extract.fill_blank_answers(by_number["2"]["answer"]) == {"1": "walked", "2": "bought"}
+
+
+def test_question_word_style_ignores_a_line_wrapped_mid_sentence_question():
+    """A real Grade 12 General English paper: "...two sentences /
+    \\nquestion in each blank." - a line wrap happens to land the lower-
+    case word "question" at the very start of a line, mid-sentence. Only
+    a genuine heading - "question" alone on its line, or followed by a
+    real number - should split; prose continuing on the same line must
+    not."""
+    text = (
+        "Question 7\n"
+        "Complete the dialogue. Do not use more than two sentences /\n"
+        "question in each blank. (05 marks)\n"
+        "Ravi: Hello. \nSara: ......\n"
+        "Question 8\n"
+        "Write a paragraph.\n"
+    )
+    drafts = extract.segment(text, style="question_word")
+    assert [d["question_number"] for d in drafts] == ["7", "8"]
+    assert "in each blank" in drafts[0]["text"]
+
+
 def test_lettered_sub_parts_are_not_mistaken_for_mcq_options():
     """The real Grade 13 Biosystem Technology paper's Part II-B: each
     question is "a) Explain ... b) Describe ...". Counted as options, the
@@ -779,6 +1002,77 @@ def test_lettered_sub_parts_are_not_mistaken_for_mcq_options():
         "b) Compare salting and drying.\nc) Name two preservatives.\n"
     )
     assert extract.structure(text)["sections"][0]["kind"] != "mcq"
+
+
+def test_underline_keeps_a_sentences_lettered_choices_as_mcq_options():
+    """The real Grade 12 General English paper's question 6: "Underline
+    the option that best expresses the meaning of each of the sentences
+    given below" then five sentences, each followed by four lettered
+    paraphrases to pick from. Read as parts, those four lettered items
+    became four separate one-line "questions" each wanting its own
+    answer box - wrong, since a student picks ONE, same as any MCQ.
+    The word "underline" is what tells _split_parts() these lettered
+    lists are choices, not further parts (see _UNDERLINE_WORD)."""
+    text = (
+        "1. Fill in the blank.\n2. Fill in another blank.\n"
+        "3. Fill in a third blank.\n4. Fill in a fourth blank.\n"
+        "5. Fill in a fifth blank.\n"
+        "6. Underline the option that best expresses the meaning of each "
+        "of the sentences given below in bold print.\n"
+        "(1) Artificial intelligence is transforming the way businesses "
+        "operate worldwide.\n"
+        "a. AI has no impact on business.\n"
+        "b. AI is slowly changing business methods.\n"
+        "c. AI is significantly changing how businesses function globally.\n"
+        "d. AI only affects technology companies.\n"
+        "(2) The treaty was signed to prevent further environmental "
+        "damage.\n"
+        "a. The treaty caused environmental harm.\n"
+        "b. The treaty was created to protect the environment.\n"
+        "c. The treaty had no effect.\n"
+        "d. The treaty encouraged pollution.\n"
+    )
+    drafts = extract.segment(text)
+    by_number = {d["question_number"]: d for d in drafts}
+    assert by_number["6(1)"]["text"].startswith(
+        "Artificial intelligence is transforming")
+    assert "a. AI has no impact" in by_number["6(1)"]["text"]
+    # No fake "6(1)(a)" sub-question - the lettered list stayed merged.
+    assert "6(1)(a)" not in by_number
+
+    stem, options = extract.split_mcq_options(by_number["6(1)"]["text"])
+    assert stem == "Artificial intelligence is transforming the way businesses operate worldwide."
+    assert [o["label"] for o in options] == ["a", "b", "c", "d"]
+
+
+def test_underline_does_not_swallow_a_genuinely_marked_part():
+    """The hint word alone is not enough - a part that carries its own
+    marks, or a further nested list, is still a real part, not an
+    option, whatever the question's instruction says."""
+    text = (
+        "6. Underline the correct answer.\n"
+        "a) Explain the main idea. [3]\n"
+        "b) Explain the supporting detail. [4]\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == ["6", "6(a)", "6(b)"]
+
+
+def test_a_leaf_part_is_detected_by_its_own_shape_not_its_depth():
+    """A part one level deep with no children of its own - question 6's
+    "6(1)" above - is exactly as answerable as a depth-0 question; only
+    a part that itself HAS parts is a container ('sub'). Depth alone no
+    longer forces 'sub' (see detect_question_type)."""
+    mcq_text = (
+        "Artificial intelligence is transforming the way businesses "
+        "operate worldwide.\na. AI has no impact on business.\n"
+        "b. AI is slowly changing business methods.\n"
+        "c. AI is significantly changing how businesses function "
+        "globally.\nd. AI only affects technology companies."
+    )
+    assert extract.detect_question_type(mcq_text, has_parts=False) == "mcq"
+    # A container - a stem with real children - stays 'sub' regardless.
+    assert extract.detect_question_type(mcq_text, has_parts=True) == "sub"
 
 
 def test_a_single_stray_number_does_not_beat_a_real_numbering():
@@ -1140,6 +1434,34 @@ def test_picture_in_a_typed_pdf_is_read_where_it_sits(tmp_path):
     assert "Which planet is shown here?" in result["questions"][0]["text"]
     assert len(ocr.calls) == 1
     assert "ocr (1 of 1 pages)" in result["extractor"]
+
+
+def test_a_diagrams_garbled_ocr_is_dropped_not_spliced_in(tmp_path):
+    """A real Grade 12 Tamil Physics paper illustrates two questions with
+    a velocity-time graph each - small pictures holding no real text, just
+    axis labels and lines. Tesseract still "reads" a handful of nonsense
+    syllables off them rather than returning nothing, and with no floor on
+    a picture's OCR length those syllables spliced themselves into the
+    middle of the question's own sentence, as if they were real words.
+    A picture producing fewer than _SPARSE_PAGE characters is now treated
+    as noise and dropped, the same floor a whole page already uses to
+    decide its own text layer is real."""
+    pytest.importorskip("pdfplumber")
+    path = tmp_path / "graph.pdf"
+    _write_pdf(path, [(780, "Grade 12 Physics"),
+                      (740, "21. A cart starts from rest at t=0."),
+                      (400, "22. The next question.")],
+               picture=(50, 500, 300, 150))
+    ocr = FakeOCR("l l. l")  # shorter than _SPARSE_PAGE - diagram noise
+    result = extract.extract(path, ocr=ocr)
+
+    assert "l l. l" not in result["raw_text"]
+    assert len(ocr.calls) == 1  # the picture was still OCR'd, just not kept
+    raw = result["raw_text"]
+    # Nothing wedged itself between the two real lines - the gap holds
+    # only the next line's own printed number, never the dropped picture.
+    gap = raw[raw.index("rest at t=0.") + len("rest at t=0."):raw.index("The next question.")]
+    assert gap.strip() in ("", "22.")
 
 
 def test_picture_halves_are_joined_into_one_picture():

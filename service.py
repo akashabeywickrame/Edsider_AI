@@ -337,6 +337,18 @@ class McqOptionOut(BaseModel):
     text: str
 
 
+class BlankOut(BaseModel):
+    # A fill-in-the-blank question's text is NEVER split (unlike an
+    # MCQ's stem/options) - the whole paragraph, blanks and all, stays
+    # the one question a reviewer reads and the one piece the duplicate-
+    # check fingerprint sees, same reasoning as MCQ options living
+    # inside `text`. `number` is only for matching this box to the right
+    # blank in the paragraph and to the right line of the paper's own
+    # answer key - not shown as a label of its own beyond that.
+    number: str
+    answer: Optional[str] = None
+
+
 class McqInfoOut(BaseModel):
     # `stem` is the text with any detected options stripped off the end.
     # The question's REAL text column still holds stem + options as one
@@ -380,9 +392,14 @@ class IntakeQuestionOut(BaseModel):
     # inline here costs nothing beyond the regex scan _question_out
     # already reads `text` for.
     mcq: Optional[McqInfoOut] = None
-    # 'descriptive', 'mcq' or 'sub' - the effective type: a reviewer's
-    # correction if one was made, else detected_type. Both are sent so the
-    # page can say "detected as X" next to a correction.
+    # Computed the same way and for the same reason as `mcq` above -
+    # split_fill_blanks() run on `text`, each blank's `answer` filled in
+    # from the paper's own answer key (fill_blank_answers() on `answer`,
+    # matched by number) when extraction found one.
+    blanks: List[BlankOut] = []
+    # 'descriptive', 'mcq', 'fill_blank' or 'sub' - the effective type: a
+    # reviewer's correction if one was made, else detected_type. Both
+    # are sent so the page can say "detected as X" next to a correction.
     question_type: Optional[str] = None
     detected_type: Optional[str] = None
 
@@ -404,7 +421,7 @@ class QuestionUpdate(BaseModel):
     reviewed: Optional[bool] = None
     teacher_reviewed: Optional[bool] = None
     # null clears the correction, so the detected type applies again.
-    question_type: Optional[Literal["descriptive", "mcq", "sub"]] = None
+    question_type: Optional[Literal["descriptive", "mcq", "fill_blank", "sub"]] = None
 
 
 class MarkItemIn(BaseModel):
@@ -426,6 +443,18 @@ class McqOptionIn(BaseModel):
 class McqUpdateIn(BaseModel):
     stem: str
     options: List[McqOptionIn] = []
+
+
+class BlankIn(BaseModel):
+    number: str
+    answer: Optional[str] = None
+
+
+class BlanksUpdateIn(BaseModel):
+    # The question's own paragraph is never sent here - unlike an MCQ's
+    # stem/options, a blank is never pulled out of or reassembled into
+    # `text` (see BlankOut). Only the answer key changes.
+    blanks: List[BlankIn] = []
 
 
 class QuestionCreate(BaseModel):
@@ -531,17 +560,30 @@ def _question_out(q, has_parts=False):
     d = dict(q)
     d["reviewed"] = bool(d.get("reviewed"))
     d["teacher_reviewed"] = bool(d.get("teacher_reviewed"))
-    # A part (depth > 0) is never an MCQ - an option is never itself
-    # split further (see intake_extract.split_mcq_options).
-    if not d.get("depth"):
+    # A draft with children is a container holding a shared stem, never
+    # something answered directly - never an MCQ or fill-blank itself.
+    # A leaf draft is, whether it is a whole question (depth 0) or one
+    # part of a structured question (depth > 0) - the real Grade 12
+    # General English paper's question 6 is "Underline the option that
+    # best expresses the meaning..." with five depth-1 parts, each
+    # itself a complete MCQ with its own four lettered options.
+    if not has_parts:
         stem, options = intake_extract.split_mcq_options(d.get("text") or "")
         if options:
             labels = intake_extract.mcq_correct_labels(d.get("answer"))
             d["mcq"] = McqInfoOut(
                 stem=stem, options=[McqOptionOut(**o) for o in options],
                 correct_labels=labels, correct=labels[0] if labels else None)
+        else:
+            _stem, blank_positions = intake_extract.split_fill_blanks(d.get("text") or "")
+            if blank_positions:
+                expected = intake_extract.fill_blank_answers(d.get("answer"))
+                d["blanks"] = [
+                    BlankOut(number=b["number"], answer=expected.get(b["number"]))
+                    for b in blank_positions
+                ]
     d["detected_type"] = intake_extract.detect_question_type(
-        d.get("text"), d.get("depth") or 0, has_parts)
+        d.get("text"), has_parts)
     d["question_type"] = d.get("question_type") or d["detected_type"]
     return IntakeQuestionOut(**d)
 
@@ -723,6 +765,91 @@ def resplit_document(doc_id: int, body: ResplitRequest):
         )
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
+
+
+@app.post("/intake/documents/{doc_id}/precheck-duplicates",
+         dependencies=[Depends(require_api_key)])
+def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
+    """An early, informational duplicate check - meant to run right after
+    extraction, before anyone has spent the ~40 minutes to an hour
+    correcting a single question, so whoever decides whether a paper is
+    worth that review time (the company pays the teacher once a paper
+    is handed over) can see upfront whether it is mostly repeats.
+
+    Unlike check_document_duplicates below, this does not require every
+    question reviewed first - that is the whole point of running it
+    earlier - and it never changes the document's status: it is a
+    heads-up a person reads and decides on, not a gate.
+
+    Checks two different things, both already built for other pages:
+    - within this paper, via the same intake_review.check_batch() the
+      post-review check below uses;
+    - against the WHOLE bank, via dedupe.check_one() - the same engine
+      "Check a question" already runs for one question by hand, run
+      here once per extracted draft, reusing the bank's own already-
+      built index (state["index"]) rather than rebuilding it per
+      question.
+
+    Noisier than the post-review check by nature - it runs on raw,
+    uncorrected extraction text (OCR errors, mis-split questions and
+    all), not text a person has actually checked - which is exactly why
+    it is informational only, never a gate.
+    """
+    with store.connect() as conn:
+        _require_document(conn, doc_id)
+        everything = [dict(q) for q in store.intake_questions(conn, doc_id)]
+    if not everything:
+        raise HTTPException(400, "This paper has no questions yet.")
+    if state["embedder"] is None or state["index"] is None:
+        raise HTTPException(503, "Still loading the model - try again shortly.")
+
+    # A question with parts holds only their shared stem - comparing
+    # that against the bank finds nothing useful. Same filter as
+    # check_document_duplicates below.
+    stems = {d["parent_seq"] for d in everything if d.get("parent_seq")}
+    fresh = [d for d in everything
+            if d["seq"] not in stems and (d["text"] or "").strip()]
+    if not fresh:
+        return {"within_paper": {"exact_groups": [], "similar_pairs": []},
+               "against_bank": [], "questions_checked": 0}
+
+    texts = [d["text"] for d in fresh]
+    vectors = state["embedder"].encode(texts, is_query=False)
+    within_paper = intake_review.check_batch(fresh, state["embedder"],
+                                              vectors=vectors)
+
+    against_bank = []
+    for d, vector in zip(fresh, vectors):
+        question = {"id": None, "text": d["text"], "vector": vector,
+                   "grade": d.get("grade"), "subject": d.get("subject")}
+        hits = dedupe.check_one(question, state["index"],
+                                threshold=dedupe.REVIEW_THRESHOLD, top_k=3)
+        flagged = [h for h in hits if h["score"] >= dedupe.REVIEW_THRESHOLD]
+        if flagged:
+            against_bank.append({
+                "question_id": d["id"],
+                "question_number": d.get("question_number"),
+                "text": d["text"],
+                "matches": [
+                    {
+                        "id": h["match"]["id"],
+                        "text": h["match"]["text"],
+                        "grade": h["match"].get("grade"),
+                        "subject": h["match"].get("subject"),
+                        "score": h["score"],
+                        "raw_score": h["raw_score"],
+                        "verdict": h["verdict"],
+                        "reasons": h["reasons"],
+                    }
+                    for h in flagged
+                ],
+            })
+
+    return {
+        "within_paper": within_paper,
+        "against_bank": against_bank,
+        "questions_checked": len(fresh),
+    }
 
 
 @app.post("/intake/documents/{doc_id}/check-duplicates",
@@ -918,6 +1045,28 @@ def update_question_mcq(q_id: int, body: McqUpdateIn):
     with store.connect() as conn:
         _require_question(conn, q_id)
         store.update_intake_question(conn, q_id, text=combined)
+        q = store.get_intake_question(conn, q_id)
+        has_parts = store.intake_question_has_children(conn, q_id)
+    return _question_out(q, has_parts=has_parts)
+
+
+@app.patch("/intake/questions/{q_id}/blanks", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key)])
+def update_question_blanks(q_id: int, body: BlanksUpdateIn):
+    """Reassembles a fill-in-the-blank question's edited per-blank
+    answers back into one flat answer key ("1. for\\n2. across\\n..."),
+    the same shape _attach_answers() reads out of the paper's own
+    marking scheme and fill_blank_answers() parses back - a reviewer
+    fixing a wrongly-read answer never has to reproduce that shape by
+    hand. The question's own paragraph (`text`) is untouched - unlike an
+    MCQ, a blank is never pulled out of or reassembled into it.
+    """
+    combined = "\n".join(
+        f"{b.number}. {b.answer.strip()}" for b in body.blanks if (b.answer or "").strip()
+    )
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        store.update_intake_question(conn, q_id, answer=combined or None)
         q = store.get_intake_question(conn, q_id)
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)

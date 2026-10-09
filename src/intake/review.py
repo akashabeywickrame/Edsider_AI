@@ -22,13 +22,18 @@ from ..normalize import content_hash
 BATCH_THRESHOLD = 0.95
 
 
-def check_batch(drafts, embedder, threshold=BATCH_THRESHOLD, use_guards=True):
+def check_batch(drafts, embedder, threshold=BATCH_THRESHOLD, use_guards=True,
+                vectors=None):
     """Find repeats among the reviewed questions of one uploaded paper.
 
     `drafts` is dict-like rows with at least 'id' and 'text', optionally
     'grade' and 'subject' (used by the guard layer). `embedder` is
     injected so a test can pass a fake one - same pattern as the rest of
-    this codebase's model-touching code.
+    this codebase's model-touching code. `vectors`, if given, is already
+    computed for these exact drafts in this exact order - lets a caller
+    that also needs these same vectors for something else (the early,
+    against-the-whole-bank precheck - see service.py) skip embedding the
+    same texts twice.
 
     Returns {"exact_groups": [[id, id, ...], ...],
              "similar_pairs":  [<dedupe.find_pairs dict>, ...]}.
@@ -46,8 +51,9 @@ def check_batch(drafts, embedder, threshold=BATCH_THRESHOLD, use_guards=True):
     exact_groups = [ids for ids in by_hash.values() if len(ids) > 1]
     in_exact = {i for ids in exact_groups for i in ids}
 
-    texts = [d["text"] for d in drafts]
-    vectors = embedder.encode(texts, is_query=False)
+    if vectors is None:
+        texts = [d["text"] for d in drafts]
+        vectors = embedder.encode(texts, is_query=False)
     rows = [
         {
             "id": d["id"],

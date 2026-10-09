@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import store
+from src import dedupe, store
 import service
 from service import (
     AssignIn, CommentIn, DocumentUpdate, FinishIn, QuestionCreate,
@@ -31,9 +31,9 @@ from service import (
     attach_image, check_document_duplicates, create_question,
     finish_review, get_document, get_image, list_comments,
     list_document_images, list_documents, list_questions, list_teachers,
-    my_documents, preview_resplit, remove_image, remove_question,
-    resplit_document, touch_teacher, update_document, update_question,
-    upload_document,
+    my_documents, precheck_document_duplicates, preview_resplit,
+    remove_image, remove_question, resplit_document, touch_teacher,
+    update_document, update_question, upload_document,
 )
 
 
@@ -269,6 +269,64 @@ def test_check_duplicates_marks_the_document_checked(document):
     doc = get_document(document.id)
     assert doc.status == "checked"
     assert doc.id in {d.id for d in list_documents(status="checked")}
+
+
+# --------------------------------------------- early (pre-review) check
+
+def test_precheck_needs_the_model_loaded(document):
+    service.state["embedder"] = None
+    service.state["index"] = None
+    with pytest.raises(HTTPException) as err:
+        precheck_document_duplicates(document.id)
+    assert err.value.status_code == 503
+
+
+def test_precheck_does_not_require_review_or_change_status(document):
+    """The whole point of the early check is to run BEFORE the ~40
+    minute to an hour review pass - requiring it first, or marking the
+    document along the way, would defeat that."""
+    qs = list_questions(document.id)
+    assert all(not q.reviewed for q in qs)  # nothing reviewed yet
+
+    service.state["embedder"] = FakeEmbedder({
+        qs[0].text: _unit([1.0, 0.0, 0.0]),
+        qs[1].text: _unit([0.0, 1.0, 0.0]),
+    })
+    service.state["index"] = dedupe.VectorIndex([])
+    try:
+        out = precheck_document_duplicates(document.id)
+    finally:
+        service.state["embedder"] = None
+        service.state["index"] = None
+
+    assert out["questions_checked"] == 2
+    assert out["against_bank"] == []
+    doc = get_document(document.id)
+    assert doc.status == "extracted"  # unchanged - informational only
+
+
+def test_precheck_finds_a_match_against_the_whole_bank(document):
+    qs = list_questions(document.id)
+    service.state["embedder"] = FakeEmbedder({
+        qs[0].text: _unit([1.0, 0.0, 0.0]),
+        qs[1].text: _unit([0.0, 1.0, 0.0]),
+    })
+    service.state["index"] = dedupe.VectorIndex([
+        {"id": "BANK1", "text": "An existing bank question", "grade": "G09",
+         "subject": "Maths", "vector": list(_unit([1.0, 0.0, 0.01]))},
+    ])
+    try:
+        out = precheck_document_duplicates(document.id)
+    finally:
+        service.state["embedder"] = None
+        service.state["index"] = None
+
+    assert len(out["against_bank"]) == 1
+    hit = out["against_bank"][0]
+    assert hit["question_id"] == qs[0].id
+    assert hit["matches"][0]["id"] == "BANK1"
+    doc = get_document(document.id)
+    assert doc.status == "extracted"
 
 
 # ------------------------------------------- assign, teacher, promote

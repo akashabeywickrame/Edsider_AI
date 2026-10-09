@@ -20,6 +20,7 @@ correct, and the confidence flag on each draft says where to look first.
 import os
 import re
 import shutil
+import unicodedata
 from io import BytesIO
 from pathlib import Path
 
@@ -311,7 +312,17 @@ SPLIT_STYLES = {
 DEFAULT_SPLIT_STYLE = "number"
 
 _QUESTION_WORD_START = re.compile(
-    r"^[ \t]*(?:\d{1,3}[ \t]*[.)])?[ \t]*question\b[ \t.:\-]*(?P<qn>\d{1,3})?",
+    # With a number ("Question 7", "Question (06)"), that number is all
+    # that needs to follow. With none, "question" must be the last thing
+    # on its own line (real Grade 13 Combined Maths worked solutions:
+    # a bare "Question" heading, numbered questions nowhere in that
+    # document at all) - not a mid-sentence, lowercased "question" a
+    # line wrap happened to land at the start of a line (a real Grade 12
+    # General English paper: "...two sentences /\nquestion in each
+    # blank.", where "in each blank" on the same line is what gives it
+    # away as prose, not a heading).
+    r"^[ \t]*(?:\d{1,3}[ \t]*[.)])?[ \t]*question\b[ \t.:\-]*"
+    r"(?:(?P<qn>\d{1,3})|(?=[ \t]*$))",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -410,6 +421,27 @@ _SUB_MARKER = re.compile(
     re.MULTILINE,
 )
 
+# Same marker shapes as _SUB_MARKER, anchored to "after whitespace"
+# instead of "start of a line" - a real Grade 12 Tamil physics paper
+# prints a whole MCQ option list on ONE line, space-separated:
+# "(i) X (ii) Y (iii) Z (iv) W (v) V", not one option per line like
+# every English paper this was first built against. The line anchor
+# made every option after the first invisible - only "(i)" ever sat at
+# a line start, and one marker alone is not a list (see _sub_starts),
+# so these questions never looked like MCQs at all and fell back to
+# "descriptive". Used only as split_mcq_options()'s last resort, never
+# by _split_parts(): a structured question's own parts rely on the line
+# anchor to tell a real part from a parenthetical aside inside a
+# sentence, and that distinction matters less here because the
+# counting-up requirement (i, ii, iii... in order, not restarting) is
+# already what tells a real option list from a stray "(a)" in prose.
+_INLINE_SUB_MARKER = re.compile(
+    r"(?:^|(?<=\s))(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|\d{1,2})\)"
+    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z])(?P<close>[.)]))"
+    r"[ \t]*(?=\S|$)",
+    re.MULTILINE,
+)
+
 _ROMAN_SEQUENCE = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
 
 # How deep to go. Three levels covers every real paper seen - question,
@@ -422,6 +454,14 @@ MAX_SUB_DEPTH = 2
 # 'system' as used in computing. [2]" at 48 characters; MCQ options on
 # the same paper run 3 to 30.
 _MIN_PART_CHARS = 35
+
+# The word that tells _split_parts() a question's own list is choices to
+# pick from, not further parts - the real Grade 12 General English
+# paper's "Underline the option that best expresses the meaning..." and
+# "Underline the most appropriate response...". "Choose"/"select" are
+# the same instruction in other words but unmeasured on a real paper so
+# far - not added until one is seen.
+_UNDERLINE_WORD = re.compile(r"\bunderline\b", re.IGNORECASE)
 
 
 def _tag_kind(tag):
@@ -450,7 +490,7 @@ def _expected(kind, index):
     return chr(ord("a") + index) if index < 26 else None
 
 
-def _sub_starts(body, prefer="first", allowed=None):
+def _sub_starts(body, prefer="first", allowed=None, marker=_SUB_MARKER):
     """(position, end of marker, printed marker) for one question's parts.
 
     Every style is tried on its own - bracketed or not, and read as
@@ -466,9 +506,13 @@ def _sub_starts(body, prefer="first", allowed=None):
     lettered list of statements ("a. ... b. ... c. ...") before the
     options ("I. ... II. ..."). Taking the earliest mis-read those
     statements as the options.
+
+    `marker` is which pattern counts as a marker at all - _SUB_MARKER
+    (line-anchored) by default, or _INLINE_SUB_MARKER for a paper that
+    prints a whole option list on one line (see its own comment).
     """
     found = []
-    for m in _SUB_MARKER.finditer(body):
+    for m in marker.finditer(body):
         tag = m.group("btag") or m.group("tag")
         bracketed = m.group("btag") is not None
         style = (bracketed, m.group("close") or ")")
@@ -505,10 +549,8 @@ def _sub_starts(body, prefer="first", allowed=None):
     return best
 
 
-# A line of dots is where the student writes, not a part to answer. Also the
-# "(.........)" printed at the end of a question to show where its mark or
-# answer goes.
-_ANSWER_BLANK = re.compile(r"(?:\.{4,}|…{2,}|_{4,})\s*$")
+# The "(.........)" printed at the end of a question to show where its
+# mark or answer goes.
 _BLANK_MARKER = re.compile(r"\(\s*(?:\.{3,}|…{2,})\s*\)\s*$")
 
 
@@ -518,23 +560,64 @@ def _strip_blank_marker(text):
     return _BLANK_MARKER.sub("", text).rstrip()
 
 
-def _split_parts(body, depth=0):
+# A whole line of nothing but dots, underscores or ellipses is the paper's
+# own ruled space for a handwritten answer - not something the question or
+# part actually said. _strip_blank_marker above only catches one at the
+# very end of a block; a descriptive-answer paper (Grade 13
+# Biosystem Technology, Part II-A: four blank lines printed after every
+# part) has them buried in the MIDDLE of a part's text too, between its
+# instruction and the next part's marker. Left in, that clutter showed up
+# in the reviewer's question box as literal dots - the review page already
+# gives every part its own text box to type an answer into, so the paper's
+# blank lines serve no purpose once extracted.
+_BLANK_LINE = re.compile(r"^[ \t]*(?:\.{3,}|…{2,}|_{3,})[ \t]*$", re.MULTILINE)
+
+
+def _strip_blank_lines(text):
+    """Remove the paper's own printed answer-space lines and collapse the
+    gaps they leave behind."""
+    text = _BLANK_LINE.sub("", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _split_parts(body, depth=0, mcq_hint=False):
     """A question body -> (stem, [part, ...]), each part the same shape.
 
     The stem is what comes before the first part - the shared scenario or
     diagram reference every part depends on. Parts nest: a part with its
     own "(i) (ii)" list is split again, down to MAX_SUB_DEPTH.
 
+    `mcq_hint` carries down from the top call: the real Grade 12 General
+    English paper's question 6 is "Underline the option that best
+    expresses the meaning..." followed by five sentences, each with its
+    own lettered (a)-(d) list of paraphrases to pick from. Read as parts,
+    those four lettered items became four separate one-line "questions",
+    each wanting its own answer box - wrong, since a student picks ONE
+    of them, the same as any other MCQ. `mcq_hint`, set once from the
+    instruction text no recursive call still has access to, says "this
+    question's own wording already told us its lists are choices, not
+    parts" - see the option-list guard below, which otherwise has no
+    way to tell this shape apart from a genuine two-part question with
+    neither part carrying marks.
+
     Returns ("the whole body", []) when there is nothing to split, so a
     plain question is unaffected.
     """
     if depth >= MAX_SUB_DEPTH:
-        return body.strip(), []
+        return _strip_blank_lines(body), []
 
     starts = _sub_starts(body)
     if not starts:
-        return body.strip(), []
+        return _strip_blank_lines(body), []
 
+    if depth == 0:
+        mcq_hint = bool(_UNDERLINE_WORD.search(body[:starts[0][0]]))
+
+    # Built from the raw text, dots and all - the checks below (an all-blank
+    # split, an option list, "is this long enough to be a real part") all
+    # key off structure that only shows up in the unstripped text; blank
+    # lines are removed only from what actually gets stored, at each
+    # return point below.
     pieces = []
     for i, (pos, end, tag) in enumerate(starts):
         stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
@@ -542,8 +625,14 @@ def _split_parts(body, depth=0):
 
     # "(1) ........ (2) ........" is one question with two lines to write on -
     # one answer box serves all of them, so nothing here is split into parts.
-    if all(_ANSWER_BLANK.search(p) for _, p in pieces):
-        return body.strip(), []
+    # Checked on what is LEFT once each piece's own blank answer-lines are
+    # stripped out, not on whether the raw piece merely ends in dots - a
+    # real part's own text ends in exactly the same printed blank lines
+    # (the Biosystem Part II-A case: "i) Mention..." followed by four
+    # ruled lines to write on), and matching on the raw text collapsed
+    # those real parts into this same "nothing but blank space" case.
+    if all(not _strip_blank_lines(p) for _, p in pieces):
+        return _strip_blank_lines(body), []
 
     # Four or more numbered items with no marks and nothing under any of them
     # are an option list, not parts - the shape of a multiple-choice question
@@ -552,7 +641,19 @@ def _split_parts(body, depth=0):
     # sub-questions. A structured part has marks or parts of its own.
     if (len(pieces) >= 4 and all(tag.isdigit() for tag, _ in pieces)
             and not any(_find_marks(p) or _sub_starts(p) for _, p in pieces)):
-        return body.strip(), []
+        return _strip_blank_lines(body), []
+
+    # A list under a question whose own instruction says "underline" (or
+    # "choose", "select" - see _UNDERLINE_WORD) is the paper telling us
+    # directly that what follows are choices to pick from, not further
+    # parts - the signal the digit-only guard above has no way to give
+    # for a LETTERED list. Still requires the same "nothing of its own"
+    # shape a real part would have - marks, or a further nested list -
+    # so a genuinely two-part "underline..." question (rare, unmeasured)
+    # is not swept up by wording alone.
+    if (mcq_hint and len(pieces) >= 2
+            and not any(_find_marks(p) or _sub_starts(p) for _, p in pieces)):
+        return _strip_blank_lines(body), []
 
     # An MCQ's options and a list of choices look exactly like a part
     # list. What tells them apart is that a part is a question in its own
@@ -560,15 +661,15 @@ def _split_parts(body, depth=0):
     real = [p for _, p in pieces
             if len(p) >= _MIN_PART_CHARS or _find_marks(p)]
     if len(real) < 2:
-        return body.strip(), []
+        return _strip_blank_lines(body), []
 
     parts = []
     for tag, piece in pieces:
-        inner_stem, inner_parts = _split_parts(piece, depth + 1)
+        inner_stem, inner_parts = _split_parts(piece, depth + 1, mcq_hint)
         parts.append({"tag": tag, "text": inner_stem,
                       "marks": _own_marks(piece, inner_stem, inner_parts),
                       "parts": inner_parts})
-    return body[:starts[0][0]].strip(), parts
+    return _strip_blank_lines(body[:starts[0][0]]), parts
 
 
 def _is_roman(tag):
@@ -604,13 +705,24 @@ def split_mcq_options(body):
     # the question - lettered statements A-E, roman points - is part of the
     # question's text, so it is only used when there is no numbered list at all
     # (Tamil papers number their options (i)-(v)).
+    #
+    # Each style is tried line-anchored first, then - only if that finds
+    # nothing - with _INLINE_SUB_MARKER: a real Grade 12 Tamil physics
+    # paper prints its whole option list on one line, space-separated
+    # ("(i) X (ii) Y (iii) Z (iv) W (v) V"), where only the first marker
+    # ever sits at a line start and one marker alone is never a list.
     starts = (_sub_starts(body, prefer="last", allowed=str.isdigit)
-              or _sub_starts(body, prefer="last", allowed=_is_roman))
+              or _sub_starts(body, prefer="last", allowed=str.isdigit,
+                             marker=_INLINE_SUB_MARKER)
+              or _sub_starts(body, prefer="last", allowed=_is_roman)
+              or _sub_starts(body, prefer="last", allowed=_is_roman,
+                             marker=_INLINE_SUB_MARKER))
     # Lettered options (A. B. C. ...) are kept for papers that use them. A question
     # that also carries a numbered answer key - "(1) ABCD (2) ACDE" - is different:
     # its lettered lines are statements to judge, not options.
     if not starts and not re.search(r"\(\s*\d\s*\)", body):
-        starts = _sub_starts(body, prefer="last")
+        starts = (_sub_starts(body, prefer="last")
+                 or _sub_starts(body, prefer="last", marker=_INLINE_SUB_MARKER))
     if not starts:
         return body.strip(), []
     options = []
@@ -618,7 +730,100 @@ def split_mcq_options(body):
         stop = starts[i + 1][0] if i + 1 < len(starts) else len(body)
         options.append({"label": tag, "marker": body[pos:end],
                         "text": body[end:stop].strip()})
+    # A genuine option is one coherent piece of real answer text - never
+    # a fill-in-the-blank gap, and never several separate short items
+    # with a blank line between THEM, inside what is supposedly one
+    # option. The same "(N) ..." marker shape fits three real Grade 12
+    # General English paper questions that are not MCQs at all:
+    #   - "(1) ______ an important tournament... (2) ______ the entire
+    #     field..." - a blank run right after the marker (see
+    #     split_fill_blanks(), what these actually are).
+    #   - "(1) Your classmate failed... \"Perhaps you ..................\"
+    #     (2) You won...\"I ..............\"" - real prose first, but a
+    #     blank run further into the same "option" (a one-sentence
+    #     response question, each item wanting a different answer, not
+    #     a choice among them).
+    #   - "(1) reports\n\nspeech\noration\nstory\n\ndocumentation
+    #     (2) origin\n\nnew ending\n..." - no blank run at all, but each
+    #     "option" is really 4-5 separate unlabelled words stacked with
+    #     blank lines between them (a vocabulary-in-context question,
+    #     each numbered word its own item) - a real option is written as
+    #     continuous text and never contains a blank line itself; the
+    #     blank line always falls BETWEEN options, never inside one.
+    if any(_BLANK_RUN.search(o["text"]) or "\n\n" in o["text"] for o in options):
+        return body.strip(), []
     return body[:starts[0][0]].strip(), options
+
+
+# A fill-in-the-blank gap - a run of underscores or dots standing in for a
+# word the student writes in, INLINE with real words on both sides. Never
+# a whole line by itself: that shape (the paper's own ruled space for a
+# longer written answer) is what _strip_blank_lines() already removes
+# elsewhere, and the two must not be confused - a blank here always sits
+# inside a sentence someone is meant to complete, not after one.
+#
+# Matched UNCAPPED on purpose - a quantifier cap like {3,50} does not
+# exclude a longer run, it only splits it into several <=50-char matches
+# that would each still count on their own. The length check that
+# actually excludes one happens in Python, in split_fill_blanks() below:
+# a real Grade 12 General English paper's actual one-word blanks run
+# 4-37 characters ("(1) ______", "(1) ........(handle)"), while its
+# "From.......", "Subject......." and similar labelled writing-space
+# lines - meant for a sentence or more, not one word, and already missed
+# by _strip_blank_lines() because a label sits before the dots on the
+# same line - run 103-159. No real blank measured anywhere near that
+# length; the gap between the two is wide enough that the exact cutoff
+# does not matter much, as long as it sits inside it.
+_BLANK_RUN = re.compile(r"(?:_{3,}|\.{3,})")
+_MAX_BLANK_CHARS = 50
+# The number labelling a blank - found either immediately before it, in
+# parentheses ("(1) ______", a real Grade 12 General English paper's
+# preposition and verb-form exercises), or starting the line/sentence the
+# blank sits inside ("1. The latest discoveries ______ (choices)", the
+# same paper's word-choice exercises, numbered per sentence rather than
+# per blank). Scanning back for the LAST match before the blank's own
+# position handles both shapes without needing to tell them apart.
+_BLANK_NUMBER = re.compile(r"\(\s*(\d{1,2})\s*\)|^[ \t]*(\d{1,2})[.)]", re.MULTILINE)
+# A genuine blank always sits inside a sentence - a real word within a
+# few characters on at least one side. The long writing-space lines on
+# this same paper are not purely the horizontal-ellipsis character "…"
+# throughout, as they visually look - a real Grade 12 General English
+# paper mixes in short runs of literal periods here and there ("...…"),
+# and one of those short runs, on its own, is indistinguishable by
+# length alone from a real one-word blank. What tells them apart is
+# what sits beside it: nothing but more dots, ellipses and blank lines
+# beside a writing-space fragment, real letters beside an actual blank.
+_WORD_NEARBY = re.compile(r"[A-Za-z]")
+_BLANK_CONTEXT_CHARS = 10
+
+
+def split_fill_blanks(body):
+    """(body, [{"number": "1", "pos": int}, ...]) - body is unchanged
+    (the whole paragraph IS the question, blanks and all; unlike an MCQ
+    option, a blank is never pulled out of the text it lives in), the
+    list is just where each numbered gap sits, for the review page to
+    show one answer box per blank, positioned the same way split_mcq_
+    options() positions each option.
+
+    Needs at least 2 blanks to count - one is an ordinary short-answer
+    question that happens to use an underline, not a list to show boxes
+    for. Returns (body, []) when nothing qualifies.
+    """
+    blanks = []
+    for m in _BLANK_RUN.finditer(body):
+        if m.end() - m.start() > _MAX_BLANK_CHARS:
+            continue
+        before = body[max(0, m.start() - _BLANK_CONTEXT_CHARS):m.start()]
+        after = body[m.end():m.end() + _BLANK_CONTEXT_CHARS]
+        if not (_WORD_NEARBY.search(before) or _WORD_NEARBY.search(after)):
+            continue
+        number = None
+        for nm in _BLANK_NUMBER.finditer(body, 0, m.start()):
+            number = nm.group(1) or nm.group(2)
+        blanks.append({"number": number or str(len(blanks) + 1), "pos": m.start()})
+    if len(blanks) < 2:
+        return body, []
+    return body, blanks
 
 
 # Up to 4 letters, not 2: a plain digit or single letter label never
@@ -727,15 +932,30 @@ QUESTION_TYPES = {"descriptive": "Descriptive", "mcq": "MCQ",
                   "sub": "Sub-questions"}
 
 
-def detect_question_type(text, depth=0, has_parts=False):
-    """'sub' for a part or a question with parts, 'mcq' for one whose
-    text holds an option list, else 'descriptive' - a question with its
-    own answer and no options or parts. A picture-only MCQ has no text
-    options, so it reads as descriptive until a reviewer corrects it."""
-    if depth or has_parts:
+def detect_question_type(text, has_parts=False):
+    """'sub' for a question with parts of its own (a container holding a
+    shared stem, never answered directly), 'mcq' for one whose text
+    holds an option list, 'fill_blank' for one whose text holds a
+    numbered list of blanks to fill in (a real Grade 12 General English
+    paper: a whole paragraph with "(1) ______ ... (2) ______..." running
+    through it), else 'descriptive' - a question with its own answer and
+    no options, blanks or parts. A picture-only MCQ has no text options,
+    so it reads as descriptive until a reviewer corrects it.
+
+    `depth` alone no longer forces 'sub' - the real Grade 12 General
+    English paper's question 6, "Underline the option that best
+    expresses the meaning...", has five depth-1 parts (one per
+    sentence), each itself a complete MCQ with its own four lettered
+    options and no children of its own. A part with no children is
+    exactly as answerable on its own as a depth-0 question; only a part
+    that itself has parts - a container, not a leaf - is 'sub'."""
+    if has_parts:
         return "sub"
     _stem, options = split_mcq_options(text or "")
-    return "mcq" if options else "descriptive"
+    if options:
+        return "mcq"
+    _stem, blanks = split_fill_blanks(text or "")
+    return "fill_blank" if blanks else "descriptive"
 
 
 # How several correct options are written in one answer: "1, 3", "1 and 3",
@@ -755,6 +975,31 @@ def mcq_correct_labels(answer):
         if label and label not in labels:
             labels.append(label)
     return labels
+
+
+# "1. for" / "(1) documentation" - one entry of a fill-in-the-blank
+# answer key, the shape _attach_answers() recognises in the paper's own
+# marking scheme and stores as this question's answer verbatim (unlike
+# an MCQ's options, a blank's text is never pulled out of the question
+# and reassembled - only its separate answer key is this structured).
+_BLANK_ANSWER_LINE = re.compile(
+    r"^[ \t]*(?:\(\s*(\d{1,2})\s*\)|(\d{1,2})[.)])[ \t]*(\S.*)$", re.MULTILINE
+)
+
+
+def fill_blank_answers(answer):
+    """{"1": "for", "2": "across", ...} from a stored flat answer key -
+    the same numbering split_fill_blanks() gives each blank, so a caller
+    zips them by number. {} when `answer` is empty or not in this shape
+    (an ordinary short-answer question's answer is left as plain text,
+    never parsed as if it were a list)."""
+    if not answer:
+        return {}
+    out = {}
+    for m in _BLANK_ANSWER_LINE.finditer(answer):
+        number = m.group(1) or m.group(2)
+        out[number] = m.group(3).strip()
+    return out
 
 
 def _bold_mcq_answer(text, bold_runs):
@@ -906,8 +1151,19 @@ _MARKS_EACH = re.compile(
 # are real typos in this same paper that the verb-exclusion list missed
 # entirely, since \bwrite\b needs a word boundary "write" does not have
 # when run straight into "down".
+#
+# Anchored to "after whitespace" rather than "start of a line" (like
+# _SUB_MARKER/_INLINE_SUB_MARKER) so a real Grade 12 Tamil Physics
+# paper, which prints a whole option list on ONE line ("(i) X (ii) Y
+# (iii) Z (iv) W (v) V"), is still recognised - the line anchor alone
+# only ever saw the first marker, and one marker is never enough to
+# count as a list (see below), so these questions never looked like
+# MCQs at all and fell back to "descriptive". The nested-marker and
+# verb-exclusion lookaheads above are unaffected by this - they still
+# reject "a) i)Mention..." and "a) Explain..." exactly as before,
+# wherever they sit.
 _OPTION_LINE = re.compile(
-    r"^[ \t]*(?:\([ \t]*(?:[1-5]|[a-eA-E]|[ivxIVX]{1,4})[ \t]*\)"
+    r"(?:^|(?<=\s))[ \t]*(?:\([ \t]*(?:[1-5]|[a-eA-E]|[ivxIVX]{1,4})[ \t]*\)"
     r"|(?:[a-eA-E]|[ivxIVX]{1,4})[.)])[ \t]+"
     r"(?!(?:explain|describe|state|name|draw|write(?:down)?|calculate|define"
     r"|list(?:down)?|give|identify|compare|discuss|show|find|prove|outline"
@@ -1096,6 +1352,35 @@ def _attach_answers(answers, drafts, sections):
                 if per_part.get(suffix):
                     kid["answer"] = _strip_marks_annotation(per_part[suffix])
 
+    # A fill-in-the-blank question's answer key is a flat numbered list -
+    # "1. for\n2. across\n..." or "(1) documentation\n(2) ..." - never
+    # "(N)(letter)" part tags, so _split_answer_by_part() above found
+    # nothing to split and (when it even ran) just handed the whole block
+    # over verbatim. Matched here by POSITION, not by printed number:
+    # "Question 1" repeats once per major part on a real Grade 12 General
+    # English paper (Part I, then Part II, each restarting its own
+    # numbering), so a number alone cannot tell two same-numbered blocks
+    # apart - but the scheme and the paper list their questions in the
+    # same order throughout, so position can. Only runs when the paper's
+    # own top-level questions outnumber-match the scheme's "Question N"
+    # blocks exactly, and even then only touches a question that is
+    # itself fill-in-the-blank shaped (split_fill_blanks finds 2+ blanks)
+    # AND whose matched block is itself a flat numbered list - a
+    # vocabulary question asking "underline the closest meaning for each
+    # bold word" has no blanks in its own text at all, even though its
+    # answer key happens to look like one, and must not be treated as
+    # if it were.
+    tops = [d for d in drafts if not d.get("parent_seq")]
+    if blocks and len(tops) == len(blocks):
+        for i, d in enumerate(tops):
+            stop = blocks[i + 1].start() if i + 1 < len(blocks) else len(answers)
+            block = answers[blocks[i].start():stop]
+            body = block.split("\n", 1)[1].strip() if "\n" in block else ""
+            lines = [ln for ln in body.split("\n") if ln.strip()]
+            if (lines and all(_BLANK_ANSWER_LINE.match(ln) for ln in lines)
+                    and len(split_fill_blanks(d["text"])[1]) >= 2):
+                d["answer"] = body
+
 
 def _emit_parts(drafts, parts, parent_seq, prefix, section, depth=1):
     """Add one question's parts to `drafts`, in reading order.
@@ -1128,6 +1413,68 @@ def _emit_parts(drafts, parts, parent_seq, prefix, section, depth=1):
         _emit_parts(drafts, part["parts"], seq, number, section, depth + 1)
 
 
+# A free-standing instruction between two numbered questions - "For
+# questions 21 to 25, choose the answer that..." - belongs to the
+# question that FOLLOWS it, but _number_starts() has no way to know
+# that: everything between one marker and the next is handed to the
+# question before it, by construction, the same way a part's own
+# shared stem works. This is the one case where what comes AFTER a
+# paragraph decides which question it belongs to.
+#
+# Recognised by a blank line on each side (its own paragraph) and how
+# it opens - a real bullet character on a clean text layer, or, on a
+# scanned paper, a single stray character that cannot legitimately
+# start a real word: a Unicode "combining mark" (category Mn/Mc) is
+# always attached to the letter before it, never standing alone. That
+# covers what Tesseract actually did on a real Grade 13 (A/L) Political
+# Science paper (scanned, 10 of 10 pages OCR'd): it read the bullet "•"
+# in front of "For questions 21 to 25, choose..." as a single stray
+# Sinhala dependent vowel sign, "ේ" - which cannot start a word on its
+# own - sitting right where the bullet was, immediately before the
+# instruction's first real word. The same check works for Tamil or any
+# other script with combining marks, without hard-coding which one.
+_BULLET_CHARS = "•‣∙·"
+_MAX_INSTRUCTION_CHARS = 300
+
+
+def _split_trailing_instruction(body):
+    """(this question's own text, a trailing paragraph meant for the
+    question(s) after it instead - or None when there is no such
+    paragraph). See the comment above."""
+    if "\n\n" not in body:
+        return body, None
+    head, tail = body.rsplit("\n\n", 1)
+    tail = tail.strip()
+    if not tail or len(tail) > _MAX_INSTRUCTION_CHARS:
+        return body, None
+    first = tail[0]
+    if first in _BULLET_CHARS or unicodedata.category(first) in ("Mn", "Mc"):
+        return head.strip(), tail
+    return body, None
+
+
+def _looks_like_marking_scheme(text, start):
+    """Does the marking scheme - not another real part - begin right
+    after this heading? A real Grade 12 General English paper's scheme
+    carries no "Answers:"/"Marking Scheme:" label of its own at all - it
+    just restates the exam's own structure verbatim, opening with a bare
+    "Part I" exactly like the real exam did, so _heading() reads it as
+    an ordinary new part and the scheme's "Question 1 / 1. for / 2.
+    across / ..." gets read as 50-odd brand new questions instead of
+    being left as the answer key it is.
+
+    "Question 1" (bare - real question text is never on the same line,
+    see _ANSWER_BLOCK) followed immediately by a flat numbered answer
+    line is the tell: a real question ALWAYS has substantial
+    instructions right after its own "Question 1" ("Fill in the blanks
+    in the following text..."), never a one-word answer.
+    """
+    lines = [ln for ln in text[start:start + 600].split("\n") if ln.strip()]
+    if len(lines) < 2 or not _ANSWER_BLOCK.match(lines[0]):
+        return False
+    return bool(_BLANK_ANSWER_LINE.match(lines[1]))
+
+
 def structure(text, style=DEFAULT_SPLIT_STYLE):
     """A paper's full text -> {"sections": [...], "questions": [...]}.
 
@@ -1154,6 +1501,9 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
     for line in text.split("\n"):
         h = _heading(line)
         if h and h["kind"] == "answers":
+            answers_at = pos
+            break
+        if h and h["label"] and _looks_like_marking_scheme(text, pos + len(line) + 1):
             answers_at = pos
             break
         # A part title repeated at the top of every page is still the
@@ -1239,6 +1589,17 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
             pieces.append((raw, body))
         if not pieces:
             pieces.append((None, text[sp["body"]:sp["end"]].strip()))
+
+        # A trailing instruction paragraph was handed to the question
+        # before it by construction (see _split_trailing_instruction) -
+        # move it to the front of the question it actually applies to.
+        for i in range(len(pieces) - 1):
+            raw, body = pieces[i]
+            kept, instruction = _split_trailing_instruction(body)
+            if instruction:
+                pieces[i] = (raw, kept)
+                next_raw, next_body = pieces[i + 1]
+                pieces[i + 1] = (next_raw, instruction + "\n\n" + next_body)
 
         kind = sp["kind"] or _kind_hint(intro) or _kind_from(b for _, b in pieces)
         for raw, body in pieces:
@@ -1500,17 +1861,68 @@ def _merge_touching(boxes):
     return merged
 
 
-def _text_with_pictures_read(page, boxes, ocr):
+def _mupdf_page_text(mu_page):
+    """A page's plain text, read with PyMuPDF instead of pdfplumber.
+
+    pdfplumber's underlying engine (pdfminer.six) extracts some Tamil
+    conjunct-consonant clusters with their glyphs in the wrong order -
+    measured on a real Grade 12 Tamil Physics paper, pure text-layer
+    reading, no OCR involved at all: "சர்வதேச" (ர + VIRAMA + வ, a real
+    conjunct) came out as "சரவ் தேச" (ர + வ + VIRAMA, plus a stray
+    space), silently splitting one word into two wrong ones. Three
+    separate conjunct words on the same page all showed the identical
+    swap; PyMuPDF read every one of them correctly. Since this is about
+    the TEXT CONTENT specifically, only the plain-text and text-lines
+    reads are switched to PyMuPDF (this function and
+    _mupdf_text_lines) - picture boxes, bold-run font names, and
+    rendering a page as an image for OCR stay on pdfplumber, none of
+    which showed this problem and all of which this codebase's
+    picture/OCR routing already depends on pdfplumber's own object
+    model for.
+    """
+    return mu_page.get_text()
+
+
+def _mupdf_text_lines(mu_page):
+    """[{"top": y, "text": line}, ...], the same shape pdfplumber's
+    page.extract_text_lines() returns - see _mupdf_page_text() for why
+    this reads through PyMuPDF instead."""
+    lines = []
+    for block in mu_page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"]).strip()
+            if text:
+                lines.append({"top": line["bbox"][1], "text": text})
+    return lines
+
+
+def _text_with_pictures_read(page, mu_page, boxes, ocr):
     """The text layer, with each picture's text slotted in at the height
     it sits on the page - so a question pasted in as a screenshot lands
     between the question above it and the one below, not at the end
-    where segment() would glue it onto the last question."""
+    where segment() would glue it onto the last question.
+
+    A picture's OCR output is kept only once it reaches _SPARSE_PAGE
+    characters - the same floor a whole page uses to decide whether its
+    own text layer is real text at all (_pdf_page_route). Below that, it
+    is far more likely to be noise from a diagram or graph (axis labels,
+    tick marks, stray lines Tesseract mistook for letters) than genuine
+    pasted-in text: a real Grade 12 Tamil Physics paper has two
+    questions, each illustrating a velocity-time graph, where Tesseract
+    read a handful of nonsense syllables off the picture - "ஓ. ஓ." / "ல
+    ல்‌ டி" - that then spliced themselves into the middle of the
+    question's own sentence, with nothing to tell a reviewer the words
+    were never really there. A genuine pasted-in question (the Grade 13
+    Model Pure paper, English, where every question IS a picture) is
+    never this short - it is a whole sentence - so this costs nothing
+    real while catching exactly the noise case.
+    """
     blocks = [(line["top"], _fix_ligatures(line["text"]))
-              for line in page.extract_text_lines()]
+              for line in _mupdf_text_lines(mu_page)]
     for box in boxes:
-        text = ocr(page.crop(box).to_image(resolution=_OCR_DPI).original)
-        if text.strip():
-            blocks.append((box[1], text.strip()))
+        text = ocr(page.crop(box).to_image(resolution=_OCR_DPI).original).strip()
+        if len(text) >= _SPARSE_PAGE:
+            blocks.append((box[1], text))
     blocks.sort(key=lambda b: b[0])
     return "\n".join(t for _, t in blocks)
 
@@ -1626,14 +2038,26 @@ def read_pdf(path, ocr, force_ocr=False):
         raise ExtractionUnavailable(
             "pdfplumber is not installed - `pip install pdfplumber`"
         ) from e
+    try:
+        import fitz
+    except ImportError as e:
+        raise ExtractionUnavailable(
+            "pymupdf is not installed - `pip install pymupdf`"
+        ) from e
 
     parts, bold_runs = [], []
     read_by_ocr = not_read = came_back_empty = 0
     reason = None
-    with pdfplumber.open(path) as pdf:
+    with pdfplumber.open(path) as pdf, fitz.open(path) as mu_doc:
         total = len(pdf.pages)
-        for page in pdf.pages:
-            text = _fix_ligatures(page.extract_text() or "")
+        for i, page in enumerate(pdf.pages):
+            mu_page = mu_doc[i]
+            # Text content itself comes from PyMuPDF (see
+            # _mupdf_page_text's own note); everything else here - picture
+            # boxes, bold-run detection, rendering a page as an image for
+            # OCR - stays on pdfplumber, which this codebase's routing
+            # already depends on.
+            text = _fix_ligatures(_mupdf_page_text(mu_page) or "")
             boxes = _pictures_on(page)
             bold_runs.extend(_pdf_bold_runs(page))
             route = "page" if force_ocr else _pdf_page_route(text, boxes)
@@ -1649,7 +2073,7 @@ def read_pdf(path, ocr, force_ocr=False):
                         if len(re.sub(r"\s", "", text)) < _SPARSE_PAGE:
                             came_back_empty += 1
                     else:
-                        text = _text_with_pictures_read(page, boxes, ocr)
+                        text = _text_with_pictures_read(page, mu_page, boxes, ocr)
                     read_by_ocr += 1
                 except ExtractionUnavailable as e:
                     reason = str(e)
