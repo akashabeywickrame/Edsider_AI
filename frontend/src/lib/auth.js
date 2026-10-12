@@ -10,13 +10,18 @@ export const isDevAuth = import.meta.env.DEV
 
 // Easy Auth is not wired up on the current deployment yet - there is
 // nothing live at /.auth/login/* or /.auth/logout there either, so
-// sending people through either one 404s (or, worse, silently falls
-// through to the app's own router and renders "Not found") instead of
-// actually signing in or out. Until that is set up for real, sign-in
-// and sign-out both bypass it, the same way local dev already does.
-// TEMPORARY: set back to false once Easy Auth is live, so both flows
-// go through real Easy Auth in production again.
-export const BYPASS_SIGN_IN = true
+// sending a real user through either one would 404 (or, worse, silently
+// fall through to the app's own router and render "Not found") instead
+// of actually signing in or out. The bypass tracks isDevAuth rather than
+// standing on its own: local dev (`npm run dev`) always bypasses, since
+// there is no Easy Auth proxy on localhost regardless of whether it is
+// configured on Azure - but a real production BUILD must never bypass
+// real sign-in, once Easy Auth is turned on for the App Service
+// resource (see CLAUDE.md, "Running on Azure App Service" - the
+// Authentication blade / identity provider step, not a code change).
+// Before that Azure-side step is done, deploying with this flag already
+// false would 404 every real sign-in attempt - the two go together.
+export const BYPASS_SIGN_IN = isDevAuth
 
 export function loginUrl(provider, dest) {
   return `/.auth/login/${provider}?post_login_redirect_uri=${encodeURIComponent(dest)}`

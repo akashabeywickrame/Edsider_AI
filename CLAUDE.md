@@ -1461,6 +1461,66 @@ a zip-deployed App Service, so there the review app's OCR reports
 scanned pages and pictures as "not read" - typed PDFs and Word files are
 unaffected; full OCR still needs a custom container.
 
+**Sign-in - the frontend is already built for Easy Auth, Easy Auth
+itself is the one piece still missing.** The data-entry/teacher/admin
+React app was deliberately built against Azure App Service's own Easy
+Auth (App Service Authentication) rather than EdSider's own custom
+Flask/MSAL/JWT login system - a platform feature, not application code:
+once an identity provider is configured on the App Service resource,
+Azure's own reverse proxy handles the whole OAuth exchange and injects
+the signed-in user's identity as a request header, before the request
+ever reaches this app. `service.py`'s `current_identity()` already reads
+exactly that header (`X-MS-CLIENT-PRINCIPAL-NAME`), and
+`frontend/src/lib/auth.js` already builds real Easy Auth URLs
+(`/.auth/login/aad`, `/.auth/login/google`, `/.auth/logout`) that
+`SignIn.jsx`'s "Sign in with Microsoft"/"Sign in with Google" buttons
+and `TopNav.jsx`'s "Sign out" link already use. None of that has
+anywhere to go yet, because Easy Auth has not been turned on for the
+App Service resource - confirmed directly, not assumed, since there is
+no Azure CLI available to even check from this environment, only the
+person who manages the Azure resources can.
+
+`BYPASS_SIGN_IN` in `auth.js` tracks `isDevAuth` (`import.meta.env.DEV`)
+rather than standing on its own: a real production *build* never
+bypasses real sign-in, only `npm run dev` does, since there is no Easy
+Auth proxy on localhost regardless of whether Azure is configured. This
+used to be a separate flag hardcoded `true` unconditionally - bypassing
+sign-in even in a deployed production build, because turning it off
+before Easy Auth existed on Azure would have 404'd every real sign-in
+attempt. **Deploying this change without first completing the Azure-side
+step below will do exactly that** - the two must go together.
+
+**To turn Easy Auth on** (Azure Portal, on the `Eds-dev-ai-api` App
+Service resource - someone with access to the Azure subscription, not a
+code change):
+
+1. **Authentication** blade -> **Add identity provider**.
+2. Pick **Microsoft** (Entra ID) and/or **Google**, matching the two
+   buttons already built. Microsoft needs an App Registration (Azure
+   can create one automatically from this same screen, or an existing
+   one can be reused); Google needs a Client ID/Secret from Google
+   Cloud Console.
+3. Under **Authentication settings**, **"App Service authentication"**
+   has two modes, and which one to pick is a real open question, not
+   something to guess from this repo alone: **"Require authentication"**
+   makes Azure redirect every unauthenticated request to login before it
+   reaches the app at all - the most direct match for "a user must log
+   in" - but it would also gate `/health`, which an uptime probe calls
+   with no login and which `EDSIDER_API_KEY`'s own separate gate already
+   deliberately leaves open (see `require_api_key`'s docstring). Whether
+   this tier of App Service can exclude specific paths (`/health`) from
+   that redirect, or whether the health check needs to move to Azure's
+   own platform-level health-check feature instead of an external
+   anonymous probe, needs checking against the real resource, not
+   assumed from here. The other mode, **"Allow unauthenticated access"**,
+   leaves every route reachable without logging in and only makes the
+   sign-in buttons functional - closer to what exists today than to "the
+   user must log in," so on its own it does not satisfy that requirement.
+4. Once saved, `/.auth/login/aad` and `/.auth/login/google` go live
+   immediately - no redeploy needed for that part. The redeploy that
+   *is* needed is this repo's own `BYPASS_SIGN_IN` fix, so production
+   stops bypassing sign-in once there is somewhere real for it to go.
+
 **What "usable as a service" still needs**, roughly in order:
 
 1. A decisions-table-based scorer and threshold sweep, replacing the

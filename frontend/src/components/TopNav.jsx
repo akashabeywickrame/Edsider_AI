@@ -1,5 +1,5 @@
 import { Link, NavLink } from 'react-router-dom'
-import { isDevAuth, logoutUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
+import { logoutUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
 import './TopNav.css'
 
 // Mirrors design-system/screens/project/Header.dc.html's own per-app
@@ -39,7 +39,7 @@ export default function TopNav({ app, who }) {
         ))}
       </ul>
       {who ? <span className="es-nav__who">{who}</span> : null}
-      <Link className="tn__signout" to={isDevAuth || BYPASS_SIGN_IN ? '/' : logoutUrl('/')}>
+      <Link className="tn__signout" to={BYPASS_SIGN_IN ? '/' : logoutUrl('/')}>
         Sign out
       </Link>
     </nav>

@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
-import { isDevAuth as isDev, loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
+import { loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
 import './SignIn.css'
 
 // Where each role lands once signed in. These routes don't exist in
@@ -68,13 +68,12 @@ export default function SignIn() {
 
             <p className="si-blurb">{role.blurb}</p>
 
-            {/* Real Easy Auth only exists once this is deployed behind
-                it, with an identity provider configured (see authUrl's
-                own note) - in local dev, and on the current deployment
-                until that is set up, there is nothing at /.auth/login/*
-                to redirect through, so these go straight to the role's
-                app instead. See BYPASS_SIGN_IN above. */}
-            <Link className="si-btn" to={isDev || BYPASS_SIGN_IN ? role.dest : authUrl('aad', role.dest)}>
+            {/* BYPASS_SIGN_IN is only ever true in local dev, where there
+                is no Easy Auth proxy to redirect through at all - a real
+                production build always goes through real Easy Auth, once
+                it is configured on the App Service resource (see
+                auth.js's own note). */}
+            <Link className="si-btn" to={BYPASS_SIGN_IN ? role.dest : authUrl('aad', role.dest)}>
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
                 <rect x="0" y="0" width="8.5" height="8.5" fill="#ffffff" />
                 <rect x="9.5" y="0" width="8.5" height="8.5" fill="#ffffff" opacity=".85" />
@@ -86,7 +85,7 @@ export default function SignIn() {
             <div className="si-or" aria-hidden="true">
               or
             </div>
-            <Link className="si-google" to={isDev || BYPASS_SIGN_IN ? role.dest : authUrl('google', role.dest)}>
+            <Link className="si-google" to={BYPASS_SIGN_IN ? role.dest : authUrl('google', role.dest)}>
               <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
                 <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
@@ -96,8 +95,8 @@ export default function SignIn() {
               Sign in with Google
             </Link>
             <p className="es-caption">
-              {isDev || BYPASS_SIGN_IN
-                ? "Sign-in is not set up on this deployment yet - these buttons go straight to the role's app."
+              {BYPASS_SIGN_IN
+                ? "Local dev - sign-in is not available here, these buttons go straight to the role's app."
                 : 'Use the Microsoft or Google account your EdSider profile is linked to. New here? Ask the EdSider team to add you.'}
             </p>
           </div>
