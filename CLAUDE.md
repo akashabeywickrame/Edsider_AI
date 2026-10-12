@@ -1300,6 +1300,60 @@ existing `isStem` flag - so a wrongly-typed sub-part can be corrected to
 MCQ and given options exactly the way a top-level question already
 could.
 
+**A Sinhala paper letters its parts with its own vowels, not a-b-c.** A
+real Grade 12 Sinhala-medium Business Statistics paper structures its
+questions exactly like the GIT paper's English ones - a stem, lettered
+parts, roman-numeral sub-parts - except the parts are labelled with
+Sinhala's own independent vowels: "අ) ... ආ) ... ඉ) ...", the same role
+"(a) (b) (c)" plays on an English paper (their roman-numeral sub-parts
+stay in Latin script, unchanged, on this same real paper). Read before
+this fix, the whole structured section came back as flat, unsplit
+blocks - `_SUB_MARKER` and `_INLINE_SUB_MARKER` only ever recognised
+`[a-zA-Z]`, a roman numeral, or a digit as a part marker, so a Sinhala
+vowel was never even a candidate. Both now also accept the Sinhala
+independent vowel block (`අ`-`ඖ`, contiguous in Unicode, their
+standard dictionary order), and `_tag_kind()`/`_expected()` gained a
+`"sinhala"` kind alongside alpha/roman/digit so `_sub_starts()` can
+count a vowel sequence the same way it already counts a, b, c.
+
+One real wrinkle: the same paper's question 2 letters its third part
+"ඉ)", skipping two vowels ("ඇ)" and "ඈ)" never appear) - whether that is
+this paper's own inconsistency or a real, narrower convention used more
+widely is not something to assume from a single paper. Rather than guess
+which, the "sinhala" kind only requires the vowel sequence to move
+*forward* through the table, not land on the very next one - still
+enough to reject a stray vowel character that does not advance the
+sequence at all, while not silently dropping a real third part the way
+strict consecutive matching (what alpha/roman/digit still require) would
+have.
+
+**The same paper exposed a second, unrelated gap: marks written as bare
+"(N)" with no word "marks" at all.** `_find_marks()`'s patterns all
+require the word "marks"/"mks" next to the number, or square brackets -
+deliberately, since a bare number alone would catch "12 cm" or "in
+1948" (see `_MARKS_PATTERNS`'s own comment). This paper's marks are
+entirely numeric, parenthesised, and always sit at the very end of
+their line: "...(4)\n(ii) ...(4)\n" - a shape none of the existing
+patterns matched, which meant `_kind_from()` found no question with a
+mark, miscounted every roman-numeral sub-part as an "option" instead
+(`_OPTION_LINE` matches the same markers `_split_parts` would use as
+parts), and classified the whole section as `"mcq"` - which skips
+`_split_parts()` entirely by design (see "An MCQ is never split"
+above), so none of this had anything to do with the vowel-letter fix
+above; the section never reached `_split_parts()` at all. A new pattern,
+anchored to end-of-line (`$`, not just a bare `\(\s*(\d{1,3})\s*\)`),
+reads this shape as marks without reopening the "12 cm" / "in 1948"
+problem the original rule avoided - an in-sentence parenthetical number
+essentially never sits at the exact end of its line, by contrast with
+this paper's trailing mark every single time.
+
+Measured on the real paper's second question paper (the structured one):
+all five questions now split into their real parts and sub-parts with
+marks correctly rolling up part-by-part to the question total (e.g.
+question 1's 20 marks from two parts worth 12 and 8, each of those from
+their own three and two roman sub-parts) - previously all five were
+single, unsplit blocks.
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question

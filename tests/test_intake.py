@@ -176,6 +176,27 @@ def test_segment_takes_the_last_marks_annotation():
     assert "Define X." in drafts[0]["text"]
 
 
+def test_bare_parenthesised_marks_at_the_end_of_a_line_are_read():
+    """A real Grade 12 Sinhala-medium Business Statistics paper marks
+    every part this way - no "marks" word at all (the paper is entirely
+    in Sinhala) and no square brackets either, just "(4)" at the very
+    end of the line."""
+    text = "1. Define the term.    (4)\n2. Explain the process.    (6)\n"
+    drafts = extract.segment(text)
+    assert drafts[0]["marks"] == 4
+    assert drafts[0]["text"] == "Define the term."
+    assert drafts[1]["marks"] == 6
+
+
+def test_a_bare_parenthesised_number_mid_sentence_is_not_read_as_marks():
+    """The same shape the rule above reads as marks must stay alone when
+    it sits mid-sentence - the "12 cm" / "in 1948" problem the original
+    bare-number rule was written to avoid, just parenthesised this time."""
+    text = "1. The committee of (12) members then reviewed the proposal.\n"
+    drafts = extract.segment(text)
+    assert drafts[0]["marks"] is None
+
+
 def test_marks_annotation_is_stripped_from_a_leaf_questions_text():
     text = "1. Convert the number to binary. [3]\n2. Explain the result. [2]\n"
     drafts = extract.segment(text)
@@ -627,6 +648,59 @@ def test_lettered_parts_without_brackets_are_split():
     )
     drafts = extract.segment(text)
     assert [d["question_number"] for d in drafts] == ["1", "1(a)", "1(b)"]
+
+
+def test_sinhala_vowel_lettered_parts_are_split():
+    """A real Grade 12 Sinhala-medium Business Statistics paper letters a
+    structured question's parts with Sinhala's own independent vowels -
+    "අ) ... ආ) ..." - the same role "(a) (b)" plays on an English paper.
+    Roman-numeral sub-parts underneath stay in Latin script, unchanged."""
+    text = (
+        "01)\n"
+        "අ)\n"
+        "(i) Explain the first idea.    (4)\n"
+        "(ii) Explain the second idea.    (4)\n"
+        "\n"
+        "ආ) A shared stem sentence for the next part.\n"
+        "(i) Explain the third idea.    (4)\n"
+        "(ii) Explain the fourth idea.    (4)\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == [
+        "01", "01(අ)", "01(අ)(i)", "01(අ)(ii)",
+        "01(ආ)", "01(ආ)(i)", "01(ආ)(ii)",
+    ]
+    by_number = {d["question_number"]: d for d in drafts}
+    assert by_number["01"]["marks"] == 16
+    assert by_number["01(ආ)"]["text"] == "A shared stem sentence for the next part."
+
+
+def test_sinhala_vowel_lettering_can_skip_a_vowel():
+    """The same real paper's question 2 letters its THIRD part "ඉ)",
+    skipping two vowels in between ("ඇ)" and "ඈ)" never appear) -
+    whether that is this paper's own inconsistency or a real, narrower
+    convention is not something to assume from one paper, so the vowel
+    sequence only has to move forward, not land on the very next vowel."""
+    text = (
+        "02)\n"
+        "අ) First part stem.\n"
+        "(i) Explain this.    (4)\n"
+        "(ii) Explain this too.    (4)\n"
+        "\n"
+        "ආ) Second part stem.\n"
+        "(i) Explain that.    (4)\n"
+        "(ii) Explain that too.    (4)\n"
+        "\n"
+        "ඉ)\n"
+        "(i) Explain the other thing.    (2)\n"
+        "(ii) Explain one more thing.    (2)\n"
+    )
+    drafts = extract.segment(text)
+    assert [d["question_number"] for d in drafts] == [
+        "02", "02(අ)", "02(අ)(i)", "02(අ)(ii)",
+        "02(ආ)", "02(ආ)(i)", "02(ආ)(ii)",
+        "02(ඉ)", "02(ඉ)(i)", "02(ඉ)(ii)",
+    ]
 
 
 def test_a_single_marker_does_not_split_a_question():

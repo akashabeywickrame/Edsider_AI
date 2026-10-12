@@ -71,6 +71,15 @@ _Q_START = re.compile(
 # word "marks". A bare number is never read as marks - "12 cm" and
 # "in 1948" would both be caught. "[12]" alone is common enough on its
 # own to include.
+#
+# A bare "(12)" is too - but only at the very end of a line, never
+# mid-sentence. A real Grade 12 Sinhala-medium Business Statistics paper
+# marks every part this way, with no "marks" word at all (the paper is
+# entirely in Sinhala) and no square brackets either: "...(4)\n(ii) ...
+# (4)\n". Anchoring to end-of-line is what keeps this from colliding
+# with the same "12 cm" / "in 1948" problem the bare-number rule above
+# was written to avoid - an in-sentence parenthetical reference number
+# essentially never sits at the exact end of its line.
 _MARKS_PATTERNS = [
     re.compile(r"\(\s*(\d{1,3})\s*mark[s]?\s*\)", re.IGNORECASE),
     re.compile(r"\(\s*(\d{1,3})\s*mks?\s*\)", re.IGNORECASE),
@@ -78,6 +87,7 @@ _MARKS_PATTERNS = [
     re.compile(r"\bmark[s]?\s*[:\-]?\s*(\d{1,3})\b", re.IGNORECASE),
     re.compile(r"\b(\d{1,3})\s*mark[s]?\b", re.IGNORECASE),
     re.compile(r"\[\s*(\d{1,3})\s*\]"),
+    re.compile(r"\(\s*(\d{1,3})\s*\)[ \t]*$", re.MULTILINE),
 ]
 
 # Any way a paper or its filename writes a grade: "Grade 12", "Grade -13",
@@ -411,8 +421,8 @@ def _question_word_starts(text, start=0, end=None):
 # for. Digits count only in brackets, "(1) (2)", which is how the real
 # Grade 12 GIT paper numbers the parts inside its structured questions.
 _SUB_MARKER = re.compile(
-    r"^[ \t]*(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|\d{1,2})\)"
-    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z])(?P<close>[.)]))"
+    r"^[ \t]*(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|[අ-ඖ]|\d{1,2})\)"
+    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z]|[අ-ඖ])(?P<close>[.)]))"
     # `$` as well as a following character: an option the reviewer has
     # just added and not yet typed into is "III." alone on its line. It
     # must still count as a marker - otherwise it is folded into the
@@ -436,13 +446,25 @@ _SUB_MARKER = re.compile(
 # counting-up requirement (i, ii, iii... in order, not restarting) is
 # already what tells a real option list from a stray "(a)" in prose.
 _INLINE_SUB_MARKER = re.compile(
-    r"(?:^|(?<=\s))(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|\d{1,2})\)"
-    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z])(?P<close>[.)]))"
+    r"(?:^|(?<=\s))(?:\((?P<btag>[ivxIVX]{1,4}|[a-zA-Z]|[අ-ඖ]|\d{1,2})\)"
+    r"|(?P<tag>[ivxIVX]{1,4}|[a-zA-Z]|[අ-ඖ])(?P<close>[.)]))"
     r"[ \t]*(?=\S|$)",
     re.MULTILINE,
 )
 
 _ROMAN_SEQUENCE = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
+
+# A real Grade 12 Sinhala-medium Business Statistics paper letters a
+# structured question's parts with Sinhala's own independent vowels -
+# "අ) ... ආ) ... ඉ) ..." - the same role "(a) (b) (c)" plays on an
+# English paper. This is their standard dictionary order, U+0D85-U+0D96
+# contiguous in Unicode. Roman-numeral sub-parts under them ("(i) (ii)")
+# are still printed in Latin script on this same real paper, unchanged.
+_SINHALA_VOWELS = [
+    "අ", "ආ", "ඇ", "ඈ", "ඉ", "ඊ",
+    "උ", "ඌ", "ඍ", "ඎ", "ඏ", "ඐ",
+    "එ", "ඒ", "ඓ", "ඔ", "ඕ", "ඖ",
+]
 
 # How deep to go. Three levels covers every real paper seen - question,
 # its parts, and the parts' own sub-parts ("(d) ... (i) (ii) (iii)").
@@ -465,18 +487,24 @@ _UNDERLINE_WORD = re.compile(r"\bunderline\b", re.IGNORECASE)
 
 
 def _tag_kind(tag):
-    """Whether a marker reads as a number, a roman numeral or a letter.
+    """Whether a marker reads as a number, a roman numeral, a Sinhala
+    vowel or a Latin letter.
 
     "i" is both a letter and roman one, and nothing in the marker itself
     settles it - the sequence does, which is why this returns both
-    readings and _sub_starts() tries each."""
+    readings and _sub_starts() tries each. A Sinhala vowel is also
+    `str.isalpha()`, so it is checked first and kept out of "alpha" -
+    `_expected("alpha", ...)` only ever produces a, b, c and would never
+    match one anyway, but keeping the two kinds disjoint is clearer."""
     if tag.isdigit():
         return ["digit"]
     lower = tag.lower()
     kinds = []
     if lower in _ROMAN_SEQUENCE:
         kinds.append("roman")
-    if len(tag) == 1 and tag.isalpha():
+    if tag in _SINHALA_VOWELS:
+        kinds.append("sinhala")
+    elif len(tag) == 1 and tag.isalpha():
         kinds.append("alpha")
     return kinds
 
@@ -487,6 +515,8 @@ def _expected(kind, index):
         return str(index + 1)
     if kind == "roman":
         return _ROMAN_SEQUENCE[index] if index < len(_ROMAN_SEQUENCE) else None
+    if kind == "sinhala":
+        return _SINHALA_VOWELS[index] if index < len(_SINHALA_VOWELS) else None
     return chr(ord("a") + index) if index < 26 else None
 
 
@@ -523,15 +553,34 @@ def _sub_starts(body, prefer="first", allowed=None, marker=_SUB_MARKER):
     best, best_score = [], None
     styles = {s for _, _, _, s in found}
     for style in styles:
-        for kind in ("alpha", "roman", "digit"):
+        for kind in ("alpha", "roman", "digit", "sinhala"):
             run, index = [], 0
             for pos, end, tag, this_style in found:
                 if this_style != style or kind not in _tag_kind(tag):
                     continue
-                if tag.lower() != _expected(kind, index):
-                    continue
+                if kind == "sinhala":
+                    # Strictly increasing through the vowel table, not
+                    # necessarily consecutive - the real Grade 12 Sinhala
+                    # Business Statistics paper letters one question's
+                    # parts "අ) ආ) ඉ)", skipping two vowels in between.
+                    # Whether that is this paper's own inconsistency or a
+                    # real, narrower convention (as English sometimes
+                    # skips "I"/"O" in lettered lists) is not something to
+                    # guess at from one paper - accepting any forward
+                    # movement through the table, rather than demanding
+                    # the very next vowel, handles both without needing
+                    # to know which it is, while a vowel that does not
+                    # move the sequence forward at all still can't start
+                    # or extend one.
+                    vowel_index = _SINHALA_VOWELS.index(tag)
+                    if vowel_index < index:
+                        continue
+                    index = vowel_index + 1
+                else:
+                    if tag.lower() != _expected(kind, index):
+                        continue
+                    index += 1
                 run.append((pos, end, tag))
-                index += 1
             # One marker is not a list - a lone "(a)" inside a sentence
             # must not turn a question into two.
             if len(run) < 2:
