@@ -1354,6 +1354,52 @@ question 1's 20 marks from two parts worth 12 and 8, each of those from
 their own three and two roman sub-parts) - previously all five were
 single, unsplit blocks.
 
+**The same Sinhala paper's MCQ section was also mis-detected, for two
+more reasons that had nothing to do with its vowel-lettered parts.** Its
+first paper (50 MCQs, no structured section at all) exposed both:
+
+- **No heading, no English anywhere, so `_kind_hint()` found nothing.**
+  The paper's own instructions ("...correct or best-matching answer,
+  choose it") are entirely in Sinhala, and `_MCQ_HINT` was English-only
+  text, so the section's `kind` fell through to `_kind_from()`'s
+  per-question guess - which also failed, since `_OPTION_LINE` only
+  recognises lettered/Roman/bracketed-digit options, never a bare "1."
+  (deliberately, for the same worked-solution-steps reason below), and
+  this paper's options are exactly that: bare digits, one per line, no
+  brackets. With `kind` staying `None`, `_split_parts()` ran unguarded
+  on a "combination" question - "A. statement one. B. statement two. C.
+  statement three." then "1. A only  2. A and B only..." - and split the
+  three lettered statements into fake one-line sub-questions, exactly
+  the shape `_split_parts()`'s existing lettered-statement protections
+  (built for a bracketed/Roman answer key) don't cover when the key is
+  bare digits instead. `_MCQ_HINT` now also matches the paper's own
+  Sinhala phrase for "choose the answer".
+- **`split_mcq_options()` could not find the real options at all, even
+  once the section's kind was fixed.** Like `_SUB_MARKER`, every marker
+  pattern it tries deliberately excludes a bare (non-bracketed) digit -
+  "1." "2." - for the same reason: a worked-solutions document's own
+  numbered SOLUTION STEPS must never be mistaken for real content. A
+  new, last-resort marker (`_BARE_DIGIT_OPTION_MARKER`) is tried only
+  after every bracketed/lettered/Roman shape has failed, and only
+  trusted with **four or more** items - not the usual two-marker
+  minimum - because the one real numbered-steps document measured in
+  this codebase (the Combined Maths worked solutions) has just two
+  steps per question, while a genuine MCQ's option count is reliably
+  4-5. Tried *before* the existing "no numbered key present, so trust a
+  lettered list" fallback, not after - otherwise the same "combination"
+  question's lettered statements would still be mistaken for the
+  options themselves, just one fallback later.
+
+Measured on the real paper: all five sample questions (two "combination"
+questions with lettered statements plus bare-digit answer keys, three
+plain bare-digit MCQs) now come back `mcq` with their real five options
+each, where before every one was `descriptive` with no options found -
+the two combination ones having been wrongly exploded into fake
+sub-questions besides. Confirmed unaffected: the worked-solutions
+2-step document still finds no options and stays `descriptive`, and the
+English paper's 10 MCQ / 6 fill-blank and the Tamil paper's 24 of 25
+Part I MCQs (both previously measured) are unchanged.
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question

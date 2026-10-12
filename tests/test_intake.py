@@ -605,6 +605,76 @@ def test_split_mcq_options_keeps_lettered_statements_in_the_stem():
     assert "d. When ornamental fish" in stem
 
 
+def test_bare_digit_options_are_found_as_a_last_resort():
+    """A real Grade 12 Sinhala-medium Business Statistics paper's MCQs
+    number every option "1. 2. 3. 4. 5." with no brackets at all - the
+    one shape every earlier style in split_mcq_options() deliberately
+    excludes (digits only ever count bracketed, to protect a
+    worked-solution's own numbered SOLUTION STEPS from being mistaken
+    for options or parts). Trusted here only because there are at least
+    four of them."""
+    body = (
+        "Which gas is most responsible for the greenhouse effect?\n"
+        "1. Nitrogen\n2. Oxygen\n3. Carbon dioxide\n4. Argon\n5. Helium"
+    )
+    stem, options = extract.split_mcq_options(body)
+    assert stem == "Which gas is most responsible for the greenhouse effect?"
+    assert [o["label"] for o in options] == ["1", "2", "3", "4", "5"]
+    assert options[2]["text"] == "Carbon dioxide"
+
+
+def test_bare_digit_options_need_at_least_four_to_count():
+    """Fewer than four bare digits is exactly the numbered-solution-steps
+    shape this rule exists to leave alone - a real worked-solutions
+    document (Combined Maths) has just two steps per question."""
+    body = (
+        "A ball is thrown at 20 m/s at an angle of 30 degrees.\n"
+        "1. Initial velocity components are found by resolving the vector.\n"
+        "2. Finding the vertical velocity at the highest point of flight."
+    )
+    stem, options = extract.split_mcq_options(body)
+    assert options == []
+    assert stem == body
+
+
+def test_bare_digit_options_do_not_swallow_a_preceding_lettered_statement_list():
+    """The same real Sinhala paper's "combination" questions: lettered
+    statements (A. B. C.) to judge, then bare-digit options combining
+    them ("1. A only  2. A and B only..."). The statements must stay in
+    the stem, not be mistaken for the options themselves - the same
+    "lettered statements before the real option list" shape
+    test_split_mcq_options_keeps_lettered_statements_in_the_stem already
+    covers for a bracketed/Roman key, just with neither here."""
+    body = (
+        "Choose the answer containing only the true statement(s).\n"
+        "A. Statement one is about data collection.\n"
+        "B. Statement two is about business statistics.\n"
+        "C. Statement three is about inferential statistics.\n"
+        "\n"
+        "1. A only     2. A and B only     3. B and C only     "
+        "4. A and C only     5. A, B and C"
+    )
+    stem, options = extract.split_mcq_options(body)
+    assert [o["label"] for o in options] == ["1", "2", "3", "4", "5"]
+    assert options[0]["text"] == "A only"
+    assert stem.startswith("Choose the answer")
+    assert "C. Statement three" in stem
+
+
+def test_sinhala_choose_the_answer_phrase_is_an_mcq_hint():
+    """The real Grade 12 Sinhala-medium Business Statistics paper's own
+    instructions ("...correct or best-matching answer, choose it") - the
+    paper is entirely in Sinhala, so none of the English MCQ-hint phrases
+    could ever match it otherwise, and without this the paper's own
+    "A. B. C." lettered statements (a question of this exact
+    "combination" shape) were wrongly split into fake sub-questions,
+    since the section's kind could not be guessed any other way."""
+    assert extract._MCQ_HINT.search(
+        "1 සිට 50 තෙක් එක් එක් ප්‍රශ්නයට නිවැරදි හෝ ඉතාමත් ගැලපෙන "
+        "පිළිතුර තෝරන්න."
+    )
+
+
 def test_mcq_correct_label_matches_every_real_label_style():
     assert extract.mcq_correct_label("(2)") == "2"
     assert extract.mcq_correct_label("A") == "a"

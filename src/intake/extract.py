@@ -452,6 +452,18 @@ _INLINE_SUB_MARKER = re.compile(
     re.MULTILINE,
 )
 
+# Bare digits ("1." "2." or "(1)" "(2)") - used only by split_mcq_options()
+# as its own last resort, never by _split_parts() or the markers above,
+# which deliberately exclude a non-bracketed digit (see _SUB_MARKER's own
+# comment: a worked-solution document's numbered SOLUTION STEPS must never
+# be mistaken for real parts). An option list carries no such risk once it
+# requires four or more items - see split_mcq_options()'s own comment.
+_BARE_DIGIT_OPTION_MARKER = re.compile(
+    r"(?:^|(?<=\s))(?:\((?P<btag>\d{1,2})\)|(?P<tag>\d{1,2})(?P<close>[.)]))"
+    r"[ \t]*(?=\S|$)",
+    re.MULTILINE,
+)
+
 _ROMAN_SEQUENCE = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
 
 # A real Grade 12 Sinhala-medium Business Statistics paper letters a
@@ -766,6 +778,28 @@ def split_mcq_options(body):
               or _sub_starts(body, prefer="last", allowed=_is_roman)
               or _sub_starts(body, prefer="last", allowed=_is_roman,
                              marker=_INLINE_SUB_MARKER))
+    if not starts:
+        # Bare, non-bracketed digits ("1. 2. 3."), deliberately excluded
+        # everywhere above - digits only ever count bracketed, so a
+        # worked-solution's own numbered SOLUTION STEPS are never mistaken
+        # for real parts or options (see _split_parts()'s own comment). A
+        # real Grade 12 Sinhala-medium Business Statistics paper numbers its
+        # MCQ options exactly this way, with no brackets and no English
+        # "marks"/option word anywhere in the (entirely Sinhala) paper to
+        # tell them apart from numbered prose otherwise - only trusted with
+        # four or more items, since the one real numbered-steps document
+        # measured in this codebase (Combined Maths worked solutions) has
+        # just two steps per question; a genuine MCQ's option count is far
+        # more reliably 4-5 than a solution's step count is reliably short.
+        # Tried before the lettered fallback below, not after - the same
+        # paper's "combination" questions ("A. stmt1 B. stmt2 C. stmt3"
+        # then "1. A only  2. A and B only...") would otherwise have their
+        # lettered STATEMENTS mistaken for the options, the exact thing the
+        # lettered fallback's own guard below exists to prevent for a
+        # bracketed numbered key - this paper's key just isn't bracketed.
+        bare = _sub_starts(body, prefer="last", marker=_BARE_DIGIT_OPTION_MARKER)
+        if len(bare) >= 4:
+            starts = bare
     # Lettered options (A. B. C. ...) are kept for papers that use them. A question
     # that also carries a numbered answer key - "(1) ABCD (2) ACDE" - is different:
     # its lettered lines are statements to judge, not options.
@@ -1156,7 +1190,13 @@ _ANSWERS_LINE = re.compile(
 _MCQ_HINT = re.compile(
     r"multiple[ \t]+choice|\bmcqs?\b|pick one of the alternatives"
     r"|choose the (?:correct|most appropriate)|select the correct"
-    r"|underline the correct",
+    r"|underline the correct"
+    # "choose the answer" - the real Grade 12 Sinhala-medium Business
+    # Statistics paper's own instructions ("...correct or best-matching
+    # answer, choose it"), with no English anywhere in the paper to
+    # match on otherwise. "ක්" is an optional indefinite marker.
+    r"|පිළිතුර(?:ක්)?"
+    r"[ \t]*තෝරන්න",
     re.IGNORECASE,
 )
 _STRUCTURED_HINT = re.compile(r"structured|essay", re.IGNORECASE)
