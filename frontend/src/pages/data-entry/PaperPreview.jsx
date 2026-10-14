@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
+import { AuthImg } from '../../lib/useFileUrl.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { joinSoftBreaks } from '../../lib/text.js'
 import PaperSummary from '../../components/PaperSummary.jsx'
@@ -39,7 +40,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
       </div>
       {stemText ? <p className="pi-preview__text">{stemText}</p> : null}
       {questionImages.map((im) => (
-        <img key={im.id} className="pi-preview__img" src={api.imageUrl(im.id)} alt="" />
+        <AuthImg key={im.id} className="pi-preview__img" path={api.imagePath(im.id)} alt="" />
       ))}
       {isMcq ? (
         <div className="pi-preview__choices" role="radiogroup" aria-label={`Options for ${number}`}>
@@ -48,7 +49,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
               <input type="radio" name={`choice-${q.id}`} />
               <span className="pi-preview__key">{c.marker}</span>
               {c.text ? <span>{c.text}</span> : null}
-              {c.img ? <img className="pi-preview__img" src={api.imageUrl(c.img.id)} alt="" /> : null}
+              {c.img ? <AuthImg className="pi-preview__img" path={api.imagePath(c.img.id)} alt="" /> : null}
             </label>
           ))}
         </div>
@@ -63,7 +64,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
           <span className="pi-preview__scheme-label">Marking scheme</span>
           {q.answer ? <p className="pi-preview__text">{joinSoftBreaks(q.answer)}</p> : null}
           {answerImages.map((im) => (
-            <img key={im.id} className="pi-preview__img" src={api.imageUrl(im.id)} alt="" />
+            <AuthImg key={im.id} className="pi-preview__img" path={api.imagePath(im.id)} alt="" />
           ))}
         </div>
       ) : null}

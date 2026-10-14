@@ -18,11 +18,6 @@ export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8
 // the API, not a substitute for real sign-in.
 const API_KEY = import.meta.env.VITE_API_KEY || null
 
-// The key as a URL query parameter, for the few endpoints used directly as a
-// src (see require_api_key's own note on why a header cannot reach these).
-function keyParam() {
-  return API_KEY ? `?api_key=${encodeURIComponent(API_KEY)}` : ''
-}
 
 function query(params) {
   const usp = new URLSearchParams()
@@ -66,19 +61,45 @@ export async function signInSession() {
   return session
 }
 
-async function request(path, { method = 'GET', body, ...rest } = {}) {
-  // A FormData body (file upload) sets its own multipart Content-Type,
-  // boundary included - JSON.stringify-ing it or overriding the header
-  // would break the upload, so it goes through untouched.
-  const isForm = typeof FormData !== 'undefined' && body instanceof FormData
+// Who is calling, and the API key - on every request, JSON or file alike.
+async function authHeaders() {
   const headers = {}
-  if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json'
   // Dev-only identity (see auth.js) - in production Easy Auth sets this header.
   const who = devIdentity()
   if (who) headers['x-ms-client-principal-name'] = who
   const { token } = await signInSession()
   if (token) headers['X-EdsiderAI-Id-Token'] = token
   if (API_KEY) headers['X-API-Key'] = API_KEY
+  return headers
+}
+
+function failure(res, detail) {
+  const error = new Error(detail || `${res.status} ${res.statusText}`)
+  // Lets a caller tell "refused" (403) apart from "service down" or a
+  // bug - RequireUser needs exactly that distinction.
+  error.status = res.status
+  return error
+}
+
+// A file's raw bytes (a PDF, a picture) as a Blob - fetched with the same
+// headers as every other call. A file used to be shown by pointing an
+// <iframe>/<img> straight at its address, but a browser loading a src
+// cannot attach a header, so once the API needed the sign-in token every
+// paper viewer and attached picture showed {"detail":"Sign in first."}.
+// See useFileUrl, which turns this into something an <iframe> can show.
+export async function fetchFile(path) {
+  const res = await fetch(`${API_BASE}${path}`, { headers: await authHeaders() })
+  if (!res.ok) throw failure(res)
+  return res.blob()
+}
+
+async function request(path, { method = 'GET', body, ...rest } = {}) {
+  // A FormData body (file upload) sets its own multipart Content-Type,
+  // boundary included - JSON.stringify-ing it or overriding the header
+  // would break the upload, so it goes through untouched.
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData
+  const headers = await authHeaders()
+  if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json'
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: Object.keys(headers).length ? headers : undefined,
@@ -86,18 +107,14 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
     ...rest,
   })
   if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
+    let detail = null
     try {
       const err = await res.json()
       if (err.detail) detail = err.detail
     } catch {
       // Not a JSON error body - the status line is all there is.
     }
-    const error = new Error(detail)
-    // Lets a caller tell "refused" (403) apart from "service down" or a
-    // bug - RequireUser needs exactly that distinction.
-    error.status = res.status
-    throw error
+    throw failure(res, detail)
   }
   if (res.status === 204) return null
   return res.json()
@@ -191,10 +208,10 @@ export const api = {
   updateQuestionBlanks: (qId, payload) =>
     request(`/intake/questions/${qId}/blanks`, { method: 'PATCH', body: payload }),
 
-  // GET /intake/documents/{id}/file returns the uploaded file's own raw
-  // bytes (a real PDF, not a transcript) - used directly as an <iframe>/
-  // <img> src, never through request().
-  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file${keyParam()}`,
+  // The uploaded file's own raw bytes (a real PDF, not a transcript) and an
+  // attached picture's - paths for fetchFile / useFileUrl, never a src.
+  documentFilePath: (docId) => `/intake/documents/${docId}/file`,
+  imagePath: (imageId) => `/intake/images/${imageId}`,
 
   // ---- question images (attached to a question or its answer) ----
   listDocumentImages: (docId) => request(`/intake/documents/${docId}/images`),
@@ -205,17 +222,12 @@ export const api = {
     return request(`/intake/questions/${qId}/images`, { method: 'POST', body: form })
   },
   deleteImage: (imageId) => request(`/intake/images/${imageId}`, { method: 'DELETE' }),
-  // GET /intake/images/{id} returns raw image bytes, not JSON - used
-  // directly as an <img src>, never through request().
-  imageUrl: (imageId) => `${API_BASE}/intake/images/${imageId}${keyParam()}`,
 
   // ---- teacher review (the subject teacher's app) ----
   // Registers the signed-in teacher the first time the page opens, so the
   // assigning administrator can name them (see teachers/me/touch).
   touchTeacher: () => request('/teachers/me/touch', { method: 'POST' }),
   listMyDocuments: () => request('/teachers/me/documents'),
-  // The uploaded file itself, for an <iframe> or <img> - like imageUrl, not JSON.
-  documentFileUrl: (docId) => `${API_BASE}/intake/documents/${docId}/file${keyParam()}`,
   listDocumentComments: (docId) => request(`/intake/documents/${docId}/comments`),
   addQuestionComment: (qId, comment) =>
     request(`/intake/questions/${qId}/comments`, { method: 'POST', body: { comment } }),

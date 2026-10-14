@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
+import { AuthImg } from '../../lib/useFileUrl.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { useToast } from '../../components/Toast.jsx'
 
@@ -694,7 +695,7 @@ export default function PaperIntakeQuestion({
                 <figure className="pi-img" key={im.id}>
                   <figcaption className="pi-img__slot">Answer picture</figcaption>
                   <div className="pi-img__pic">
-                    <img src={api.imageUrl(im.id)} alt={`Answer picture for ${label}`} />
+                    <AuthImg path={api.imagePath(im.id)} alt={`Answer picture for ${label}`} />
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
                     Remove picture
@@ -723,7 +724,7 @@ export default function PaperIntakeQuestion({
                 <figure className="pi-img" key={im.id}>
                   <figcaption className="pi-img__slot">{slotLabel(im.slot)}</figcaption>
                   <div className="pi-img__pic">
-                    <img src={api.imageUrl(im.id)} alt={`${slotLabel(im.slot)} for ${label}`} />
+                    <AuthImg path={api.imagePath(im.id)} alt={`${slotLabel(im.slot)} for ${label}`} />
                   </div>
                   <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
                     Remove image

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
+import { useFileUrl } from '../../lib/useFileUrl.jsx'
 import PaperIntakeQuestion, { paperOptionStyle } from './PaperIntakeQuestion.jsx'
 import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
@@ -143,6 +144,10 @@ export default function PaperIntake() {
   const [checkResult, setCheckResult] = useState(null)
 
   const [previewMode, setPreviewMode] = useState('file')
+  // The paper itself, fetched signed-in (a src cannot carry the sign-in
+  // token) - only for a PDF or picture, and only while it is on show.
+  const showsFile = Boolean(doc && previewMode === 'file' && ['pdf', 'image'].includes(doc.file_type))
+  const paperFile = useFileUrl(showsFile ? api.documentFilePath(selectedId) : null)
 
   useEffect(() => {
     api.questionFacets().then(setFacets).catch(() => {})
@@ -981,14 +986,16 @@ export default function PaperIntake() {
 
                 {previewMode === 'file' ? (
                   doc.file_type === 'pdf' ? (
-                    <iframe
-                      className="pi-original__frame"
-                      title="Original uploaded PDF"
-                      src={api.documentFileUrl(selectedId)}
-                    />
+                    paperFile.url ? (
+                      <iframe className="pi-original__frame" title="Original uploaded PDF" src={paperFile.url} />
+                    ) : (
+                      <p className="es-caption">
+                        {paperFile.error ? `Could not load the paper: ${paperFile.error.message}` : 'Loading the paper...'}
+                      </p>
+                    )
                   ) : doc.file_type === 'image' ? (
                     <div className="pi-original__body pi-original__body--img">
-                      <img src={api.documentFileUrl(selectedId)} alt="The uploaded paper" />
+                      {paperFile.url ? <img src={paperFile.url} alt="The uploaded paper" /> : null}
                     </div>
                   ) : (
                     <Notice tone="info">

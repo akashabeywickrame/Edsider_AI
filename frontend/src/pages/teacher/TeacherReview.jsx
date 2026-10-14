@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
+import { AuthImg } from '../../lib/useFileUrl.jsx'
 import { devIdentity, isDevAuth, setDevIdentity } from '../../lib/auth.js'
 import { joinSoftBreaks } from '../../lib/text.js'
 import { useToast } from '../../components/Toast.jsx'
@@ -309,7 +310,7 @@ export default function TeacherReview() {
                 </div>
               ) : null}
               {questionImages.map((im) => (
-                <img key={im.id} className="tr-img" src={api.imageUrl(im.id)} alt="" />
+                <AuthImg key={im.id} className="tr-img" path={api.imagePath(im.id)} alt="" />
               ))}
 
               {isMcq ? (
@@ -324,7 +325,7 @@ export default function TeacherReview() {
                           <span className="tr-option__key">{o.marker.trim()}</span>
                           <span>{joinSoftBreaks(o.text)}</span>
                           {correct ? <span className="tr-option__tag">Correct</span> : null}
-                          {img ? <img className="tr-img" src={api.imageUrl(img.id)} alt="" /> : null}
+                          {img ? <AuthImg className="tr-img" path={api.imagePath(img.id)} alt="" /> : null}
                         </div>
                       )
                     })}
@@ -337,7 +338,7 @@ export default function TeacherReview() {
                   <p className="tr-lab">Marking scheme</p>
                   {q.answer ? <p className="tr-text">{joinSoftBreaks(q.answer)}</p> : null}
                   {answerImages.map((im) => (
-                    <img key={im.id} className="tr-img" src={api.imageUrl(im.id)} alt="" />
+                    <AuthImg key={im.id} className="tr-img" path={api.imagePath(im.id)} alt="" />
                   ))}
                 </div>
               ) : null}
