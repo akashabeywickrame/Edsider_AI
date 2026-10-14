@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
-import { api } from '../lib/api.js'
+import { api, signInSession } from '../lib/api.js'
 import { loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
 import './SignIn.css'
 
@@ -31,6 +31,10 @@ const ROLES = [
 ]
 
 // Each role's own section, for someone already signed in.
+// When the page last sent someone back through their provider for a fresh
+// ID token - see the renewal in SignIn below.
+const RENEW_KEY = 'edsider_token_renewed_at'
+
 const HOME_BY_ROLE = {
   superadmin: '/app/admin',
   admin: '/app/admin',
@@ -65,10 +69,37 @@ export default function SignIn() {
         if (me.role) navigate(safeNext || HOME_BY_ROLE[me.role] || role.dest, { replace: true })
         else setChecking(false)
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (!live) return
-        if (err.status === 403) navigate(dest, { replace: true })
-        else setChecking(false)
+        if (err.status === 403) {
+          navigate(dest, { replace: true })
+          return
+        }
+        // 401 while Easy Auth still has a session: the ID token the page
+        // forwards has expired (they last about an hour). Signing in
+        // again through the same provider issues a fresh one, usually
+        // without a prompt. At most once every two minutes, so a token
+        // the API keeps refusing can never become a redirect loop.
+        if (err.status === 401) {
+          const s = await signInSession()
+          let last = 0
+          try {
+            last = Number(window.sessionStorage.getItem(RENEW_KEY) || 0)
+          } catch {
+            // Storage blocked - no renewal, the buttons are shown instead.
+            last = Date.now()
+          }
+          if (live && s.provider && Date.now() - last > 120000) {
+            try {
+              window.sessionStorage.setItem(RENEW_KEY, String(Date.now()))
+            } catch {
+              // fall through - the guard above already stops a loop
+            }
+            window.location.assign(authUrl(s.provider, dest))
+            return
+          }
+        }
+        if (live) setChecking(false)
       })
     return () => {
       live = false

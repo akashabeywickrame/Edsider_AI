@@ -1,4 +1,4 @@
-import { devIdentity } from './auth.js'
+import { devIdentity, isDevAuth } from './auth.js'
 // A thin wrapper around service.py's FastAPI routes - one function per
 // endpoint, matching exactly what each one actually takes and returns
 // (see service.py). No endpoint-specific logic lives here; that stays
@@ -33,6 +33,39 @@ function query(params) {
   return s ? `?${s}` : ''
 }
 
+// The signed-in person's Google/Microsoft ID token, from Easy Auth's own
+// session on the address this page came from (/.auth/me). The API is a
+// different App Service, which Easy Auth never tells who signed in - so
+// the page forwards this token and the API verifies it itself (signature,
+// audience, expiry - see src/id_tokens.py). Kept until a minute before it
+// expires, so it costs one /.auth/me per hour or so, not one per call.
+let session = { token: null, exp: 0, provider: null, fetched: false }
+
+function tokenExpiry(token) {
+  try {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(atob(part)).exp || 0
+  } catch {
+    return 0
+  }
+}
+
+export async function signInSession() {
+  if (isDevAuth) return session
+  const now = Date.now() / 1000
+  if (session.fetched && (!session.token || session.exp - 60 > now)) return session
+  try {
+    const res = await fetch('/.auth/me', { credentials: 'same-origin' })
+    const entries = res.ok ? await res.json() : []
+    const entry = Array.isArray(entries) ? entries.find((e) => e.id_token) || entries[0] : null
+    const token = entry?.id_token || null
+    session = { token, exp: token ? tokenExpiry(token) : 0, provider: entry?.provider_name || null, fetched: true }
+  } catch {
+    session = { token: null, exp: 0, provider: null, fetched: true }
+  }
+  return session
+}
+
 async function request(path, { method = 'GET', body, ...rest } = {}) {
   // A FormData body (file upload) sets its own multipart Content-Type,
   // boundary included - JSON.stringify-ing it or overriding the header
@@ -43,6 +76,8 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
   // Dev-only identity (see auth.js) - in production Easy Auth sets this header.
   const who = devIdentity()
   if (who) headers['x-ms-client-principal-name'] = who
+  const { token } = await signInSession()
+  if (token) headers['X-EdsiderAI-Id-Token'] = token
   if (API_KEY) headers['X-API-Key'] = API_KEY
   const res = await fetch(`${API_BASE}${path}`, {
     method,

@@ -1766,6 +1766,34 @@ and sign-out buttons are plain `<a>` links: as router `<Link>`s they
 never reached Azure at all, and rendered the app's own "Not found" at
 `/.auth/login/aad`.
 
+**Until that single-app deploy happens, the page forwards the ID token -
+and that alone closes the hole.** Reported live: anyone with any Google
+account could open every page, admin included. The page reads its own
+Easy Auth session (`/.auth/me` on its own address, which holds the
+Google/Microsoft ID token issued at sign-in) and sends it as
+`X-EdsiderAI-Id-Token` on every API call (`api.js`, cached until a
+minute before expiry). `src/id_tokens.py` verifies it - RS256 signature
+against Google's/Microsoft's published keys (PyJWKClient, cached), issuer,
+expiry, and audience: only tokens issued to THIS app's Google client and
+Microsoft app registration (`DEFAULT_AUDIENCES`, the client IDs the web
+app's own login redirects name - public, not secrets;
+`EDSIDER_TOKEN_AUDIENCES` for another environment), since a token Google
+issued to any other site carries a real email too and could otherwise be
+replayed here. Google tokens must have `email_verified`; Microsoft's email
+is `email` or `preferred_username`. Only then does the staff list decide.
+A header of our own, not `Authorization`, because the API's own Easy Auth
+reads bearer tokens itself. Easy Auth's `X-MS-CLIENT-PRINCIPAL-NAME` wins
+when present (App Service strips any copy a caller sends). Sign-in is now
+**required by default on Azure**: App Service always sets
+`WEBSITE_SITE_NAME`, so `_require_signin()` turns on there without anyone
+setting `EDSIDER_REQUIRE_SIGNIN` (which still overrides either way) -
+deploying the code is enough. ID tokens last about an hour; an expired
+one is a 401, and the sign-in page then sends the person back through
+their provider once (at most every two minutes, so it cannot loop),
+which issues a fresh token, normally without a prompt. Needs Easy Auth's
+**token store** on the web app (it is on by default) - `/.auth/me` must
+show an `id_token` after signing in.
+
 **To deploy it** (the pipeline and the Azure resource, not code):
 1. Build the page into the API's deployment: `cd frontend && npm ci &&
    npm run build`, with `VITE_API_BASE_URL` NOT set in the pipeline (or

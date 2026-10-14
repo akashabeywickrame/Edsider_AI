@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import store, dedupe
+from src import id_tokens, store, dedupe
 from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.intake import extract as intake_extract
@@ -139,10 +139,26 @@ def _is_frontend_path(path):
 
 
 def _require_signin():
-    """EDSIDER_REQUIRE_SIGNIN=true on Azure: a request with no Easy Auth
-    identity is refused instead of treated as a local run. Read per call,
+    """Whether a request with no identity is refused (401) instead of
+    treated as a local run. On by default when running on Azure App
+    Service - which always sets WEBSITE_SITE_NAME - because waiting for
+    someone to remember an app setting left the deployed API open to
+    anyone with any Google account. EDSIDER_REQUIRE_SIGNIN overrides
+    either way ("false" only for a deliberate exception). Read per call,
     not at import, so a test or an App Service setting change applies."""
-    return os.environ.get("EDSIDER_REQUIRE_SIGNIN", "").strip().lower() in ("1", "true", "yes")
+    setting = os.environ.get("EDSIDER_REQUIRE_SIGNIN", "").strip().lower()
+    if setting in ("1", "true", "yes"):
+        return True
+    if setting in ("0", "false", "no"):
+        return False
+    return bool(os.environ.get("WEBSITE_SITE_NAME"))
+
+
+# The page's forwarded Google/Microsoft ID token (see src/id_tokens.py).
+# A header of our own, not Authorization: the API's own Easy Auth reads
+# Authorization bearer tokens itself and may refuse one it was not set up
+# for, before this code ever sees the request.
+ID_TOKEN_HEADER = "x-edsiderai-id-token"
 
 
 @app.middleware("http")
@@ -157,12 +173,11 @@ async def require_signed_in_staff(request, call_next):
     path = request.url.path
     if request.method == "OPTIONS" or path == "/health" or _is_frontend_path(path):
         return await call_next(request)
-    header = request.headers.get("x-ms-client-principal-name")
-    if not header and _require_signin():
-        return JSONResponse({"detail": "Sign in first."}, status_code=401)
-    if header:
+    principal = request.headers.get("x-ms-client-principal-name")
+    id_token = request.headers.get(ID_TOKEN_HEADER)
+    if principal or id_token or _require_signin():
         try:
-            await run_in_threadpool(_resolve_identity, header)
+            await run_in_threadpool(_resolve_identity, principal, id_token)
         except HTTPException as e:
             return JSONResponse({"detail": e.detail}, status_code=e.status_code)
     return await call_next(request)
@@ -244,17 +259,23 @@ def require_api_key(x_api_key: Optional[str] = Header(None),
         raise HTTPException(401, "Missing or wrong X-API-Key header.")
 
 
-def _resolve_identity(x_ms_client_principal_name):
+def _resolve_identity(x_ms_client_principal_name, id_token=None):
     """Shared by current_identity(), current_user() and require_superadmin()
-    below - looks a signed-in email up in authorized_users, the
-    admin-managed allowlist EdSider's own staff pattern uses (see
-    CLAUDE.md, "Sign-in"), and decides who this request is allowed to be.
+    below - works out the caller's email, looks it up in the staff list
+    (EdSider's own staff pattern, see CLAUDE.md, "Sign-in"), and decides
+    who this request is allowed to be.
 
-    No header at all means Easy Auth was never in front of this request
-    - a local run, or the tests - so there is nothing to check against
-    the allowlist; this falls back to "reviewer" with no role, exactly
-    as current_identity() always did, so neither local development nor
-    the test suite needs Easy Auth to exist.
+    The email comes from Easy Auth's own header when this app is the one
+    the person signed in to; otherwise from the Google/Microsoft ID token
+    the page forwards (src/id_tokens.py - signature, audience and expiry
+    all checked here, never trusted from the page). The header wins:
+    App Service sets it itself and strips any copy a caller sends.
+
+    Neither at all means Easy Auth was never in front of this request -
+    a local run, or the tests - so there is nothing to check against the
+    list; this falls back to "reviewer" with no role, exactly as
+    current_identity() always did. On Azure that fallback is off (see
+    _require_signin) and it is a 401 instead.
 
     EDSIDER_BOOTSTRAP_ADMINS (comma-separated emails, an app setting,
     never in code) is the way into an otherwise-empty allowlist: without
@@ -262,11 +283,25 @@ def _resolve_identity(x_ms_client_principal_name):
     authorized_users yet would lock out even the person meant to add
     everyone else.
     """
-    if not x_ms_client_principal_name:
-        if _require_signin():
-            raise HTTPException(401, "Sign in first.")
+    # Called as a plain function (tests, other code), an omitted argument
+    # arrives as FastAPI's Header(None) marker - truthy, and not a value.
+    if not isinstance(x_ms_client_principal_name, str):
+        x_ms_client_principal_name = None
+    if not isinstance(id_token, str):
+        id_token = None
+    if x_ms_client_principal_name:
+        email = x_ms_client_principal_name.strip().lower()
+    elif id_token:
+        try:
+            email = id_tokens.email_from_id_token(id_token)
+        except id_tokens.InvalidToken:
+            # Usually an hour-old token - Google's and Microsoft's ID
+            # tokens expire, and signing in again issues a fresh one.
+            raise HTTPException(401, "Your sign-in has expired - sign in again.")
+    elif _require_signin():
+        raise HTTPException(401, "Sign in first.")
+    else:
         return {"identity": "reviewer", "name": "reviewer", "role": None}
-    email = x_ms_client_principal_name.strip().lower()
     bootstrap = {
         e.strip().lower()
         for e in os.environ.get("EDSIDER_BOOTSTRAP_ADMINS", "").split(",")
@@ -291,7 +326,8 @@ def _resolve_identity(x_ms_client_principal_name):
 
 
 def current_identity(
-    x_ms_client_principal_name: Optional[str] = Header(None)
+    x_ms_client_principal_name: Optional[str] = Header(None),
+    x_edsiderai_id_token: Optional[str] = Header(None),
 ):
     """Who is actually calling - same header, same fallback as app.py's
     current_reviewer() and teacher_app.py's current_teacher(). Azure App
@@ -305,16 +341,17 @@ def current_identity(
     not on the allowlist - EdSider's own "You are not a user! Please
     contact System Administrator!" rejection, see _resolve_identity().
     """
-    return _resolve_identity(x_ms_client_principal_name)["identity"]
+    return _resolve_identity(x_ms_client_principal_name, x_edsiderai_id_token)["identity"]
 
 
 def current_user(
-    x_ms_client_principal_name: Optional[str] = Header(None)
+    x_ms_client_principal_name: Optional[str] = Header(None),
+    x_edsiderai_id_token: Optional[str] = Header(None),
 ):
     """Identity AND role together - for /me (what the frontend shows in
     the top nav) and require_superadmin() below, which need to know not
     just who is calling but what they are allowed to do."""
-    return _resolve_identity(x_ms_client_principal_name)
+    return _resolve_identity(x_ms_client_principal_name, x_edsiderai_id_token)
 
 
 def require_superadmin(user: dict = Depends(current_user)):
