@@ -224,19 +224,40 @@ CREATE TABLE IF NOT EXISTS intake_documents (
     uploaded_at   TIMESTAMPTZ DEFAULT now()
 );
 
--- Every distinct identity that has opened the teacher review page,
--- captured automatically (see upsert_teacher()) rather than maintained
--- by hand - the same Easy Auth header current_reviewer() already reads
--- elsewhere in this app. This is what fills the assigning
--- administrator's "which teacher" dropdown, and guarantees whatever it
--- writes into intake_documents.assigned_to is a real identity Easy Auth
--- will actually report back, rather than a hand-typed name or email
--- that might not match.
-CREATE TABLE IF NOT EXISTS teachers (
-    identity      TEXT PRIMARY KEY,
-    display_name  TEXT,
-    first_seen_at TIMESTAMPTZ DEFAULT now(),
-    last_seen_at  TIMESTAMPTZ DEFAULT now()
+-- Everyone this app knows as staff, one row per person, keyed by the
+-- email Easy Auth reports at sign-in (lower-cased) - the same key
+-- EdSider's own staff_user table uses. Three ways a row gets here, all
+-- into this one table so every screen reads the same place:
+--   * sync.py's sync_teachers() - EdSider's TEACH-role staff (in_edsider)
+--   * a superadmin, on Manage users (role, added_by)
+--   * opening the teacher app (first_seen_at/last_seen_at)
+-- Only what THIS app needs is stored: role here, active here, subjects
+-- for assigning papers. EdSider owns everything else about a person
+-- (phone, address...) and is where it gets edited - a copy here would
+-- only drift out of date.
+--
+-- Who may sign in, and as what (see staff_role_sql / lookup_staff()):
+-- nobody inactive; otherwise the role a superadmin set, else 'teacher'
+-- for anyone EdSider lists as a teacher, else nobody.
+CREATE TABLE IF NOT EXISTS staff (
+    email         TEXT PRIMARY KEY,
+    name          TEXT,
+    -- Set by a superadmin: 'superadmin' | 'admin' | 'teacher' |
+    -- 'employee'. NULL means "whatever EdSider says" - teacher for a
+    -- synced teacher, no access for anyone else.
+    role          TEXT,
+    in_edsider    BOOLEAN NOT NULL DEFAULT FALSE,
+    -- A superadmin's switch-off: blocks sign-in whatever role or EdSider
+    -- says, without losing the row's history.
+    active        BOOLEAN NOT NULL DEFAULT TRUE,
+    -- JSON list of subject names this person reviews - narrows the
+    -- assignment dropdown later; empty means "not stated".
+    subjects      TEXT,
+    added_by      TEXT,
+    added_at      TIMESTAMPTZ,
+    synced_at     TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ,
+    last_seen_at  TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS intake_questions (
@@ -698,6 +719,12 @@ MIGRATIONS = [
     # own assessment screen asks for. Only what the paper states is filled in
     # automatically; the rest is entered by the data-entry person.
     ("intake_documents", "assessment_settings", "TEXT"),
+    # Who last changed this question's own fields, and when - see
+    # stamp_question_editor(), called alongside update_intake_question()
+    # from every PATCH route. NULL for a question nobody has edited since
+    # extraction (still just what the extractor produced).
+    ("intake_questions", "last_edited_by", "TEXT"),
+    ("intake_questions", "last_edited_at", "TIMESTAMPTZ"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -786,6 +813,13 @@ def _vector_storage(conn):
 
 
 def _apply_schema(conn):
+    # Give up rather than queue. An ALTER TABLE waiting for its lock makes
+    # every NEW query on that table wait behind it - measured: one reader
+    # stuck for 37 minutes on intake_documents left this queued, and with
+    # it every page of the live app that reads papers. Failing after 10 s
+    # (this transaction then rolls back whole) is the lesser harm; LOCAL
+    # ends with the transaction, so normal queries are unaffected.
+    conn.execute("SET LOCAL lock_timeout = '10s'")
     # connect() has already settled this, outside any transaction.
     conn.executescript(_schema_sql(VECTOR_STORAGE or "bytea"))
     for table, column, decl in MIGRATIONS:
@@ -793,6 +827,48 @@ def _apply_schema(conn):
         # longer has to read the table's columns first.
         conn.execute(
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {decl}")
+    _merge_old_people_tables(conn)
+
+
+def _merge_old_people_tables(conn):
+    """One-off: copy the three tables `staff` replaced into it - inside
+    the schema's own transaction, and only ever when `staff` is first
+    created (schema apply runs only when a table is missing). Order
+    matters: EdSider's list first, then a superadmin's entries (their
+    name and role win), then teacher-app visits (only their timestamps,
+    and a name if none). A database that never had them skips it all.
+
+    Copied, never dropped: the deployed app and a local run share one
+    database, so dropping `teachers` the moment someone ran this version
+    locally would break the still-deployed older version's teacher and
+    assignment pages. Drop the three by hand once this version is the one
+    deployed (see CLAUDE.md, "Staff profiles")."""
+    def exists(table):
+        return conn.execute("SELECT to_regclass(?) AS r", (table,)).fetchone()["r"]
+
+    if exists("edsider_teachers"):
+        conn.execute(
+            """INSERT INTO staff (email, name, in_edsider, synced_at)
+               SELECT email, name, TRUE, synced_at FROM edsider_teachers
+               ON CONFLICT (email) DO UPDATE SET in_edsider = TRUE,
+                   synced_at = excluded.synced_at,
+                   name = COALESCE(staff.name, excluded.name)""")
+    if exists("authorized_users"):
+        conn.execute(
+            """INSERT INTO staff (email, name, role, added_by, added_at)
+               SELECT email, name, role, added_by, added_at FROM authorized_users
+               ON CONFLICT (email) DO UPDATE SET name = excluded.name,
+                   role = excluded.role, added_by = excluded.added_by,
+                   added_at = excluded.added_at""")
+    if exists("teachers"):
+        conn.execute(
+            """INSERT INTO staff (email, name, first_seen_at, last_seen_at)
+               SELECT identity, display_name, first_seen_at, last_seen_at
+                 FROM teachers
+               ON CONFLICT (email) DO UPDATE SET
+                   first_seen_at = excluded.first_seen_at,
+                   last_seen_at = excluded.last_seen_at,
+                   name = COALESCE(staff.name, excluded.name)""")
 
 
 def _encode_vector(values):
@@ -1722,26 +1798,170 @@ def get_intake_question(conn, q_id):
     ).fetchone()
 
 
+# What a row may sign in as - one rule, used by every reader below so
+# sign-in, the Manage users list and the dropdown can never disagree.
+STAFF_ROLE_SQL = """CASE WHEN NOT active THEN NULL
+                         WHEN role IS NOT NULL THEN role
+                         WHEN in_edsider THEN 'teacher' END"""
+
+_STAFF_COLUMNS = f"*, {STAFF_ROLE_SQL} AS effective_role"
+
+
+def lookup_staff(conn, email):
+    """The person's row with their `effective_role` - None there (or no
+    row at all) means they may not sign in; current_identity() turns that
+    into a 403, EdSider's own "not a user" rejection."""
+    return conn.execute(
+        f"SELECT {_STAFF_COLUMNS} FROM staff WHERE email = ?", (email,)
+    ).fetchone()
+
+
+def list_staff(conn):
+    """Everyone - for Manage users. People who can sign in first, by
+    name; then the rest (inactive, or only ever seen in the teacher app)."""
+    return conn.execute(
+        f"""SELECT {_STAFF_COLUMNS} FROM staff
+            ORDER BY ({STAFF_ROLE_SQL}) IS NULL, lower(coalesce(name, email))"""
+    ).fetchall()
+
+
+def set_staff(conn, email, name, role, added_by=None, subjects=None):
+    """A superadmin adding someone, or changing their name/role/subjects.
+    Re-adding an existing email updates it in place - correcting a typo or
+    changing a role is just calling this again. `subjects` None leaves
+    whatever is stored; a list replaces it."""
+    conn.execute(
+        """INSERT INTO staff (email, name, role, added_by, added_at, subjects)
+           VALUES (?, ?, ?, ?, now(), ?)
+           ON CONFLICT(email) DO UPDATE SET
+               name = excluded.name, role = excluded.role,
+               added_by = excluded.added_by,
+               added_at = COALESCE(staff.added_at, excluded.added_at),
+               subjects = COALESCE(excluded.subjects, staff.subjects)""",
+        (email, name, role, added_by,
+         json.dumps(subjects) if subjects is not None else None),
+    )
+
+
+def update_staff(conn, email, **fields):
+    """Edit an existing row - name, role (None clears it back to "whatever
+    EdSider says"), subjects (a list), active. Only these; anything else
+    raises rather than being silently dropped."""
+    allowed = {"name", "role", "subjects", "active"}
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"not an editable staff column: {sorted(bad)}")
+    if "subjects" in fields:
+        fields["subjects"] = (json.dumps(fields["subjects"])
+                              if fields["subjects"] is not None else None)
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE staff SET {cols} WHERE email = ?", (*fields.values(), email))
+
+
+def remove_staff_access(conn, email):
+    """Take away what a superadmin granted. An EdSider teacher keeps their
+    row and goes back to being a teacher (EdSider still lists them -
+    `active` is how to stop them signing in); anyone else is removed,
+    unless the teacher app has a record of them, which is kept with no
+    role."""
+    row = conn.execute(
+        "SELECT in_edsider, first_seen_at FROM staff WHERE email = ?", (email,)
+    ).fetchone()
+    if row is None:
+        return
+    if row["in_edsider"] or row["first_seen_at"] is not None:
+        conn.execute(
+            "UPDATE staff SET role = NULL, added_by = NULL, added_at = NULL "
+            "WHERE email = ?", (email,))
+    else:
+        conn.execute("DELETE FROM staff WHERE email = ?", (email,))
+
+
+def sync_edsider_teachers(conn, teachers):
+    """Bring the staff table in line with EdSider's current teacher list
+    - [{email, name}] - in one transaction: everyone listed is marked
+    in_edsider (a new row if they are new here), everyone no longer
+    listed is unmarked, so a teacher EdSider removes stops being able to
+    sign in here as one. Rows are never deleted - their history and any
+    superadmin settings stay. EdSider's name is taken unless a superadmin
+    entered this person by hand (added_by set), whose name then wins.
+
+    An empty list is refused rather than applied: EdSider has 133
+    teachers, and a query that suddenly returns none is far more likely
+    broken than true. Returns how many EdSider teachers are now marked."""
+    if not teachers:
+        raise ValueError("refusing to replace the teacher list with an empty one")
+    # One statement, not one per teacher: each round trip to the Azure
+    # server costs ~0.35 s, and row by row this took 44 s for 133
+    # teachers - on every open of the assignment page.
+    values = ", ".join(["(?, ?, TRUE, now())"] * len(teachers))
+    params = [p for t in teachers for p in (t["email"], t.get("name"))]
+    conn.execute(
+        f"""INSERT INTO staff (email, name, in_edsider, synced_at) VALUES {values}
+            ON CONFLICT(email) DO UPDATE SET
+                in_edsider = TRUE, synced_at = excluded.synced_at,
+                name = CASE WHEN staff.added_by IS NULL THEN excluded.name
+                            ELSE staff.name END""",
+        params,
+    )
+    # now() is the transaction's start time, the same value every row
+    # above was stamped with - so anything marked but not stamped in this
+    # run is no longer on EdSider's list.
+    conn.execute(
+        "UPDATE staff SET in_edsider = FALSE WHERE in_edsider AND synced_at < now()")
+    return conn.execute(
+        "SELECT count(*) AS n FROM staff WHERE in_edsider").fetchone()["n"]
+
+
+def edsider_teachers_synced_at(conn):
+    row = conn.execute(
+        "SELECT max(synced_at) AS at FROM staff WHERE in_edsider").fetchone()
+    return row["at"] if row else None
+
+
 def upsert_teacher(conn, identity, display_name=None):
     """Record that this identity has opened the teacher review page -
-    called once at the top of that page, every visit. First visit
-    creates the row (this is how a name reaches the assigning
-    administrator's dropdown at all); every later visit only refreshes
-    last_seen_at and display_name, never touching first_seen_at."""
+    called once at the top of that page, every visit. First visit sets
+    first_seen_at; every later visit only refreshes last_seen_at. A name
+    is only filled in if none is stored - EdSider's or a superadmin's
+    always wins over whatever the sign-in reported."""
     conn.execute(
-        """INSERT INTO teachers (identity, display_name)
-           VALUES (?, ?)
-           ON CONFLICT(identity) DO UPDATE SET
-               display_name = COALESCE(excluded.display_name, teachers.display_name),
+        """INSERT INTO staff (email, name, first_seen_at, last_seen_at)
+           VALUES (?, ?, now(), now())
+           ON CONFLICT(email) DO UPDATE SET
+               name = COALESCE(staff.name, excluded.name),
+               first_seen_at = COALESCE(staff.first_seen_at, now()),
                last_seen_at = now()""",
         (identity, display_name),
     )
 
 
-def list_teachers(conn):
+def assignable_teachers(conn):
+    """Who a paper can be handed to: every active EdSider teacher, anyone
+    a superadmin made a teacher, and anyone who has opened the teacher
+    app (a test identity on a local run, mostly). `source` says which."""
     return conn.execute(
-        "SELECT * FROM teachers ORDER BY display_name, identity"
+        """SELECT email AS identity, name AS display_name,
+                  CASE WHEN in_edsider THEN 'edsider' ELSE 'added_here' END AS source
+             FROM staff
+            WHERE active
+              AND (in_edsider OR role = 'teacher' OR first_seen_at IS NOT NULL)
+            ORDER BY lower(coalesce(name, email))"""
     ).fetchall()
+
+
+def stamp_question_editor(conn, q_id, identity):
+    """Who last touched this question's own fields - called alongside
+    update_intake_question() from every PATCH route, never on its own,
+    so a read (or a no-op PATCH with no fields set) never overwrites a
+    real editor with whoever merely opened the page."""
+    conn.execute(
+        "UPDATE intake_questions SET last_edited_by = ?, last_edited_at = now() "
+        "WHERE id = ?",
+        (identity, q_id),
+    )
 
 
 def assign_document(conn, doc_id, teacher_identity):

@@ -77,8 +77,12 @@ def test_every_data_route_needs_the_key_except_health_and_docs():
     not an enumeration of every route, so a newly added route defaults
     to gated and this test catches the day someone forgets the
     dependency rather than needing to be remembered itself."""
+    # "/{full_path:path}" serves the built page itself (service.frontend):
+    # a browser loading a page cannot attach a header, and it serves only
+    # the app's static files - every data request the page then makes
+    # goes through a gated route above.
     ungated_allowed = {"/health", "/docs", "/docs/oauth2-redirect",
-                      "/redoc", "/openapi.json"}
+                      "/redoc", "/openapi.json", "/{full_path:path}"}
     ungated = set()
     for route in service.app.routes:
         path = getattr(route, "path", None)

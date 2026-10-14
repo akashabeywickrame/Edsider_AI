@@ -56,7 +56,9 @@ export default function OriginalPaper({ doc }) {
       {(state.status === 'missing' || (state.status === 'file' && kind !== 'pdf' && kind !== 'image')) ? (
         <>
           <p className="es-caption" style={{ margin: 0 }}>
-            {state.status === 'missing'
+            {state.status === 'missing' && kind === 'text'
+              ? 'This paper was pasted in as text after being read on a data-entry computer, so the pasted text is shown.'
+              : state.status === 'missing'
               ? 'The original file was not kept for this paper, so the text read from it is shown.'
               : 'A Word file cannot be shown in the browser, so the text read from it is shown. Open the file to compare it in full.'}
           </p>

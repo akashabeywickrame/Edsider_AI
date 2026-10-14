@@ -1,4 +1,5 @@
 pytest>=7.0
+httpx>=0.24
 numpy>=1.24
 
 # The CPU build of torch, pinned here rather than installed by hand.

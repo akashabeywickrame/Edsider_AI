@@ -102,6 +102,9 @@ scripts/
   check_new.py          one question against the bank, all three passes
   sync.py               pull new questions from EdSider's own Postgres
   migrate_to_postgres.py  one-off: copy an old SQLite bank into PostgreSQL
+local_reader/           OCR tool for data-entry computers (Surya), copied
+                        to each machine on its own - not part of the
+                        deployed app; see "Pasting text instead of uploading"
 tests/                  247 tests, each in a throwaway PostgreSQL schema
                         (conftest.py)
 data/                   the old SQLite bank, kept only as the migration
@@ -479,6 +482,13 @@ three are free, spent them freely:
   can never be handed out pointing at the wrong one.
 - **The schema is checked, not re-applied.** One catalogue query; running
   the DDL took 58 s on every start for a schema that had not changed.
+- **When it is applied, it gives up after 10 s rather than queue**
+  (`SET LOCAL lock_timeout`). A waiting `ALTER TABLE` makes every new
+  query on that table wait behind it: one reader stuck for 51 minutes
+  on `intake_documents` (sending results to a client that had stopped
+  reading) left a schema apply queued, and with it the live app's paper
+  pages. The local run and the deployed app share this database, so a
+  schema change from either can do that to both.
 - **Fingerprints are cached on local disk** (`data/cache/`, gitignored,
   `EDSIDER_CACHE_DIR` to move it). A fingerprint never changes for a
   given text and model, so each is downloaded once and only new ones are
@@ -1400,6 +1410,57 @@ sub-questions besides. Confirmed unaffected: the worked-solutions
 English paper's 10 MCQ / 6 fill-blank and the Tamil paper's 24 of 25
 Part I MCQs (both previously measured) are unchanged.
 
+**Pasting text instead of uploading - for scanned papers read on a
+data-entry computer.** Tesseract cannot read the real Sinhala Business
+Statistics scan: it turned the "A." / "B." / "C." markers into `&,` /
+`පි.` / `ට,` and dropped the "1."-"5." choice numbers outright, so no
+splitter rule could recover the structure - every psm mode gave the same
+damage. Surya (open-source vision OCR, Apache-2.0 code; its model
+weights' licence still needs reading before EdSider relies on it) read
+the same 300 dpi page essentially perfectly, every marker intact - but
+took 5 m 37 s for one page on this laptop's CPU, and longer on its Intel
+Iris Xe GPU (4 m 39 s just to load, 8 m 4 s to read), and App Service
+offers no GPU at any tier. So the reading moves to the data-entry
+person's own computer and only the text comes here.
+
+`local_reader/` is that tool, copied to each machine as one folder:
+`setup.bat` (once: a private Python 3.11, CPU torch, `surya-ocr`, and
+the llama.cpp CPU runner, all pinned to what was tested), `start.bat`
+(a page on 127.0.0.1:8765 - drop a PDF or picture, per-page progress
+with a time-left estimate, then Copy / Save as .txt), and
+`time_test.bat` (drag a paper onto it: prints seconds per page - the
+"is this laptop fast enough" test). Decisions in it, each for a
+measured reason: pages are read one at a time so progress is real, which
+also lets `SURYA_INFERENCE_PARALLEL=2` replace the default 8 (24,576
+tokens of context reserved instead of 98,304 - memory a laptop cannot
+spare); one paper at a time (each page takes the whole CPU); a trailing
+bare page number is dropped from each page; setup refuses a folder path
+over 40 characters, because torch's install failed on Windows' 260-
+character limit from inside a Temp folder. Surya's "Failed to stop
+llamacpp ... WinError 87" log line is harmless on Windows: its liveness
+check (`os.kill(pid, 0)`) raises that error once the process is already
+gone - no orphaned `llama-server` processes were left. The tool's
+`html_to_lines()` is a copy of `extract.html_to_lines()` (the folder
+cannot import from the repo); `tests/test_local_reader.py` keeps them
+identical.
+
+Then in EdsiderAI: "Paste text" on Paper intake, `POST
+/intake/documents/from-text`, `extract.extract_text()`. Everything after
+reading is shared with an upload - `structure()`, `detect_paper_meta()`,
+parts, options, answers, re-split - except the OCR-only number repair
+and bolded-answer detection (pasted text carries no bold).
+`html_to_lines()` turns Surya's raw HTML into one line per paragraph or
+list item, so pasting it uncleaned still works, and leaves plain text
+untouched. Measured on Surya's real page-1 output: questions 1-4 come
+back MCQ with all five options each - including question 1's three
+lettered statements kept in the stem and its five choices printed on ONE
+line - where Tesseract's reading of the same page gave none. (Question 5
+runs on to page 2, so page 1 alone shows its A/B/C as options; with the
+whole paper pasted it has its real choices.) A two-question cut-down of
+that page splits wrongly, and correctly so: the paper's "1)" numbering
+only beats the choices' "1.-5." when there are enough questions for it
+to count up further - tests use the real page, not a shortened one.
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question
@@ -1520,6 +1581,203 @@ code change):
    immediately - no redeploy needed for that part. The redeploy that
    *is* needed is this repo's own `BYPASS_SIGN_IN` fix, so production
    stops bypassing sign-in once there is somewhere real for it to go.
+
+**Two providers at once needs a setting, not Azure AD B2C.** With
+"Require authentication" selected and more than one identity provider
+configured, App Service auto-redirects every unauthenticated request to
+ONE designated default provider - Google never gets a chance, because
+that redirect fires before either of `SignIn.jsx`'s own explicit
+`/.auth/login/aad` / `/.auth/login/google` links are ever reached.
+Microsoft's own documented fix for more than one sign-in option is
+"Allow unauthenticated access" instead, letting the app's own explicit
+per-provider links do the choosing - no B2C tenant needed (B2C is a
+heavier, separate path: its own tenant, its own app registration, Google
+and Microsoft re-registered as ITS identity providers rather than
+App Service's, and it is also end-of-sale to new customers as of May
+2025, pointing new projects at Microsoft Entra External ID instead - a
+real dead-end risk worth checking before investing time there). The
+trade-off that setting creates is the next section.
+
+**Who is allowed to sign in - EdSider's own staff pattern, not a
+self-service sign-up.** Checked directly against EdSider's own code
+(`D:\Edsider\OAT-API-2.0`, `OAT-WEB-2.0`): there is no self-service
+"register your email, get a verification link" flow for teacher/admin/
+data-entry staff at all - that flow exists only for a different
+audience (parent/student enrollment, built on Flask-Mail/SMTP, not
+Azure Communication Services despite `VITE_ACS_*` vars sitting unused in
+EdSider's own `.env`). For staff, an administrator adds each person by
+hand (email + role) through a management screen, and at login EdSider
+looks the signed-in email up in its own `staff_user` table, rejecting
+anyone not found with "You are not a user! Please contact System
+Administrator!" - email is the sole link to identity; no password, no
+B2C object id is stored anywhere.
+
+This repo now does the same thing, deliberately, rather than standing
+up email infrastructure nothing here needs yet - and it closes the gap
+"Allow unauthenticated access" above would otherwise open, since nothing
+in this app enforced sign-in on its own before this (`current_identity()`
+silently defaulted to `"reviewer"`, and no frontend route existed to
+turn an unauthenticated visitor away):
+
+- **Staff profiles - one `staff` table.** Everyone this app knows as
+  staff, one row per email: EdSider's teachers (`in_edsider`, from the
+  teacher sync), people a superadmin added (`role`, `added_by`), and
+  anyone seen in the teacher app (`first_seen_at`/`last_seen_at`), plus
+  `active` (a superadmin's switch-off) and `subjects` (JSON list, for
+  narrowing the assignment dropdown later). It replaced three tables
+  that each held part of this - `authorized_users`, `edsider_teachers`,
+  `teachers` - so sign-in, Manage users and the dropdown read one place.
+  Deliberately NOT stored: anything EdSider owns about a person (phone,
+  address) - EdSider is where it gets edited, and a copy would drift.
+  Who may sign in, and as what, is one SQL rule (`store.STAFF_ROLE_SQL`,
+  surfaced as `effective_role`): nobody inactive; else the role a
+  superadmin set; else `teacher` for anyone EdSider lists as one; else
+  nobody. Removing what a superadmin granted puts an EdSider teacher
+  back to teacher; switching them off is how to stop them entirely. A
+  superadmin cannot switch themselves off. Managed on
+  `/app/admin/users` (`ManageUsers.jsx`: search, per-row role/subjects,
+  switch on/off), routes GET/POST/PATCH/DELETE `/admin/users`.
+  **The old three tables are copied into `staff`, never dropped
+  automatically** (`store._merge_old_people_tables()`, once, when
+  `staff` is first created): a local run and the deployed app share one
+  database, so dropping `teachers` the moment this version ran locally
+  would break the still-deployed older version's teacher pages. Once
+  this version is the one deployed, drop them by hand:
+  `DROP TABLE teachers, authorized_users, edsider_teachers;`. Anything
+  the older version writes to them between the copy and that deploy is
+  not carried over.
+- **Four roles: `superadmin`, `admin`, `teacher`, `employee`.** Only
+  `superadmin` can manage the allowlist (`require_superadmin()` on all
+  three `/admin/users` routes; the "Manage users" nav link and page are
+  hidden/blocked for anyone else). `admin` keeps today's operational
+  work - assigning papers to teachers - but cannot add, remove or
+  re-role anyone. `employee` is the data-entry / question-review
+  person; "staff" was asked for too and confirmed to mean the same job,
+  so it is not a separate role. Nothing yet restricts which app shell
+  (`/app/admin`, `/app/teacher`, `/app/data-entry`) each role may open -
+  being on the list at all is the only gate there so far.
+- **`current_identity()` now rejects, rather than defaulting to
+  "reviewer", whenever Easy Auth reports a real email that is not on
+  this list** - a 403 with the same spirit as EdSider's own message.
+  The no-header case (a local run, or the tests - Easy Auth was never
+  in front of the request) is unchanged: still "reviewer", no role,
+  nothing to check against an allowlist that only matters once Easy
+  Auth is actually in front of real traffic. `current_user()` returns
+  identity and role together, for `/me` and `require_admin()`.
+- **`EDSIDER_BOOTSTRAP_ADMINS`** (comma-separated emails, an app
+  setting, never in code) is the way into an otherwise-empty allowlist:
+  each listed email is always treated as `superadmin`, whatever the
+  table says. Without it, a freshly deployed app with Easy Auth on and
+  zero rows in `authorized_users` would lock out even the person meant
+  to add everyone else.
+- **`GET /me` is the actual "at login, check the signed-in email
+  against the list" gate** - not something re-checked route by route.
+  The frontend's `RequireUser` wraps every top-level Layout
+  (data-entry, teacher, admin), calls it once through `useMe()`, and
+  shows "ask an administrator to add your email" instead of the app on
+  a 403. `TopNav`'s `who` text (three hardcoded placeholder strings
+  before this - "Signed in as reviewer" / "...teacher" / "...
+  administrator", visible in the git history) now shows the real
+  signed-in person's name from that same call.
+- **Every question edit is stamped with who made it** -
+  `intake_questions.last_edited_by` / `last_edited_at`, written by
+  `store.stamp_question_editor()` alongside every
+  `update_intake_question()` call (the plain-field PATCH, the per-paper
+  marks bulk-set, the MCQ reassembly, and the fill-blank reassembly),
+  never on a read or a no-op save. Shown as a small caption on the
+  question card (`PaperIntakeQuestion.jsx`) once a question has been
+  edited at least once; blank for anything still exactly as the
+  extractor produced it.
+- **EdSider's own teachers fill the assignment dropdown, and sign in
+  without being added by hand.** `scripts/sync.py`'s `sync_teachers()`
+  copies every `TEACH`-role staff member (`user_management.staff_user` +
+  `staff_user_role`, name from `registration.teacher` via
+  `staff_user.staff_id`) into `edsider_teachers` - all of it confirmed
+  against the live schema: `TEACH` is "Teacher" in
+  `user_management.role` (`DEOP` is "Data Entry Operator", `SYST`
+  "System Administrator"), every one of the 135 TEACH rows has a teacher
+  row with a matching email, 133 distinct emails (two people listed
+  twice), all `user_status_id` 1 ("Active"), and names carry stray
+  spaces. Email is the key because it is what Easy Auth reports at
+  sign-in, so a paper assigned to it is exactly what that teacher sees.
+  129 of the 135 are Gmail and the rest personal Microsoft accounts
+  (live/hotmail) - no work/school accounts, which matters for how
+  Microsoft sign-in is configured. Every sync re-reads the whole list (a
+  watermark would never notice a removed teacher) into `staff`
+  (`store.sync_edsider_teachers()`): listed people are marked
+  `in_edsider`, anyone no longer listed is unmarked - never deleted, so
+  their history and settings stay. EdSider's name is taken unless a
+  superadmin entered the person by hand. A sync returning nobody is
+  refused (more likely a broken query than true), and it is one
+  statement: row by row it took 44 s from this laptop, batched 6-7 s,
+  most of that connection setup. The assignment page shows the saved
+  copy at once and calls `POST /teachers/sync` (admin/superadmin,
+  `require_assigner()`) to refresh it, keeping the saved copy with a
+  warning if EdSider cannot be reached; `run_sync()` refreshes it too. `PG_USER` in `.env` is currently `postgres`,
+  not the read-only account `sync.py` was designed around - every read
+  here forces a read-only session, but the account itself should be
+  swapped (see `.env.example` for the grants it now needs).
+- **This also changes `TeacherReview.jsx`'s "view as" dev-only identity
+  picker**: typing an arbitrary name there now goes through the same
+  allowlist check as a real sign-in, since the backend has no way to
+  tell a locally-simulated Easy Auth header from a real one. Trying the
+  teacher flow locally now means adding that test identity through
+  `/app/admin/users` first, same as a real deployment would need - a
+  deliberate tightening, not an oversight.
+
+**One address for the page and the API - why sign-in did nothing.**
+Deployed as two App Services, `eds-dev-ai-web-...` (the page) and
+`eds-dev-ai-api-...` (the API), each with its own Easy Auth: the web
+app has Microsoft and Google, the API only Microsoft, under a different
+app registration. Checked live - both apps' `/.auth/login/*` redirect
+correctly. But Easy Auth adds the signed-in person's identity only to
+requests for the app they signed in to, and a browser never carries one
+app's sign-in cookie to another: every API call arrived with no
+identity, `_resolve_identity()` treated that as a local run, and
+everyone was "Signed in as reviewer" with full access - the allowlist
+never consulted, and anyone could call the API without signing in (the
+API key is in the page's own code, so it stops no one).
+
+Fixed by serving the built page from the API itself: if
+`frontend/dist/index.html` exists (`EDSIDER_FRONTEND_DIR` to move it),
+`service.py` serves its files and, for the app's own page addresses
+(`/`, `/sign-in`, `/app/...`), `index.html` (`Cache-Control: no-cache`,
+since it names the build's hashed files); any other address is a plain
+404, and a path cannot climb out of `dist`. The route is registered last
+so every API route matches first. `frontend/.env.production` builds the
+page to call the API at its own address (`VITE_API_BASE_URL` empty;
+`api.js` uses `??`, so empty means "same address", not "unset"); a
+`VITE_API_BASE_URL` set in the build environment still wins, so the old
+two-app deployment keeps working until the pipeline changes.
+
+The gate is middleware (`require_signed_in_staff`), not per route: every
+API request with an identity must resolve on the staff list (403
+otherwise - including routes that never ask who is calling), and with
+`EDSIDER_REQUIRE_SIGNIN=true` a request with no identity is a 401
+(`_resolve_identity()` applies the same rule, for anything calling it
+directly). `/health` and the page's own files stay open - the sign-in
+page must load before anyone can sign in. Added before CORS, so CORS
+wraps it and a refusal still carries the headers the browser needs to
+read it. On the page: `RequireUser` sends a 401 to `/sign-in?next=...`,
+and `SignIn.jsx` skips its buttons for someone already signed in -
+forwarding to `next` (only ever an `/app/...` address, so a crafted link
+cannot send people elsewhere) or to their role's section. The sign-in
+and sign-out buttons are plain `<a>` links: as router `<Link>`s they
+never reached Azure at all, and rendered the app's own "Not found" at
+`/.auth/login/aad`.
+
+**To deploy it** (the pipeline and the Azure resource, not code):
+1. Build the page into the API's deployment: `cd frontend && npm ci &&
+   npm run build`, with `VITE_API_BASE_URL` NOT set in the pipeline (or
+   set empty), and ship `frontend/dist` with the API.
+2. On the API App Service: Authentication - add **Google** too (it has
+   only Microsoft today), with the API's own callback
+   `https://<api-host>/.auth/login/google/callback` added to the Google
+   OAuth client's redirect URIs; keep "Allow unauthenticated access".
+3. App settings: `EDSIDER_REQUIRE_SIGNIN=true`,
+   `EDSIDER_BOOTSTRAP_ADMINS=<first superadmin's email>`.
+4. Open the API's address, not the web app's - the separate web app is
+   then no longer needed.
 
 **What "usable as a service" still needs**, roughly in order:
 

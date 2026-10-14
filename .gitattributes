@@ -2,3 +2,7 @@
 # Service). Checked out with Windows line endings, bash fails on the
 # stray carriage returns before running a single line.
 *.sh text eol=lf
+
+# Batch files run under cmd.exe, which can misread goto labels and
+# multi-line commands in a file with Unix line endings.
+*.bat text eol=crlf

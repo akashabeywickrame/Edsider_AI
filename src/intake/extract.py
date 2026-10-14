@@ -17,6 +17,7 @@ None of this is trusted output. It is a first pass for a person to
 correct, and the confidence flag on each draft says where to look first.
 """
 
+import html as _html
 import os
 import re
 import shutil
@@ -2430,6 +2431,55 @@ def was_incomplete(extractor):
     like a short one."""
     return (extractor.startswith(("unavailable", "failed", "unsupported"))
             or "not read" in extractor)
+
+
+# Block-level tags a vision OCR reader (Surya) wraps its output in - each
+# one starts a new line, which is what keeps "1." / "A." / "අ)" at a
+# line start, where segment() and the part/option markers look for them.
+_BLOCK_TAG = re.compile(r"</?(?:p|li|ul|ol|br|div|h[1-6]|tr|table)\b[^>]*>", re.IGNORECASE)
+_ANY_TAG = re.compile(r"<[^>]+>")
+_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li)>", re.IGNORECASE)
+_BULLET = re.compile(r"^[•●▪‣⁃]\s*")
+
+
+def html_to_lines(text):
+    """Plain lines from OCR output that came back as HTML - one line per
+    paragraph or list item, inline tags (<b>, <i>) dropped, entities
+    decoded, and bullet glyphs ("•") stripped so the marker after one is
+    the first thing on its line. Text with no closing </p> or </li> is
+    returned unchanged, so pasting plain text never loses anything."""
+    if not _LOOKS_LIKE_HTML.search(text or ""):
+        return text
+    lines = []
+    for chunk in _BLOCK_TAG.split(text):
+        line = _BULLET.sub("", _html.unescape(_ANY_TAG.sub("", chunk)).strip())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def extract_text(text, style=DEFAULT_SPLIT_STYLE, filename=None):
+    """Text someone read elsewhere (the local OCR tool on a data-entry
+    computer, or copied straight out of a document) -> the same result
+    shape extract() gives an uploaded file, so it is stored and reviewed
+    exactly like one. Everything after reading is shared: structure(),
+    detect_paper_meta(), parts, MCQ options, answers. What is not: the
+    OCR-only number repair (whoever read it already did the OCR) and
+    bolded-answer detection (pasted text carries no bold)."""
+    text = html_to_lines(text or "").strip()
+    meta = detect_paper_meta(text, filename=filename)
+    parsed = structure(text, style=style)
+    for q in parsed["questions"]:
+        q.setdefault("grade", meta["grade"])
+        q.setdefault("subject", meta["subject"])
+    return {
+        "file_type": "text",
+        "extractor": "pasted text",
+        "raw_text": text,
+        "paper": meta,
+        "sections": parsed["sections"],
+        "questions": parsed["questions"],
+    }
 
 
 def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,

@@ -4,7 +4,12 @@ import { devIdentity } from './auth.js'
 // (see service.py). No endpoint-specific logic lives here; that stays
 // in the page that calls it.
 
-export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+// Empty means "the address this page came from" - the API serves the
+// built page itself (see service.py's FRONTEND_DIR), which is what lets
+// the sign-in reach the API. `??`, not `||`: an empty value is a real
+// choice here, not a missing one. Unset (npm run dev with no .env) it is
+// the local API.
+export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
 // Matches EDSIDER_API_KEY on the server, when one is set there - a build-time
 // setting (frontend/.env), never committed. Unset, the service stays open and
 // this is simply never sent, exactly as it already works locally and in the
@@ -53,7 +58,11 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
     } catch {
       // Not a JSON error body - the status line is all there is.
     }
-    throw new Error(detail)
+    const error = new Error(detail)
+    // Lets a caller tell "refused" (403) apart from "service down" or a
+    // bug - RequireUser needs exactly that distinction.
+    error.status = res.status
+    throw error
   }
   if (res.status === 204) return null
   return res.json()
@@ -61,6 +70,23 @@ async function request(path, { method = 'GET', body, ...rest } = {}) {
 
 export const api = {
   health: () => request('/health'),
+
+  // ---- who is signed in ----
+  // A 403 here means Easy Auth signed someone in but their email is not
+  // on the allowlist (see service.py's current_identity()) - every
+  // top-level Layout calls this once, through useMe()/RequireUser, and
+  // shows a "contact your administrator" page instead of the app rather
+  // than letting the error surface mid-page.
+  me: () => request('/me'),
+
+  // ---- staff profiles (super admin only) ----
+  listStaff: () => request('/admin/users'),
+  addStaff: (payload) => request('/admin/users', { method: 'POST', body: payload }),
+  // Only the fields sent change - {role: null} clears a super admin's role.
+  updateStaff: (email, fields) =>
+    request(`/admin/users/${encodeURIComponent(email)}`, { method: 'PATCH', body: fields }),
+  removeStaff: (email) =>
+    request(`/admin/users/${encodeURIComponent(email)}`, { method: 'DELETE' }),
 
   // ---- check a question (CheckQuestion.dc.html) ----
   checkQuestion: (payload) => request('/check', { method: 'POST', body: payload }),
@@ -93,6 +119,10 @@ export const api = {
     form.set('force_ocr', forceOcr ? 'true' : 'false')
     return request('/intake/documents', { method: 'POST', body: form })
   },
+  // A paper's text read elsewhere (the local OCR tool), pasted in -
+  // split and stored exactly like an upload.
+  createDocumentFromText: (text, title, style) =>
+    request('/intake/documents/from-text', { method: 'POST', body: { text, title: title || null, style } }),
   getIntakeDocument: (docId) => request(`/intake/documents/${docId}`),
   // Many questions' marks in one request - [{question_id, marks}] - returns the paper's questions.
   setQuestionMarks: (docId, items) =>
@@ -158,8 +188,11 @@ export const api = {
     request(`/intake/documents/${docId}/finish`, { method: 'POST', body: { status } }),
 
   // ---- paper assignment (the assigning administrator's app) ----
-  // Teachers appear here once they have opened the teacher app at least once.
+  // EdSider's own teachers, plus anyone who has opened the teacher app here.
   listTeachers: () => request('/teachers'),
+  // Re-reads EdSider's teacher list into our copy - fails with a clear
+  // message (e.g. EdSider unreachable) while the last copy stays usable.
+  syncTeachers: () => request('/teachers/sync', { method: 'POST' }),
   assignDocument: (docId, teacherIdentity) =>
     request(`/intake/documents/${docId}/assign`, {
       method: 'POST',

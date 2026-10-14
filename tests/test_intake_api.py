@@ -125,15 +125,18 @@ def test_update_document_and_question(document):
     assert updated.paper_title == "Term 1"
 
     qs = list_questions(document.id)
-    q = update_question(qs[0].id, QuestionUpdate(marks=5, reviewed=True))
+    assert qs[0].last_edited_by is None
+    q = update_question(qs[0].id, QuestionUpdate(marks=5, reviewed=True), identity="data-entry-1")
     assert q.marks == 5
     assert q.reviewed is True
     assert q.teacher_reviewed is False
+    assert q.last_edited_by == "data-entry-1"
+    assert q.last_edited_at is not None
 
 
 def test_update_missing_question_is_404(local_db):
     with pytest.raises(HTTPException) as err:
-        update_question(999999, QuestionUpdate(marks=1))
+        update_question(999999, QuestionUpdate(marks=1), identity="data-entry-1")
     assert err.value.status_code == 404
 
 
@@ -148,7 +151,7 @@ def test_add_and_remove_a_question_by_hand(document):
 
     remove_question(created.id)
     with pytest.raises(HTTPException):
-        update_question(created.id, QuestionUpdate(marks=1))
+        update_question(created.id, QuestionUpdate(marks=1), identity="data-entry-1")
 
 
 def test_add_a_part_is_numbered_like_the_paper_would(document):
@@ -245,7 +248,7 @@ def test_check_duplicates_requires_every_question_reviewed(document):
 
 def test_check_duplicates_needs_the_model_loaded(document):
     for q in list_questions(document.id):
-        update_question(q.id, QuestionUpdate(reviewed=True))
+        update_question(q.id, QuestionUpdate(reviewed=True), identity="data-entry-1")
     service.state["embedder"] = None
     with pytest.raises(HTTPException) as err:
         check_document_duplicates(document.id)
@@ -255,7 +258,7 @@ def test_check_duplicates_needs_the_model_loaded(document):
 def test_check_duplicates_marks_the_document_checked(document):
     qs = list_questions(document.id)
     for q in qs:
-        update_question(q.id, QuestionUpdate(reviewed=True))
+        update_question(q.id, QuestionUpdate(reviewed=True), identity="data-entry-1")
 
     service.state["embedder"] = FakeEmbedder({
         q.text: _unit([1.0, i, 0.0]) for i, q in enumerate(list_questions(document.id))

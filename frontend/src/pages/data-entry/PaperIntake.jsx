@@ -84,6 +84,11 @@ export default function PaperIntake() {
 
   const [file, setFile] = useState(null)
   const [lang, setLang] = useState('eng')
+  // 'file' - uploaded and read here; 'text' - already read elsewhere (the
+  // local OCR tool on a data-entry computer) and pasted in.
+  const [source, setSource] = useState('file')
+  const [pasted, setPasted] = useState('')
+  const [pastedTitle, setPastedTitle] = useState('')
   // A PDF typed in a legacy Sinhala font has a text layer of font codes, not
   // Sinhala - reading each page as a picture is the only reliable text for it.
   const [forceOcr, setForceOcr] = useState(false)
@@ -198,16 +203,21 @@ export default function PaperIntake() {
 
   async function handleUpload(e) {
     e.preventDefault()
-    if (!file) return
+    if (source === 'file' ? !file : !pasted.trim()) return
     setUploading(true)
     setUploadError(null)
     try {
-      const d = await api.uploadIntakeDocument(file, lang, uploadStyle, forceOcr)
+      const d =
+        source === 'file'
+          ? await api.uploadIntakeDocument(file, lang, uploadStyle, forceOcr)
+          : await api.createDocumentFromText(pasted, pastedTitle.trim(), uploadStyle)
       e.target.reset()
       setFile(null)
+      setPasted('')
+      setPastedTitle('')
       loadDocs(false)
       setSearchParams({ doc: String(d.id) })
-      toast.success(`${d.filename} uploaded - its questions have been extracted.`)
+      toast.success(`${d.filename} added - its questions have been extracted.`)
     } catch (err) {
       setUploadError(err.message)
       toast.error(`Upload failed: ${err.message}`)
@@ -407,22 +417,70 @@ export default function PaperIntake() {
           subtitle="Upload a question paper - PDF, Word, or an image of a handwritten one. Its questions are pulled out, you correct them, then the batch is checked for repeats against itself before any of it joins the bank. Nothing here is trusted until you have confirmed it."
         />
 
-        <section id="upload" className="es-card pi-upload__grid" aria-label="Upload a paper">
-          <label className="pi-dropzone">
-            <input
-              type="file"
-              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-            <span className="es-stat__icon es-accent--primary">
-              <Icon name="upload" />
-            </span>
-            <p className="scr-h3">{file ? file.name : 'Drop the question paper here'}</p>
-            <p className="es-caption">PDF, Word (.docx, .doc), or an image of the paper - PNG, JPG, TIFF or BMP</p>
-            <span className="es-btn es-btn--secondary es-btn--sm">Choose a file</span>
+        <div className="es-row" role="radiogroup" aria-label="How to add the paper" style={{ marginBottom: 8 }}>
+          <label className="scr-radio">
+            <input type="radio" name="src" checked={source === 'file'} onChange={() => setSource('file')} />
+            Upload a file
           </label>
+          <label className="scr-radio">
+            <input type="radio" name="src" checked={source === 'text'} onChange={() => setSource('text')} />
+            Paste text
+          </label>
+        </div>
+
+        <section id="upload" className="es-card pi-upload__grid" aria-label="Add a paper">
+          {source === 'file' ? (
+            <label className="pi-dropzone">
+              <input
+                type="file"
+                accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+              <span className="es-stat__icon es-accent--primary">
+                <Icon name="upload" />
+              </span>
+              <p className="scr-h3">{file ? file.name : 'Drop the question paper here'}</p>
+              <p className="es-caption">PDF, Word (.docx, .doc), or an image of the paper - PNG, JPG, TIFF or BMP</p>
+              <span className="es-btn es-btn--secondary es-btn--sm">Choose a file</span>
+            </label>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div className="es-field">
+                <label className="es-field__label" htmlFor="pi-paste-title">
+                  Name of the paper
+                </label>
+                <input
+                  id="pi-paste-title"
+                  className="es-input"
+                  value={pastedTitle}
+                  placeholder="e.g. Grade 12 Business Statistics - Term 1"
+                  onChange={(e) => setPastedTitle(e.target.value)}
+                />
+              </div>
+              <div className="es-field">
+                <label className="es-field__label" htmlFor="pi-paste-text">
+                  The paper's text
+                </label>
+                <textarea
+                  id="pi-paste-text"
+                  className="es-input"
+                  rows={14}
+                  value={pasted}
+                  placeholder="Paste the text the reading tool gave you - the whole paper, questions and answers."
+                  onChange={(e) => setPasted(e.target.value)}
+                />
+              </div>
+              <p className="es-caption" style={{ margin: 0 }}>
+                For a scanned paper read on your own computer. Keep each question, choice and part on
+                its own line, starting with its number or letter - that is how the questions are
+                found.
+              </p>
+            </div>
+          )}
 
           <form className="pi-upload__opts" onSubmit={handleUpload}>
+            {source === 'file' ? (
+            <>
             <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
               <legend className="es-field__label" style={{ marginBottom: 8 }}>
                 Language of the paper
@@ -451,6 +509,8 @@ export default function PaperIntake() {
                 </span>
               </span>
             </label>
+            </>
+            ) : null}
 
             <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
               <legend className="es-field__label" style={{ marginBottom: 8 }}>
@@ -476,8 +536,13 @@ export default function PaperIntake() {
             </fieldset>
 
             <div>
-              <Button variant="primary" arrow type="submit" disabled={!file || uploading}>
-                {uploading ? 'Uploading and extracting...' : 'Extract questions'}
+              <Button
+                variant="primary"
+                arrow
+                type="submit"
+                disabled={(source === 'file' ? !file : !pasted.trim()) || uploading}
+              >
+                {uploading ? 'Extracting...' : 'Extract questions'}
               </Button>
             </div>
             {uploadError ? (
@@ -929,7 +994,9 @@ export default function PaperIntake() {
                     <Notice tone="info">
                       {doc.file_type === 'docx'
                         ? "This is a Word document - there is no in-browser preview for it, only the text the extractor read. Switch to \"Extracted text\", or open the original .docx file directly."
-                        : 'No file preview available for this upload. Switch to "Extracted text" instead.'}
+                        : doc.file_type === 'text'
+                          ? 'This paper was pasted in as text, so there is no file to show. Switch to "Extracted text" to see what was pasted.'
+                          : 'No file preview available for this upload. Switch to "Extracted text" instead.'}
                     </Notice>
                   )
                 ) : (

@@ -453,6 +453,13 @@ export default function PaperIntakeQuestion({
         </span>
       </div>
 
+      {q.last_edited_by ? (
+        <p className="es-caption" style={{ margin: 0 }}>
+          Last edited by {q.last_edited_by}
+          {q.last_edited_at ? ` - ${new Date(q.last_edited_at).toLocaleString()}` : ''}
+        </p>
+      ) : null}
+
       {isStem ? (
         <p className="es-caption" style={{ margin: 0 }}>
           Shared text for the parts below - the scenario or stimulus they all refer to. Each

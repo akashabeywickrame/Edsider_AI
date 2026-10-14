@@ -29,3 +29,11 @@ data/*.bak*
 # Local copy of the bank's fingerprints (store._cached_vectors) - derived
 # from the database, rebuilt on demand, and 50 MB of real data.
 data/cache/
+
+# The local reader's own install (setup.bat) and in-flight uploads.
+local_reader/venv/
+local_reader/llamacpp/
+local_reader/_upload_*
+
+# Office lock files, present while a document is open in Word/Excel.
+~$*

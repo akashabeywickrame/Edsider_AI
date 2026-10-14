@@ -46,9 +46,13 @@ class FakePgConn:
     of them per run - one for questions, one for assessment links - and
     they must not share rows or an executed_with record."""
 
-    def __init__(self, rows, link_rows=None):
+    def __init__(self, rows, link_rows=None, teacher_rows=None):
         self.rows = rows
         self.link_rows = link_rows if link_rows is not None else []
+        # run_sync() also refreshes the teacher list, which refuses an
+        # empty result - so a fake EdSider has at least one teacher.
+        self.teacher_rows = (teacher_rows if teacher_rows is not None
+                             else [{"email": "t@example.com", "name": "T"}])
         self.cursor_names = []
         self.session_calls = []
         self.rolled_back = False
@@ -56,11 +60,14 @@ class FakePgConn:
         self.closed = False
         self._cursor = FakeCursor(rows)
         self._links_cursor = FakeCursor(self.link_rows)
+        self._teachers_cursor = FakeCursor(self.teacher_rows)
 
     def cursor(self, name=None, cursor_factory=None):
         self.cursor_names.append(name)
         if name == "edsider_sync_links":
             return self._links_cursor
+        if name == "edsider_sync_teachers":
+            return self._teachers_cursor
         return self._cursor
 
     def set_session(self, readonly=None, autocommit=None):
@@ -169,11 +176,12 @@ def test_full_flag_ignores_the_stored_watermark(monkeypatch, local_db):
 def test_uses_a_named_server_side_cursor(monkeypatch, local_db):
     """A plain cursor buffers the whole result client-side. The first
     sync could be the full real bank (40,000+ rows, some 6.5MB) - this
-    must stream, not load it all into memory. Two cursors now, one per
-    query - questions, then assessment links."""
+    must stream, not load it all into memory. Three cursors now, one per
+    query - questions, assessment links, then teachers."""
     fake_pg = FakePgConn([])
     run_sync(monkeypatch, fake_pg)
-    assert fake_pg.cursor_names == ["edsider_sync", "edsider_sync_links"]
+    assert fake_pg.cursor_names == [
+        "edsider_sync", "edsider_sync_links", "edsider_sync_teachers"]
     assert fake_pg._cursor.itersize and fake_pg._cursor.itersize > 1
     assert fake_pg._links_cursor.itersize and fake_pg._links_cursor.itersize > 1
 

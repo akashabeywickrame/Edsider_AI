@@ -1,5 +1,7 @@
-import { Link, useSearchParams } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
+import { api } from '../lib/api.js'
 import { loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
 import './SignIn.css'
 
@@ -28,10 +30,53 @@ const ROLES = [
   },
 ]
 
+// Each role's own section, for someone already signed in.
+const HOME_BY_ROLE = {
+  superadmin: '/app/admin',
+  admin: '/app/admin',
+  teacher: '/app/teacher',
+  employee: '/app/data-entry',
+}
+
 export default function SignIn() {
   const [params] = useSearchParams()
+  const navigate = useNavigate()
   const requested = params.get('role')
   const role = ROLES.find((r) => r.key === requested) || ROLES[0]
+  // Where RequireUser was sending someone before it stopped them. Only
+  // this app's own pages - a "next" naming another site would make this
+  // page a way to send people anywhere.
+  const next = params.get('next')
+  const safeNext = next && /^\/app(\/|$)/.test(next) ? next : null
+  const dest = safeNext || role.dest
+  const [checking, setChecking] = useState(!BYPASS_SIGN_IN)
+
+  // Already signed in (Easy Auth's session is still there on a reload):
+  // skip the buttons. On the staff list - to where they were going, else
+  // their own section. Signed in but not on it (403) - to the section,
+  // whose RequireUser says so plainly.
+  useEffect(() => {
+    if (BYPASS_SIGN_IN) return undefined
+    let live = true
+    api
+      .me()
+      .then((me) => {
+        if (!live) return
+        if (me.role) navigate(safeNext || HOME_BY_ROLE[me.role] || role.dest, { replace: true })
+        else setChecking(false)
+      })
+      .catch((err) => {
+        if (!live) return
+        if (err.status === 403) navigate(dest, { replace: true })
+        else setChecking(false)
+      })
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  if (checking) return null
 
   return (
     <div className="si-page">
@@ -72,8 +117,12 @@ export default function SignIn() {
                 is no Easy Auth proxy to redirect through at all - a real
                 production build always goes through real Easy Auth, once
                 it is configured on the App Service resource (see
-                auth.js's own note). */}
-            <Link className="si-btn" to={BYPASS_SIGN_IN ? role.dest : authUrl('aad', role.dest)}>
+                auth.js's own note).
+                A plain <a>, never a router <Link>: /.auth/login/* is served
+                by Azure, not by this app - a <Link> switches pages inside
+                the app without asking the server, so it rendered our own
+                "Not found" page at that address instead of signing in. */}
+            <a className="si-btn" href={BYPASS_SIGN_IN ? dest : authUrl('aad', dest)}>
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
                 <rect x="0" y="0" width="8.5" height="8.5" fill="#ffffff" />
                 <rect x="9.5" y="0" width="8.5" height="8.5" fill="#ffffff" opacity=".85" />
@@ -81,11 +130,11 @@ export default function SignIn() {
                 <rect x="9.5" y="9.5" width="8.5" height="8.5" fill="#ffffff" opacity=".7" />
               </svg>
               Sign in with Microsoft
-            </Link>
+            </a>
             <div className="si-or" aria-hidden="true">
               or
             </div>
-            <Link className="si-google" to={BYPASS_SIGN_IN ? role.dest : authUrl('google', role.dest)}>
+            <a className="si-google" href={BYPASS_SIGN_IN ? dest : authUrl('google', dest)}>
               <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
                 <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
                 <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
@@ -93,7 +142,7 @@ export default function SignIn() {
                 <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
               </svg>
               Sign in with Google
-            </Link>
+            </a>
             <p className="es-caption">
               {BYPASS_SIGN_IN
                 ? "Local dev - sign-in is not available here, these buttons go straight to the role's app."

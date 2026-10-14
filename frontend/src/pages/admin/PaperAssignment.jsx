@@ -35,17 +35,43 @@ export default function PaperAssignment() {
   const [commentsByDoc, setCommentsByDoc] = useState({})
   const [commentsBusy, setCommentsBusy] = useState(false)
 
+  const [teachersBusy, setTeachersBusy] = useState(false)
+  const [teachersNote, setTeachersNote] = useState(null)
+
+  // Pulls EdSider's current teacher list first, so someone added there a
+  // minute ago is already in the dropdown. If EdSider cannot be reached,
+  // the last list copied is still shown, with a note saying so.
+  // The saved copy is shown at once; the refresh (a few seconds) replaces
+  // it when it lands, so the dropdown is usable while EdSider is asked.
+  async function refreshTeachers() {
+    setTeachersBusy(true)
+    setTeachersNote(null)
+    try {
+      setTeachers(await api.listTeachers())
+    } catch (err) {
+      setError(err.message)
+    }
+    try {
+      await api.syncTeachers()
+      setTeachers(await api.listTeachers())
+    } catch (err) {
+      setTeachersNote(`Showing the last teacher list copied from EdSider - ${err.message}`)
+    } finally {
+      setTeachersBusy(false)
+    }
+  }
+
   useEffect(() => {
     let live = true
-    Promise.all([api.listIntakeDocuments(), api.listTeachers()])
-      .then(([all, people]) => {
-        if (!live) return
-        setDocs(all)
-        setTeachers(people)
+    api
+      .listIntakeDocuments()
+      .then((all) => {
+        if (live) setDocs(all)
       })
       .catch((err) => {
         if (live) setError(err.message)
       })
+    refreshTeachers()
     return () => {
       live = false
     }
@@ -111,8 +137,16 @@ export default function PaperAssignment() {
 
       <div className="pa-head">
         <h2 className="scr-h2">Ready to assign ({ready.length})</h2>
-        <p className="es-caption">Teachers appear here after they first open the Teacher review app.</p>
+        <p className="es-caption">
+          {teachersBusy
+            ? 'Loading teachers from EdSider...'
+            : `${teachers.length} teacher(s) - every teacher registered in EdSider.`}{' '}
+          <Button variant="ghost" size="sm" onClick={refreshTeachers} disabled={teachersBusy}>
+            Refresh from EdSider
+          </Button>
+        </p>
       </div>
+      {teachersNote ? <Notice tone="warning">{teachersNote}</Notice> : null}
 
       {ready.length === 0 ? <Notice tone="info">No checked papers are waiting for a teacher.</Notice> : null}
 
@@ -145,7 +179,9 @@ export default function PaperAssignment() {
                 <option value="">Choose a teacher</option>
                 {teachers.map((t) => (
                   <option key={t.identity} value={t.identity}>
-                    {t.display_name || t.identity}
+                    {t.display_name && t.display_name !== t.identity
+                      ? `${t.display_name} (${t.identity})`
+                      : t.identity}
                   </option>
                 ))}
               </select>

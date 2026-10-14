@@ -21,6 +21,7 @@ Then browse to http://localhost:8000/docs for a form to try it by hand,
 or POST to /check. See README.md for the request and response shape.
 """
 
+import json
 import mimetypes
 import os
 import secrets
@@ -32,7 +33,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parent
@@ -105,6 +108,66 @@ _allowed_origins = [
                    "http://localhost:5173,http://127.0.0.1:5173").split(",")
     if o.strip()
 ]
+
+# The built frontend (frontend/dist, `npm run build`), served by this same
+# process when present. One address for page and API is what lets sign-in
+# work at all: Easy Auth adds the signed-in person's identity only to
+# requests for the app they signed in to, and a browser does not carry one
+# app's sign-in to another. With the page on eds-dev-ai-web and the API on
+# eds-dev-ai-api, every API call arrived with no identity - everyone was
+# "reviewer", and the allowlist was never consulted.
+FRONTEND_DIR = Path(os.environ.get("EDSIDER_FRONTEND_DIR",
+                                   ROOT / "frontend" / "dist")).resolve()
+
+
+def _serving_frontend():
+    return (FRONTEND_DIR / "index.html").is_file()
+
+
+def _is_page_route(path):
+    """The React app's own pages (see frontend/src/App.jsx)."""
+    return path in ("/", "/sign-in", "/app") or path.startswith("/app/")
+
+
+def _is_frontend_path(path):
+    if not _serving_frontend():
+        return False
+    if _is_page_route(path):
+        return True
+    candidate = (FRONTEND_DIR / path.lstrip("/")).resolve()
+    return candidate.is_file() and FRONTEND_DIR in candidate.parents
+
+
+def _require_signin():
+    """EDSIDER_REQUIRE_SIGNIN=true on Azure: a request with no Easy Auth
+    identity is refused instead of treated as a local run. Read per call,
+    not at import, so a test or an App Service setting change applies."""
+    return os.environ.get("EDSIDER_REQUIRE_SIGNIN", "").strip().lower() in ("1", "true", "yes")
+
+
+@app.middleware("http")
+async def require_signed_in_staff(request, call_next):
+    """Every API request, checked once here rather than route by route:
+    a signed-in identity must be on the staff list (403 otherwise), and
+    with EDSIDER_REQUIRE_SIGNIN no identity at all is a 401. /health
+    stays open (an uptime probe cannot sign in), and so do the page's
+    own files - the sign-in page has to load before anyone can sign in.
+    Added before CORS, so CORS wraps it and even a refusal carries the
+    headers a browser needs to read it."""
+    path = request.url.path
+    if request.method == "OPTIONS" or path == "/health" or _is_frontend_path(path):
+        return await call_next(request)
+    header = request.headers.get("x-ms-client-principal-name")
+    if not header and _require_signin():
+        return JSONResponse({"detail": "Sign in first."}, status_code=401)
+    if header:
+        try:
+            await run_in_threadpool(_resolve_identity, header)
+        except HTTPException as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
@@ -181,20 +244,100 @@ def require_api_key(x_api_key: Optional[str] = Header(None),
         raise HTTPException(401, "Missing or wrong X-API-Key header.")
 
 
+def _resolve_identity(x_ms_client_principal_name):
+    """Shared by current_identity(), current_user() and require_superadmin()
+    below - looks a signed-in email up in authorized_users, the
+    admin-managed allowlist EdSider's own staff pattern uses (see
+    CLAUDE.md, "Sign-in"), and decides who this request is allowed to be.
+
+    No header at all means Easy Auth was never in front of this request
+    - a local run, or the tests - so there is nothing to check against
+    the allowlist; this falls back to "reviewer" with no role, exactly
+    as current_identity() always did, so neither local development nor
+    the test suite needs Easy Auth to exist.
+
+    EDSIDER_BOOTSTRAP_ADMINS (comma-separated emails, an app setting,
+    never in code) is the way into an otherwise-empty allowlist: without
+    it, a freshly deployed app with Easy Auth on and no rows in
+    authorized_users yet would lock out even the person meant to add
+    everyone else.
+    """
+    if not x_ms_client_principal_name:
+        if _require_signin():
+            raise HTTPException(401, "Sign in first.")
+        return {"identity": "reviewer", "name": "reviewer", "role": None}
+    email = x_ms_client_principal_name.strip().lower()
+    bootstrap = {
+        e.strip().lower()
+        for e in os.environ.get("EDSIDER_BOOTSTRAP_ADMINS", "").split(",")
+        if e.strip()
+    }
+    if email in bootstrap:
+        return {"identity": email, "name": email, "role": "superadmin"}
+    with store.connect() as conn:
+        # effective_role (store.STAFF_ROLE_SQL): nothing for an inactive
+        # row; else a superadmin's role; else 'teacher' for anyone EdSider
+        # lists as one - EdSider already decides who its teachers are.
+        person = store.lookup_staff(conn, email)
+    if person is not None and person["effective_role"]:
+        return {"identity": email, "name": person["name"] or email,
+                "role": person["effective_role"]}
+    # Names the email: someone signed in to Google with the wrong account
+    # needs to see WHICH one was refused to know to switch. Only ever sent
+    # back to the person signed in as it.
+    raise HTTPException(
+        403, f"{email} is not allowed to use EdsiderAI. "
+             "Ask an administrator to add this email, or sign in with a different account.")
+
+
 def current_identity(
     x_ms_client_principal_name: Optional[str] = Header(None)
 ):
     """Who is actually calling - same header, same fallback as app.py's
     current_reviewer() and teacher_app.py's current_teacher(). Azure App
-    Service's Easy Auth injects this once configured; a local run (or
-    the tests) falls back to "reviewer", same as those two Streamlit
-    pages did before this API existed.
+    Service's Easy Auth injects this once configured.
 
     A comment's or a decision's author must come from this, never from
     the request body - letting the caller name itself as anyone it
     likes would make every "who said this" in the review tools fiction.
+
+    Raises 403 when Easy Auth reports a real, signed-in email that is
+    not on the allowlist - EdSider's own "You are not a user! Please
+    contact System Administrator!" rejection, see _resolve_identity().
     """
-    return x_ms_client_principal_name or "reviewer"
+    return _resolve_identity(x_ms_client_principal_name)["identity"]
+
+
+def current_user(
+    x_ms_client_principal_name: Optional[str] = Header(None)
+):
+    """Identity AND role together - for /me (what the frontend shows in
+    the top nav) and require_superadmin() below, which need to know not
+    just who is calling but what they are allowed to do."""
+    return _resolve_identity(x_ms_client_principal_name)
+
+
+def require_superadmin(user: dict = Depends(current_user)):
+    """Gates the user-management routes below - only a superadmin may
+    decide who else can sign in, or what role they hold; today's 'admin'
+    keeps its own operational tasks (assigning papers to teachers) but
+    cannot touch this table. role is None only on a local run with no
+    Easy Auth header at all (see _resolve_identity) - treated as
+    superadmin there, the same "everything is open locally" rule
+    BYPASS_SIGN_IN already applies on the frontend, so a developer
+    without Easy Auth in front of them is never locked out of their own
+    machine."""
+    if user["role"] not in (None, "superadmin"):
+        raise HTTPException(403, "Superadmin access required.")
+    return user
+
+
+def require_assigner(user: dict = Depends(current_user)):
+    """Whoever assigns papers to teachers - admin or superadmin (or a
+    local run, role None, same rule as require_superadmin)."""
+    if user["role"] not in (None, "admin", "superadmin"):
+        raise HTTPException(403, "Admin access required.")
+    return user
 
 
 @app.get("/health")
@@ -383,6 +526,11 @@ class IntakeQuestionOut(BaseModel):
     depth: int = 0
     reviewed: bool = False
     teacher_reviewed: bool = False
+    # Who last changed this question's own fields, and when - NULL for
+    # a question nobody has edited since extraction. See
+    # store.stamp_question_editor(), called from every PATCH route.
+    last_edited_by: Optional[str] = None
+    last_edited_at: Optional[str] = None
     # Computed, not stored - split_mcq_options() run on `text` as this
     # row is built (see _question_out), not fetched separately per
     # question. A page with 100+ questions doing that as its own request
@@ -499,6 +647,14 @@ class ResplitRequest(BaseModel):
     style: str
 
 
+class PastedPaperIn(BaseModel):
+    """A paper's text read elsewhere - see create_document_from_text."""
+    text: str = Field(..., min_length=1)
+    # What to call it in the paper list (there is no filename to show).
+    title: Optional[str] = None
+    style: str = intake_extract.DEFAULT_SPLIT_STYLE
+
+
 class CommentIn(BaseModel):
     comment: str = Field(..., min_length=1)
 
@@ -522,6 +678,61 @@ class ImageOut(BaseModel):
 class TeacherOut(BaseModel):
     identity: str
     display_name: Optional[str] = None
+    # 'edsider' - from EdSider's own staff tables; 'added_here' - made a
+    # teacher by a superadmin, or only known from opening the teacher app.
+    source: Optional[str] = None
+
+
+class TeacherSyncOut(BaseModel):
+    teachers: int
+    synced_at: Optional[str] = None
+
+
+class MeOut(BaseModel):
+    """What the frontend's top nav shows, and how it decides whether to
+    render the app at all or a "contact your administrator" page -
+    role is None only for a local run with no Easy Auth in front."""
+    identity: str
+    name: str
+    role: Optional[Literal["superadmin", "admin", "teacher", "employee"]] = None
+
+
+StaffRole = Literal["superadmin", "admin", "teacher", "employee"]
+
+
+class StaffIn(BaseModel):
+    """A superadmin adding someone (or re-adding to correct them)."""
+    email: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    role: StaffRole
+    subjects: Optional[List[str]] = None
+
+
+class StaffUpdate(BaseModel):
+    """Only the fields present are changed (see update_staff_member's
+    exclude_unset). role null clears a superadmin's role, so an EdSider
+    teacher goes back to being a teacher and anyone else loses access."""
+    name: Optional[str] = None
+    role: Optional[StaffRole] = None
+    subjects: Optional[List[str]] = None
+    active: Optional[bool] = None
+
+
+class StaffOut(BaseModel):
+    email: str
+    name: Optional[str] = None
+    # What they may sign in as right now - None means they cannot.
+    effective_role: Optional[str] = None
+    # What a superadmin set, if anything (None = "whatever EdSider says").
+    role: Optional[str] = None
+    in_edsider: bool = False
+    active: bool = True
+    subjects: List[str] = []
+    added_by: Optional[str] = None
+    added_at: Optional[str] = None
+    synced_at: Optional[str] = None
+    first_seen_at: Optional[str] = None
+    last_seen_at: Optional[str] = None
 
 
 class AssignIn(BaseModel):
@@ -585,6 +796,8 @@ def _question_out(q, has_parts=False):
     d["detected_type"] = intake_extract.detect_question_type(
         d.get("text"), has_parts)
     d["question_type"] = d.get("question_type") or d["detected_type"]
+    if d.get("last_edited_at") is not None:
+        d["last_edited_at"] = d["last_edited_at"].isoformat()
     return IntakeQuestionOut(**d)
 
 
@@ -659,6 +872,39 @@ def upload_document(
             paper_title=result["paper"]["title"],
             sections=result["sections"], raw_text=result["raw_text"],
             split_style=style, file_blob=contents,
+        )
+        store.add_extracted_questions(
+            conn, doc_id, result["questions"],
+            fallback_grade=result["paper"]["grade"],
+            fallback_subject=result["paper"]["subject"],
+        )
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
+@app.post("/intake/documents/from-text", response_model=IntakeDocumentDetail,
+         dependencies=[Depends(require_api_key)])
+def create_document_from_text(body: PastedPaperIn,
+                              identity: str = Depends(current_identity)):
+    """A paper whose text was read somewhere else - the local OCR tool on
+    a data-entry computer (a scanned Sinhala/Tamil paper our server's
+    Tesseract cannot read well), or text copied straight out of a
+    document. Stored and split exactly like an upload (see
+    extract_text()); there is no file, so the preview pane has nothing
+    to show and the raw text is the only record of what was read."""
+    title = (body.title or "").strip() or "Pasted text"
+    result = intake_extract.extract_text(body.text, style=body.style, filename=title)
+    if not result["raw_text"]:
+        raise HTTPException(400, "The pasted text is empty.")
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(
+            conn, title, file_type=result["file_type"],
+            extractor=result["extractor"], uploaded_by=identity,
+            paper_grade=result["paper"]["grade"],
+            paper_subject=result["paper"]["subject"],
+            paper_title=result["paper"]["title"],
+            sections=result["sections"], raw_text=result["raw_text"],
+            split_style=body.style,
         )
         store.add_extracted_questions(
             conn, doc_id, result["questions"],
@@ -889,16 +1135,16 @@ def check_document_duplicates(doc_id: int) -> Dict[str, Any]:
          dependencies=[Depends(require_api_key)])
 def assign_document(doc_id: int, body: AssignIn):
     """The assigning administrator's action - hands a checked paper to
-    one teacher, who must already have opened the teacher app once
-    (see list_teachers/touch_teacher below) for their identity to exist
-    at all. Moves the paper straight to 'teacher_review'."""
+    one teacher: one of EdSider's own (see sync_teachers), or someone who
+    has opened the teacher app here. Moves the paper straight to
+    'teacher_review'."""
     with store.connect() as conn:
         _require_document(conn, doc_id)
-        known = {t["identity"] for t in store.list_teachers(conn)}
+        known = {t["identity"] for t in store.assignable_teachers(conn)}
         if body.teacher_identity not in known:
             raise HTTPException(
-                404, f"{body.teacher_identity!r} has never opened the "
-                    "teacher app, so cannot be assigned a paper yet.")
+                404, f"{body.teacher_identity!r} is not an EdSider teacher "
+                    "and has never opened the teacher app here.")
         store.assign_document(conn, doc_id, body.teacher_identity)
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
@@ -979,7 +1225,8 @@ def create_question(doc_id: int, body: QuestionCreate):
 
 @app.patch("/intake/questions/{q_id}", response_model=IntakeQuestionOut,
           dependencies=[Depends(require_api_key)])
-def update_question(q_id: int, body: QuestionUpdate):
+def update_question(q_id: int, body: QuestionUpdate,
+                    identity: str = Depends(current_identity)):
     fields = body.model_dump(exclude_unset=True)
     for key in ("reviewed", "teacher_reviewed"):
         if key in fields:
@@ -988,6 +1235,7 @@ def update_question(q_id: int, body: QuestionUpdate):
         _require_question(conn, q_id)
         if fields:
             store.update_intake_question(conn, q_id, **fields)
+            store.stamp_question_editor(conn, q_id, identity)
         q = store.get_intake_question(conn, q_id)
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
@@ -995,7 +1243,8 @@ def update_question(q_id: int, body: QuestionUpdate):
 
 @app.post("/intake/documents/{doc_id}/marks", response_model=List[IntakeQuestionOut],
          dependencies=[Depends(require_api_key)])
-def set_question_marks(doc_id: int, body: MarksBulkIn):
+def set_question_marks(doc_id: int, body: MarksBulkIn,
+                       identity: str = Depends(current_identity)):
     """Sets each named question's marks in one transaction and returns the
     paper's questions as they now stand. A question that is not on this paper
     refuses the whole request, so a partial save never happens silently."""
@@ -1008,6 +1257,7 @@ def set_question_marks(doc_id: int, body: MarksBulkIn):
                 404, f"Questions {stray} are not on paper {doc_id}.")
         for m in body.marks:
             store.update_intake_question(conn, m.question_id, marks=m.marks)
+            store.stamp_question_editor(conn, m.question_id, identity)
         qs = store.intake_questions(conn, doc_id)
         parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
     return [_question_out(q, has_parts=q["seq"] in parent_seqs) for q in qs]
@@ -1023,7 +1273,8 @@ def remove_question(q_id: int):
 
 @app.patch("/intake/questions/{q_id}/mcq", response_model=IntakeQuestionOut,
           dependencies=[Depends(require_api_key)])
-def update_question_mcq(q_id: int, body: McqUpdateIn):
+def update_question_mcq(q_id: int, body: McqUpdateIn,
+                        identity: str = Depends(current_identity)):
     """Reassembles an edited stem and options back into this question's
     one combined text field - the single place that join happens, so a
     reviewer fixing a wrongly-read option never has to reproduce the
@@ -1045,6 +1296,7 @@ def update_question_mcq(q_id: int, body: McqUpdateIn):
     with store.connect() as conn:
         _require_question(conn, q_id)
         store.update_intake_question(conn, q_id, text=combined)
+        store.stamp_question_editor(conn, q_id, identity)
         q = store.get_intake_question(conn, q_id)
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
@@ -1052,7 +1304,8 @@ def update_question_mcq(q_id: int, body: McqUpdateIn):
 
 @app.patch("/intake/questions/{q_id}/blanks", response_model=IntakeQuestionOut,
           dependencies=[Depends(require_api_key)])
-def update_question_blanks(q_id: int, body: BlanksUpdateIn):
+def update_question_blanks(q_id: int, body: BlanksUpdateIn,
+                           identity: str = Depends(current_identity)):
     """Reassembles a fill-in-the-blank question's edited per-blank
     answers back into one flat answer key ("1. for\\n2. across\\n..."),
     the same shape _attach_answers() reads out of the paper's own
@@ -1067,6 +1320,7 @@ def update_question_blanks(q_id: int, body: BlanksUpdateIn):
     with store.connect() as conn:
         _require_question(conn, q_id)
         store.update_intake_question(conn, q_id, answer=combined or None)
+        store.stamp_question_editor(conn, q_id, identity)
         q = store.get_intake_question(conn, q_id)
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
@@ -1166,17 +1420,120 @@ def remove_image(image_id: int):
 
 # ------------------------------------------------------- teachers / admin
 
+@app.get("/me", response_model=MeOut, dependencies=[Depends(require_api_key)])
+def me(user: dict = Depends(current_user)):
+    """The frontend calls this once on load: a 403 here means Easy Auth
+    signed someone in but they are not on the allowlist, and the
+    frontend shows a "contact your administrator" page instead of the
+    app - this is the actual "at login, check the signed-in email
+    against the list" gate, not something enforced route by route."""
+    return MeOut(**user)
+
+
+_STAFF_TIMES = ("added_at", "synced_at", "first_seen_at", "last_seen_at")
+
+
+def _staff_out(row):
+    d = dict(row)
+    for key in _STAFF_TIMES:
+        if d.get(key) is not None:
+            d[key] = d[key].isoformat()
+    d["subjects"] = json.loads(d["subjects"]) if d.get("subjects") else []
+    return StaffOut(**d)
+
+
+def _require_staff(conn, email):
+    row = store.lookup_staff(conn, email)
+    if row is None:
+        raise HTTPException(404, f"No staff member {email!r}.")
+    return row
+
+
+@app.get("/admin/users", response_model=List[StaffOut],
+        dependencies=[Depends(require_api_key)])
+def list_staff_members(user: dict = Depends(require_superadmin)):
+    """Every staff profile - EdSider's teachers, people a superadmin
+    added, and anyone seen in the teacher app - one row each."""
+    with store.connect() as conn:
+        rows = store.list_staff(conn)
+    return [_staff_out(r) for r in rows]
+
+
+@app.post("/admin/users", response_model=StaffOut,
+         dependencies=[Depends(require_api_key)])
+def add_staff_member(body: StaffIn, user: dict = Depends(require_superadmin)):
+    """A superadmin adding one person by hand - EdSider's own staff
+    pattern (see CLAUDE.md, "Sign-in"), not a self-service sign-up with
+    an emailed verification link. Re-adding an existing email corrects
+    their name/role rather than erroring."""
+    email = body.email.strip().lower()
+    subjects = [s.strip() for s in body.subjects if s.strip()] if body.subjects is not None else None
+    with store.connect() as conn:
+        store.set_staff(conn, email, body.name.strip(), body.role,
+                        added_by=user["identity"], subjects=subjects)
+        row = store.lookup_staff(conn, email)
+    return _staff_out(row)
+
+
+@app.patch("/admin/users/{email}", response_model=StaffOut,
+          dependencies=[Depends(require_api_key)])
+def update_staff_member(email: str, body: StaffUpdate,
+                        user: dict = Depends(require_superadmin)):
+    """Change a name, role, subjects, or switch someone off (`active`) -
+    including an EdSider teacher, whose sign-in EdSider grants but a
+    superadmin here can still stop."""
+    email = email.strip().lower()
+    fields = body.model_dump(exclude_unset=True)
+    if "subjects" in fields and fields["subjects"] is not None:
+        fields["subjects"] = [s.strip() for s in fields["subjects"] if s.strip()]
+    if fields.get("active") is False and email == user["identity"]:
+        raise HTTPException(400, "You cannot switch off your own account.")
+    with store.connect() as conn:
+        _require_staff(conn, email)
+        store.update_staff(conn, email, **fields)
+        row = store.lookup_staff(conn, email)
+    return _staff_out(row)
+
+
+@app.delete("/admin/users/{email}", status_code=204,
+           dependencies=[Depends(require_api_key)])
+def remove_staff_member(email: str, user: dict = Depends(require_superadmin)):
+    """Take away what a superadmin granted (see store.remove_staff_access
+    - an EdSider teacher stays a teacher; switch them off with `active`)."""
+    with store.connect() as conn:
+        store.remove_staff_access(conn, email.strip().lower())
+
+
 @app.get("/teachers", response_model=List[TeacherOut],
         dependencies=[Depends(require_api_key)])
 def list_teachers():
-    """Who the assigning administrator can hand a paper to - only
-    identities that have opened the teacher app at least once (see
-    touch_teacher below), so assigning can never name someone Easy
-    Auth will not actually report back."""
+    """Who the assigning administrator can hand a paper to - every
+    EdSider teacher (keyed by the email they sign in with, which is what
+    Easy Auth reports back, so an assignment always reaches them), plus
+    anyone who has opened the teacher app here without being one."""
     with store.connect() as conn:
-        teachers = store.list_teachers(conn)
-    return [TeacherOut(identity=t["identity"], display_name=t["display_name"])
-           for t in teachers]
+        teachers = store.assignable_teachers(conn)
+    return [TeacherOut(identity=t["identity"], display_name=t["display_name"],
+                       source=t["source"]) for t in teachers]
+
+
+@app.post("/teachers/sync", response_model=TeacherSyncOut,
+         dependencies=[Depends(require_api_key)])
+def sync_teachers_from_edsider(user: dict = Depends(require_assigner)):
+    """Re-read EdSider's teacher list now - the assignment page calls this
+    when it opens, so a teacher added in EdSider a minute ago is already
+    in the dropdown. A failure here (EdSider unreachable, PG_* unset) is
+    a 502 naming the cause; the last list copied stays in place and the
+    dropdown still works from it."""
+    from scripts.sync import sync_teachers
+    try:
+        count = sync_teachers()
+    except (Exception, SystemExit) as e:
+        # SystemExit: _pg_connect() exits that way when PG_* is unset.
+        raise HTTPException(502, f"Could not refresh teachers from EdSider: {e}")
+    with store.connect() as conn:
+        at = store.edsider_teachers_synced_at(conn)
+    return TeacherSyncOut(teachers=count, synced_at=at.isoformat() if at else None)
 
 
 @app.post("/teachers/me/touch", response_model=TeacherOut,
@@ -1188,8 +1545,9 @@ def touch_teacher(identity: str = Depends(current_identity)):
     before listing "my papers", exactly as the Streamlit page does."""
     with store.connect() as conn:
         store.upsert_teacher(conn, identity)
-        t = next(t for t in store.list_teachers(conn) if t["identity"] == identity)
-    return TeacherOut(identity=t["identity"], display_name=t["display_name"])
+        t = store.lookup_staff(conn, identity)
+    return TeacherOut(identity=t["email"], display_name=t["name"],
+                      source="edsider" if t["in_edsider"] else "added_here")
 
 
 @app.get("/teachers/me/documents", response_model=List[IntakeDocumentOut],
@@ -1557,6 +1915,29 @@ def question_facets() -> Dict[str, List[str]]:
         "grades": sorted({r["grade"] for r in state["rows"] if r.get("grade")}),
         "subjects": sorted({r["subject"] for r in state["rows"] if r.get("subject")}),
     }
+
+
+# ------------------------------------------------------------ the page
+# Registered last, so every API route above is matched first.
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def frontend(full_path: str):
+    """The built React app (see FRONTEND_DIR). A real file under dist is
+    sent as it is; one of the app's own page addresses gets index.html,
+    and the app's router takes it from there. Anything else is a plain
+    404 - not the app's shell, so a mistyped API path still says so."""
+    if not _serving_frontend():
+        raise HTTPException(404, "Not Found")
+    path = "/" + full_path
+    candidate = (FRONTEND_DIR / full_path).resolve()
+    # parents check: "../" in a path must never reach outside dist.
+    if full_path and candidate.is_file() and FRONTEND_DIR in candidate.parents:
+        return FileResponse(candidate)
+    if _is_page_route(path):
+        # Never cached: it names the current build's hashed assets.
+        return FileResponse(FRONTEND_DIR / "index.html",
+                            headers={"Cache-Control": "no-cache"})
+    raise HTTPException(404, "Not Found")
 
 
 if __name__ == "__main__":

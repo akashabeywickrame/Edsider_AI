@@ -1,0 +1,8 @@
+# The EdsiderAI local reader - installed by setup.bat, after torch
+# (CPU build, from PyTorch's own index - the default build pulls several
+# GB of GPU libraries these computers have no use for).
+# Pinned to the versions it was tested with.
+surya-ocr==0.22.1
+fastapi==0.143.0
+uvicorn==0.54.0
+python-multipart==0.0.32

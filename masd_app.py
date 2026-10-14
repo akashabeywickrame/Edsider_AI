@@ -52,7 +52,7 @@ st.caption(
 
 with store.connect() as conn:
     docs = [dict(d) for d in store.intake_documents(conn)]
-    teachers = [dict(t) for t in store.list_teachers(conn)]
+    teachers = [dict(t) for t in store.assignable_teachers(conn)]
 
 teacher_options = {t["identity"]: (t["display_name"] or t["identity"])
                    for t in teachers}
@@ -67,9 +67,9 @@ if not to_assign:
     st.info("No checked papers are waiting for assignment right now.")
 elif not teacher_options:
     st.warning(
-        "No teachers have opened their review page yet, so there is "
-        "nothing to assign to. Ask a teacher to sign in to the Teacher "
-        "review app once - they will appear here automatically after that."
+        "No teachers yet, so there is nothing to assign to. Run "
+        "`python scripts/sync.py` to copy EdSider's teachers here, or ask "
+        "a teacher to open the Teacher review app once."
     )
 else:
     for d in to_assign:

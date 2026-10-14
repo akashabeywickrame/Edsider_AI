@@ -126,6 +126,52 @@ LINKS_QUERY = """
 """
 
 
+# EdSider's teachers, for the paper-assignment dropdown and sign-in. Every
+# table and column here was confirmed against the live schema, not
+# guessed: a staff member's role rows live in staff_user_role (role_code
+# 'TEACH' is "Teacher" in user_management.role); staff_user.staff_id points
+# at registration.teacher.user_id, which holds the name. Measured: all 135
+# TEACH rows have a teacher row and matching emails, 133 distinct emails
+# (DISTINCT ON keeps one per email), and names carry stray spaces.
+# user_status_id 1 is "Active" (settings.status); every current teacher is.
+TEACHERS_QUERY = """
+    SELECT DISTINCT ON (lower(trim(su.user_email)))
+           lower(trim(su.user_email)) AS email,
+           NULLIF(trim(concat_ws(' ', trim(t.first_name), trim(t.last_name))), '') AS name
+    FROM user_management.staff_user su
+    JOIN user_management.staff_user_role r ON r.user_id = su.user_id
+    LEFT JOIN registration.teacher t ON t.user_id = su.staff_id
+    WHERE r.role_code = 'TEACH'
+      AND (r.to_date IS NULL OR r.to_date >= now())
+      AND (t.user_status_id IS NULL OR t.user_status_id = 1)
+      AND coalesce(trim(su.user_email), '') <> ''
+    ORDER BY lower(trim(su.user_email))
+"""
+
+
+def sync_teachers(pg_conn=None):
+    """Replace our copy of EdSider's teacher list with the current one.
+    Small enough (~135 rows) to re-read whole every time, which is also
+    the only way to notice a teacher EdSider has removed - a watermark
+    only ever sees new rows. Returns how many teachers are now stored."""
+    own = pg_conn is None
+    if own:
+        pg_conn = _pg_connect()
+    try:
+        # Named, like the question and link cursors - its own cursor, so
+        # it never shares state with theirs.
+        cur = pg_conn.cursor(name="edsider_sync_teachers")
+        cur.execute(TEACHERS_QUERY, {})
+        teachers = [dict(r) for r in cur]
+        cur.close()
+    finally:
+        if own:
+            pg_conn.rollback()
+            pg_conn.close()
+    with store.connect() as local_conn:
+        return store.sync_edsider_teachers(local_conn, teachers)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -289,6 +335,8 @@ def run_sync(full=False):
                 links_saved += 1
 
             store.set_watermark(local_conn, SOURCE_LINKS, highest_link_seen)
+
+        teachers = sync_teachers(pg_conn)
     finally:
         pg_conn.rollback()  # nothing was written; close the read cleanly
         pg_conn.close()
@@ -298,6 +346,7 @@ def run_sync(full=False):
         "watermark": highest_seen, "total": total, "linked": linked,
         "links_pulled": links_pulled, "links_saved": links_saved,
         "link_watermark": highest_link_seen,
+        "teachers": teachers,
     }
 
 
@@ -317,6 +366,7 @@ def main():
     print(f"  sub-questions linked to a parent : {result['linked']:,}")
     print(f"  assessment links    : {result['links_saved']:,} pulled "
           f"(watermark now at {result['link_watermark']:,})")
+    print(f"  EdSider teachers    : {result['teachers']:,}")
 
     if imported:
         print("\nNext: python scripts/embed.py   (only new text gets embedded)")

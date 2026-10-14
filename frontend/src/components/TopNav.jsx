@@ -14,7 +14,10 @@ const LINKS = {
     { to: '/app/data-entry/paper-intake', label: 'Paper intake' },
   ],
   teacher: [{ to: '/app/teacher', label: 'My papers' }],
-  admin: [{ to: '/app/admin', label: 'Assign papers' }],
+  admin: [
+    { to: '/app/admin', label: 'Assign papers' },
+    { to: '/app/admin/users', label: 'Manage users', superadminOnly: true },
+  ],
 }
 
 const APP_LABEL = {
@@ -23,8 +26,11 @@ const APP_LABEL = {
   admin: 'Paper assignment',
 }
 
-export default function TopNav({ app, who }) {
-  const links = LINKS[app] || []
+// role is null on a local run with no Easy Auth header - everything is
+// open there, same as service.py's require_superadmin().
+export default function TopNav({ app, who, role = null }) {
+  const canManageUsers = role === null || role === 'superadmin'
+  const links = (LINKS[app] || []).filter((l) => !l.superadminOnly || canManageUsers)
   return (
     <nav className="es-nav tn" aria-label="Pages">
       <Link to={links[0]?.to || '/'} aria-label="EdSider AI home" className="tn__logo">
@@ -39,9 +45,11 @@ export default function TopNav({ app, who }) {
         ))}
       </ul>
       {who ? <span className="es-nav__who">{who}</span> : null}
-      <Link className="tn__signout" to={BYPASS_SIGN_IN ? '/' : logoutUrl('/')}>
+      {/* A plain <a>: /.auth/logout is Azure's, not a page of this app - a
+          router <Link> would never reach it (see SignIn.jsx). */}
+      <a className="tn__signout" href={BYPASS_SIGN_IN ? '/' : logoutUrl('/')}>
         Sign out
-      </Link>
+      </a>
     </nav>
   )
 }
