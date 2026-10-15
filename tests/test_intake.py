@@ -2018,22 +2018,25 @@ def test_delete_question_image_removes_it(local_db):
 
 
 def test_upsert_teacher_records_first_visit_and_keeps_it_on_later_ones(local_db):
-    """The assigning administrator's dropdown is built from this table -
-    a teacher's first visit to their review page is what puts them in
-    it, not anything typed in by hand."""
+    """A teacher's first visit to their review page records them on their
+    staff profile (and so in the assignment dropdown); later visits only
+    refresh last_seen_at."""
     with store.connect() as conn:
         store.upsert_teacher(conn, "dilhani@edsider.lk", "Dilhani Data")
-        first_seen = store.list_teachers(conn)[0]["first_seen_at"]
+        first_seen = store.lookup_staff(conn, "dilhani@edsider.lk")["first_seen_at"]
 
         store.upsert_teacher(conn, "dilhani@edsider.lk", "Dilhani D.")
         store.upsert_teacher(conn, "nimal@edsider.lk", "Nimal Teacher")
-        teachers = store.list_teachers(conn)
+        dilhani = store.lookup_staff(conn, "dilhani@edsider.lk")
+        assignable = {t["identity"] for t in store.assignable_teachers(conn)}
 
-    by_identity = {t["identity"]: t for t in teachers}
-    assert set(by_identity) == {"dilhani@edsider.lk", "nimal@edsider.lk"}
-    # The later visit's display name wins, but first_seen_at does not move.
-    assert by_identity["dilhani@edsider.lk"]["display_name"] == "Dilhani D."
-    assert by_identity["dilhani@edsider.lk"]["first_seen_at"] == first_seen
+    assert assignable == {"dilhani@edsider.lk", "nimal@edsider.lk"}
+    # A stored name is kept - EdSider's or a superadmin's always wins over
+    # what a sign-in reports (see store.upsert_teacher) - and first_seen_at
+    # does not move.
+    assert dilhani["name"] == "Dilhani Data"
+    assert dilhani["first_seen_at"] == first_seen
+    assert dilhani["last_seen_at"] >= first_seen
 
 
 def test_assign_document_moves_it_to_teacher_review(local_db):

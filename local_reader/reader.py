@@ -53,15 +53,51 @@ IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
 _BLOCK_TAG = re.compile(r"</?(?:p|li|ul|ol|br|div|h[1-6]|tr|table)\b[^>]*>", re.IGNORECASE)
 _ANY_TAG = re.compile(r"<[^>]+>")
-_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li)>", re.IGNORECASE)
+_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li|td|th|tr|table)>", re.IGNORECASE)
 _BULLET = re.compile(r"^[•●▪‣⁃]\s*")
+_TABLE_HTML = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+_CELL_END = re.compile(r"</t[dh]\s*>", re.IGNORECASE)
+
+# Data entry adds every table to its question as a picture, so a table's
+# cells are left out of the text - except a paper's header laid out as a
+# grid (subject / grade / term) at the top of the first page, which
+# EdsiderAI reads the paper's details from. Same rule as EdsiderAI's own
+# extractor (src/intake/extract.py, _data_tables).
+HEADER_ZONE = 0.3
+
+# Questions laid out in a grid ("26. <statement> | <statement>" - a real
+# Political Science paper) are questions, not a table: rows whose first
+# cell starts with a numbered item keep the table - when the numbers carry
+# on the paper's numbering (not starting at 1; a data table numbers its
+# own items from 1). A bare "1" alone in a cell never counts.
+_NUMBERED_CELL = re.compile(r"^\s*\(?(\d{1,3})\s*[.)]\s*\S")
+_HTML_ROW = re.compile(r"<tr\b.*?</tr\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
 
 
-def html_to_lines(text):
+def _rows_are_questions(first_cells):
+    numbers = [int(m.group(1)) for m in (_NUMBERED_CELL.match(c or "") for c in first_cells) if m]
+    return len(numbers) >= 2 and numbers[0] > 1
+
+
+def _drop_unless_questions(match):
+    table = match.group(0)
+    first_cells = []
+    for row in _HTML_ROW.findall(table):
+        cells = [html.unescape(_ANY_TAG.sub("", c)).strip() for c in _HTML_CELL.findall(row)]
+        first_cells.append(next((c for c in cells if c), ""))
+    return table if _rows_are_questions(first_cells) else "\n"
+
+
+def html_to_lines(text, keep_tables=False):
     """One line per paragraph or list item, so "1." / "A." / "අ)" stay at
-    the start of a line - where EdsiderAI's splitter looks for them."""
+    the start of a line - where EdsiderAI's splitter looks for them. A
+    table's content is left out unless `keep_tables` (the header table)."""
     if not _LOOKS_LIKE_HTML.search(text or ""):
         return text
+    if not keep_tables:
+        text = _TABLE_HTML.sub(_drop_unless_questions, text)
+    text = _CELL_END.sub(" ", text)
     lines = []
     for chunk in _BLOCK_TAG.split(text):
         line = _BULLET.sub("", html.unescape(_ANY_TAG.sub("", chunk)).strip())
@@ -70,11 +106,25 @@ def html_to_lines(text):
     return "\n".join(lines)
 
 
-def page_text(blocks):
-    """A page's text from Surya's blocks, minus a trailing page number - a
-    bare "7" alone on the last line belongs to the page, not the paper."""
-    text = html_to_lines("\n".join(b.get("html") or b.get("text") or "" for b in blocks))
-    lines = text.split("\n")
+def _is_header_table(block, page_height, first_page):
+    bbox = block.get("bbox") or []
+    return bool(first_page and page_height and len(bbox) == 4
+                and bbox[3] <= HEADER_ZONE * page_height)
+
+
+def page_text(blocks, page_height=None, first_page=False):
+    """A page's text from Surya's blocks, minus its tables (Surya labels
+    them "Table") and a trailing page number - a bare "7" alone on the
+    last line belongs to the page, not the paper."""
+    parts = []
+    for b in blocks:
+        source = b.get("html") or b.get("text") or ""
+        # A table block goes through html_to_lines like the rest, which
+        # drops it unless its rows are questions; a header table on page 1
+        # is kept whatever it holds.
+        header = b.get("label") == "Table" and _is_header_table(b, page_height, first_page)
+        parts.append(html_to_lines(source, keep_tables=header))
+    lines = "\n".join(p for p in parts if p).split("\n")
     if lines and re.fullmatch(r"\d{1,3}", lines[-1].strip()):
         lines.pop()
     return "\n".join(lines).strip()
@@ -123,9 +173,9 @@ class Reader:
             self._predictor = RecognitionPredictor(SuryaInferenceManager())
         return self._predictor
 
-    def read_page(self, image):
+    def read_page(self, image, first_page=False):
         result = self.load()([image], full_page=True)[0]
-        return page_text(result.model_dump()["blocks"])
+        return page_text(result.model_dump()["blocks"], image.height, first_page)
 
 
 READER = Reader()
@@ -146,9 +196,9 @@ def _run_job(job, path):
         count, pages = page_images(path)
         job["pages_total"] = count
         job["status"] = "reading"
-        for image in pages:
+        for n, image in enumerate(pages):
             t = time.time()
-            job["pages"].append(READER.read_page(image))
+            job["pages"].append(READER.read_page(image, first_page=n == 0))
             job["page_seconds"].append(round(time.time() - t, 1))
         job["status"] = "done"
     except Exception as e:  # shown on the page - nothing else would see it
@@ -242,7 +292,7 @@ def time_first_pages(path, pages=1):
         if n > pages:
             break
         t = time.time()
-        text = READER.read_page(image)
+        text = READER.read_page(image, first_page=n == 1)
         times.append(time.time() - t)
         print(f"  page {n} of {count}         : {times[-1]:6.1f} s  ({len(text)} characters read)")
     if times:

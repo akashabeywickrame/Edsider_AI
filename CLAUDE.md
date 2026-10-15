@@ -1410,6 +1410,53 @@ sub-questions besides. Confirmed unaffected: the worked-solutions
 English paper's 10 MCQ / 6 fill-blank and the Tamil paper's 24 of 25
 Part I MCQs (both previously measured) are unchanged.
 
+**Tables are left out of the text - data entry adds each one to its
+question as a picture.** Its cells as text only cluttered the question
+and fed the duplicate check rows of numbers. What counts as a table was
+measured on every stored PDF and Word paper (`_data_tables()`), because
+two real shapes look like tables and are not: a one-column frame around
+question text (GIT p16 "Defragmenter reorganizes...") and a paper's
+header laid out as a grid (Combined Maths, top of page 1: "Subject -
+Combined mathematics | Grade - 13 | Term - 1st | Time") - dropping that
+would lose the grade/subject/title `detect_paper_meta()` reads. So a
+table is 2+ rows by 2+ columns, not within the top 30% of page 1 (Word:
+not before question 1, since Word has no fixed pages), and not covering
+80%+ of the page (a border; none seen - the largest real one was 41%).
+A third shape surfaced only by re-extracting the real papers with and
+without the rule: **questions laid out in a grid.** Political Science
+puts questions 26-30 in table rows ("26. <statement> | <statement>");
+the first version dropped that table and the five questions with it.
+Rows whose first cell starts with a numbered item are kept as questions
+(`_rows_are_questions`) - but only when the numbers do not start at 1,
+because Grade 13 Biology's real data table numbers its own rows "1.
+First product of CO2 fixation | C3 | C4" from 1, while a question grid
+carries on the paper's numbering. A bare "1" alone in a cell never
+counts (Political Science's page-6 answer-choice legend, "1 | true |
+true", is a real table and is dropped). Not handled: a paper whose very
+first questions sit in a grid numbered from 1 - none of the stored
+papers does. Measured after the fix, every paper with tables keeps
+every question: Political Science 50 questions / 89 drafts (1 table
+out), Biology 53/69 (2 out), GIT Gr12 45/84 (18 out), Combined Maths
+header kept with grade/subject/title unchanged; GIT A/L Model keeps its
+47 questions and its Part II regains its parts (82 -> 91 drafts): a
+"Paper 2" heading inside one of its tables had split Part II in two.
+Real ones found: Political Science's statement grids, a "C3 vs C4
+plants" table, GIT truth/number tables, grids on the Sinhala Business
+Statistics paper. How each source drops them: a PDF's text layer has the
+table's text redacted in memory (PyMuPDF; the stored file is never
+written) after routing, since a table's text is as real as the rest when
+deciding whether to OCR; a page that is OCR'd has the table painted white
+in the image first (`_blank_tables`) - which also covers a scan whose
+table has drawn lines; pictures inside a table are not OCR'd; Word skips
+`w:tbl` (`_is_docx_data_table`); pasted HTML drops `<table>` content
+(`html_to_lines`); the local reader drops Surya's `Table`-labelled blocks
+except a header on page 1. The paper's note says how many were left out.
+No `[table]` marker is left: an OCR'd page has nowhere to put one, and
+markers on some pages but not others would mislead more than none - data
+entry has the original paper beside the questions. Not caught: a table
+scanned with no drawn lines at all on a page Tesseract reads (the local
+reader's Surya does find those).
+
 **Pasting text instead of uploading - for scanned papers read on a
 data-entry computer.** Tesseract cannot read the real Sinhala Business
 Statistics scan: it turned the "A." / "B." / "C." markers into `&,` /

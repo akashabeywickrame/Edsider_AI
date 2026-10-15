@@ -2101,6 +2101,109 @@ def recover_missing_numbers(text):
     return "\n".join(lines) if changed else text
 
 
+# ---------------------------------------------------------------- tables
+# Tables are left out of the extracted text: data entry adds every table
+# to its question as a picture, so its cells as text only cluttered the
+# question (and fed the duplicate check rows of numbers). What counts as a
+# table was measured on every stored paper, not assumed - real ones
+# (Political Science's statement-comparison grids, a "C3 plants vs C4
+# plants" table, GIT's truth tables) are kept out, but two shapes that look
+# like tables are not tables:
+#   - a one-column frame around question text (GIT p16 "Defragmenter
+#     reorganizes...") - a box, so at least 2 columns are required;
+#   - a paper's header laid out as a grid ("Subject - Combined mathematics
+#     | Grade - 13 | Term - 1st | Time", top of page 1) - dropping it would
+#     lose the grade/subject/title detect_paper_meta() reads from it.
+# And a grid covering nearly the whole page is a page border, not a table
+# (none seen yet - the largest real table covered 41% of its page).
+_TABLE_MIN_ROWS = 2
+_TABLE_MIN_COLS = 2
+_TABLE_MAX_COVER = 0.8
+_HEADER_ZONE = 0.3  # top share of page 1 a header table sits within
+
+# A third shape: questions laid out in a grid. Political Science (page 7)
+# puts questions 26-30 in table rows - "26. <statement> | <statement>" -
+# and dropping that table deleted the five questions outright. Rows whose
+# first cell starts with a numbered item ("26. text") are questions - but
+# only when the numbers do NOT start at 1: a real data table numbers its
+# own items from 1 (Grade 13 Biology's "1. First product of CO2 fixation |
+# C3 | C4" table), while a question grid carries on the paper's numbering.
+# A bare "1" alone in its cell is never a question (Political Science's
+# page-6 legend, "1 | true | true", is a real table of answer choices).
+# Not handled: a paper whose very first questions sit in a grid numbered
+# from 1 - none of the stored papers does that.
+_NUMBERED_CELL = re.compile(r"^\s*\(?(\d{1,3})\s*[.)]\s*\S")
+
+
+def _rows_are_questions(first_cells):
+    """Whether 2+ rows of a table open with numbered items that carry on
+    the paper's question numbering (start after 1)."""
+    numbers = [int(m.group(1)) for m in (_NUMBERED_CELL.match(c or "") for c in first_cells) if m]
+    return len(numbers) >= 2 and numbers[0] > 1
+
+
+def _data_tables(page, page_index):
+    """Where this pdfplumber page's real data tables are, as (x0, top,
+    x1, bottom) boxes - see the rules above. Detection works from the
+    lines a table is drawn with, so it also finds a table on a page whose
+    text is only in the picture (a scan with ruled lines, or a legacy-font
+    page OCR reads); a table scanned with no drawn lines at all is not
+    found here."""
+    try:
+        tables = page.find_tables()
+    except Exception:
+        return []
+    width, height = float(page.width), float(page.height)
+    top_of_page = float(page.bbox[1])
+    found = []
+    for table in tables:
+        x0, top, x1, bottom = table.bbox
+        rows = table.extract()
+        columns = max((len(r) for r in rows), default=0)
+        if len(rows) < _TABLE_MIN_ROWS or columns < _TABLE_MIN_COLS:
+            continue
+        if (x1 - x0) * (bottom - top) > _TABLE_MAX_COVER * width * height:
+            continue
+        if page_index == 0 and bottom - top_of_page <= _HEADER_ZONE * height:
+            continue
+        if _rows_are_questions([next((c for c in r if c and c.strip()), "") for r in rows]):
+            continue
+        found.append((x0, top, x1, bottom))
+    return found
+
+
+def _inside_any(box, tables):
+    """Whether a picture box's centre falls inside one of the tables."""
+    x0, top, x1, bottom = box[:4]
+    cx, cy = (x0 + x1) / 2, (top + bottom) / 2
+    return any(t[0] <= cx <= t[2] and t[1] <= cy <= t[3] for t in tables)
+
+
+def _drop_tables_from_text(mu_page, tables):
+    """Remove the text inside each table from the PyMuPDF page - in
+    memory only, the stored file is never written - so the page's text
+    is read without it. Pictures and drawn lines are left alone."""
+    import fitz
+    for x0, top, x1, bottom in tables:
+        mu_page.add_redact_annot(fitz.Rect(x0, top, x1, bottom))
+    mu_page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
+                             graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+
+
+def _blank_tables(image, page, tables):
+    """The page image with each table painted white, so OCR reads the
+    rest of the page without it."""
+    from PIL import ImageDraw
+    sx = image.width / float(page.width)
+    sy = image.height / float(page.height)
+    ox, oy = float(page.bbox[0]), float(page.bbox[1])
+    draw = ImageDraw.Draw(image)
+    for x0, top, x1, bottom in tables:
+        draw.rectangle([(x0 - ox) * sx, (top - oy) * sy, (x1 - ox) * sx, (bottom - oy) * sy],
+                       fill="white")
+    return image
+
+
 def read_pdf(path, ocr, force_ocr=False):
     """(text, note, bold_runs). Each page is read the cheapest way that
     actually captures it - see _pdf_page_route. `ocr` is image -> text.
@@ -2136,7 +2239,7 @@ def read_pdf(path, ocr, force_ocr=False):
         ) from e
 
     parts, bold_runs = [], []
-    read_by_ocr = not_read = came_back_empty = 0
+    read_by_ocr = not_read = came_back_empty = tables_skipped = 0
     reason = None
     with pdfplumber.open(path) as pdf, fitz.open(path) as mu_doc:
         total = len(pdf.pages)
@@ -2148,13 +2251,22 @@ def read_pdf(path, ocr, force_ocr=False):
             # OCR - stays on pdfplumber, which this codebase's routing
             # already depends on.
             text = _fix_ligatures(_mupdf_page_text(mu_page) or "")
-            boxes = _pictures_on(page)
+            tables = _data_tables(page, i)
+            boxes = [b for b in _pictures_on(page) if not _inside_any(b, tables)]
             bold_runs.extend(_pdf_bold_runs(page))
+            # Routed on the page's whole text layer - whether it is real
+            # text at all is the question here, and a table's cells are as
+            # real as the rest. Only then is the table taken out of it.
             route = "page" if force_ocr else _pdf_page_route(text, boxes)
+            if tables:
+                tables_skipped += len(tables)
+                _drop_tables_from_text(mu_page, tables)
+                text = _fix_ligatures(_mupdf_page_text(mu_page) or "")
             if route != "text" and reason is None:
                 try:
                     if route == "page":
-                        text = ocr(page.to_image(resolution=_OCR_DPI).original)
+                        image = page.to_image(resolution=_OCR_DPI).original
+                        text = ocr(_blank_tables(image, page, tables) if tables else image)
                         # OCR "succeeding" with nothing is its own failure.
                         # Measured on the real Grade 12 term paper - phone
                         # photos of handwritten answer sheets - Tesseract
@@ -2174,6 +2286,8 @@ def read_pdf(path, ocr, force_ocr=False):
     note = "pdf-text"
     if read_by_ocr:
         note += f" + ocr ({read_by_ocr} of {total} pages)"
+    if tables_skipped:
+        note += f" - {tables_skipped} table(s) left out (add them as pictures)"
     if came_back_empty:
         note += (f" - {came_back_empty} of {total} pages not read: OCR found "
                  f"no text (handwriting or a poor photo, which Tesseract "
@@ -2296,7 +2410,32 @@ def _run_is_bold(run_el):
 _MIN_BOLD_ANSWER_CHARS = 3
 
 
-def _docx_walk(el, out, picture, bold_runs=None):
+# Question 1's number at the start of a line - before it, a table is the
+# paper's header (subject / grade / term), which is kept.
+_FIRST_QUESTION = re.compile(r"(?m)^\s*(?:Q(?:uestion)?\.?\s*)?\(?0?1\s*[.):]")
+
+
+def _is_docx_data_table(tbl, text_so_far):
+    """A Word table to leave out: 2+ rows and 2+ columns (a one-column
+    table is a box around question text), not questions laid out in rows
+    (_rows_are_questions), and after question 1 has begun (before it, a
+    table is the paper's header) - the same rules as a PDF's
+    _data_tables(), with "before question 1" standing in for "top of page
+    1", since a Word file has no fixed pages."""
+    rows = tbl.findall(_W + "tr")
+    columns = max((len(r.findall(_W + "tc")) for r in rows), default=0)
+    if len(rows) < _TABLE_MIN_ROWS or columns < _TABLE_MIN_COLS:
+        return False
+    first_cells = []
+    for row in rows:
+        cells = ["".join(t.text or "" for t in tc.iter(_W + "t")) for tc in row.findall(_W + "tc")]
+        first_cells.append(next((c for c in cells if c.strip()), ""))
+    if _rows_are_questions(first_cells):
+        return False
+    return bool(_FIRST_QUESTION.search(text_so_far))
+
+
+def _docx_walk(el, out, picture, bold_runs=None, skipped=None):
     """Body XML -> text, in document order. python-docx's own
     `document.paragraphs` skips tables, equations and pictures - on a
     maths paper, that is most of the content.
@@ -2311,13 +2450,19 @@ def _docx_walk(el, out, picture, bold_runs=None):
     split_mcq_options() together with this.
     """
     tag = el.tag if isinstance(el.tag, str) else ""
+    if tag == _W + "tbl" and _is_docx_data_table(el, "".join(out)):
+        # Left out - see _data_tables() for the rule and why. `skipped`
+        # counts them for read_docx's note.
+        if skipped is not None:
+            skipped.append(1)
+        return
     if tag == _M + "oMath":
         out.append(_omml(el))
         return
     if tag == _W + "r" and _run_is_bold(el):
         local = []
         for child in el:
-            _docx_walk(child, local, picture, bold_runs)
+            _docx_walk(child, local, picture, bold_runs, skipped)
         text = "".join(local)
         out.append(text)
         if bold_runs is not None and len(text.strip()) >= _MIN_BOLD_ANSWER_CHARS:
@@ -2343,7 +2488,7 @@ def _docx_walk(el, out, picture, bold_runs=None):
         # text box side by side; reading both would double it.
         choice = el.find(_MC + "Choice")
         if choice is not None:
-            _docx_walk(choice, out, picture, bold_runs)
+            _docx_walk(choice, out, picture, bold_runs, skipped)
         return
     if tag == _W + "tr":
         # One line per row: an MCQ options grid becomes
@@ -2355,12 +2500,12 @@ def _docx_walk(el, out, picture, bold_runs=None):
         cells = []
         for tc in el.findall(_W + "tc"):
             sub = []
-            _docx_walk(tc, sub, picture)
+            _docx_walk(tc, sub, picture, skipped=skipped)
             cells.append(" ".join("".join(sub).split()))
         out.append(" | ".join(c for c in cells if c) + "\n")
         return
     for child in el:
-        _docx_walk(child, out, picture, bold_runs)
+        _docx_walk(child, out, picture, bold_runs, skipped)
     if tag == _W + "p":
         out.append("\n")
 
@@ -2408,8 +2553,8 @@ def read_docx(path, ocr):
         not_read += 1
         return "\n[image - not read]\n"
 
-    out, bold_runs = [], []
-    _docx_walk(document.element.body, out, picture, bold_runs)
+    out, bold_runs, skipped = [], [], []
+    _docx_walk(document.element.body, out, picture, bold_runs, skipped)
     text = re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
 
     note = "docx-text"
@@ -2417,6 +2562,8 @@ def read_docx(path, ocr):
         note += f" + ocr ({read_by_ocr} image{'s' if read_by_ocr != 1 else ''})"
     if not_read:
         note += f" - {not_read} image(s) not read: {reason}"
+    if skipped:
+        note += f" - {len(skipped)} table(s) left out (add them as pictures)"
     return text, note, bold_runs
 
 
@@ -2438,18 +2585,42 @@ def was_incomplete(extractor):
 # line start, where segment() and the part/option markers look for them.
 _BLOCK_TAG = re.compile(r"</?(?:p|li|ul|ol|br|div|h[1-6]|tr|table)\b[^>]*>", re.IGNORECASE)
 _ANY_TAG = re.compile(r"<[^>]+>")
-_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li)>", re.IGNORECASE)
+_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li|td|th|tr|table)>", re.IGNORECASE)
 _BULLET = re.compile(r"^[•●▪‣⁃]\s*")
+_TABLE_HTML = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+_CELL_END = re.compile(r"</t[dh]\s*>", re.IGNORECASE)
+_HTML_ROW = re.compile(r"<tr\b.*?</tr\s*>", re.IGNORECASE | re.DOTALL)
+_HTML_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
 
 
-def html_to_lines(text):
+def _drop_unless_questions(match):
+    """An HTML table, dropped - unless its rows are questions laid out in
+    a grid (_rows_are_questions), which stay as text."""
+    table = match.group(0)
+    first_cells = []
+    for row in _HTML_ROW.findall(table):
+        cells = [_html.unescape(_ANY_TAG.sub("", c)).strip() for c in _HTML_CELL.findall(row)]
+        first_cells.append(next((c for c in cells if c), ""))
+    return table if _rows_are_questions(first_cells) else "\n"
+
+
+def html_to_lines(text, keep_tables=False):
     """Plain lines from OCR output that came back as HTML - one line per
     paragraph or list item, inline tags (<b>, <i>) dropped, entities
     decoded, and bullet glyphs ("•") stripped so the marker after one is
-    the first thing on its line. Text with no closing </p> or </li> is
-    returned unchanged, so pasting plain text never loses anything."""
+    the first thing on its line. Text with no closing paragraph, list or
+    table tag is returned unchanged, so pasting plain text never loses
+    anything.
+
+    A table's content is left out (see _data_tables() for why) unless its
+    rows are questions, or `keep_tables` - the local reader keeps a
+    paper's header table that way. A kept table is one line per row,
+    cells separated by spaces."""
     if not _LOOKS_LIKE_HTML.search(text or ""):
         return text
+    if not keep_tables:
+        text = _TABLE_HTML.sub(_drop_unless_questions, text)
+    text = _CELL_END.sub(" ", text)
     lines = []
     for chunk in _BLOCK_TAG.split(text):
         line = _BULLET.sub("", _html.unescape(_ANY_TAG.sub("", chunk)).strip())
