@@ -725,6 +725,11 @@ MIGRATIONS = [
     # extraction (still just what the extractor produced).
     ("intake_questions", "last_edited_by", "TEXT"),
     ("intake_questions", "last_edited_at", "TIMESTAMPTZ"),
+    # Instructions for a group of questions ("answer questions 20 to 25
+    # using the chart below") - a JSON list of {section, from, to, text},
+    # found by intake.extract._split_group_instruction or added by hand.
+    # Kept on the paper, not on a question: it belongs to the range.
+    ("intake_documents", "instruction_groups", "TEXT"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -1680,12 +1685,15 @@ def create_intake_document(conn, filename, file_type=None, extractor=None,
                            uploaded_by=None, paper_grade=None,
                            paper_subject=None, raw_text=None,
                            split_style=None, paper_title=None,
-                           sections=None, file_blob=None):
+                           sections=None, file_blob=None,
+                           instruction_groups=None, notes=None):
     """Record one uploaded file. Returns its new id.
 
     `sections` is the paper's list of parts from
     intake.extract.structure(), kept as JSON - read it back with
-    intake_sections().
+    intake_sections(). `instruction_groups` likewise (see
+    intake_instruction_groups); `notes` is the paper's general
+    instructions, as extracted from its opening text.
 
     `file_blob` is the uploaded file's own bytes (PDF/Word/image),
     verbatim. Extraction used to read it from a temp file and delete it
@@ -1699,13 +1707,15 @@ def create_intake_document(conn, filename, file_type=None, extractor=None,
         """INSERT INTO intake_documents
            (filename, file_type, extractor, uploaded_by, paper_grade,
             paper_subject, raw_text, split_style, paper_title, sections,
-            file_blob)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            file_blob, instruction_groups, notes)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
            RETURNING id""",
         (filename, file_type, extractor, uploaded_by, paper_grade,
          paper_subject, raw_text, split_style, paper_title,
          json.dumps(sections) if sections is not None else None,
-         psycopg2.Binary(file_blob) if file_blob is not None else None),
+         psycopg2.Binary(file_blob) if file_blob is not None else None,
+         json.dumps(instruction_groups) if instruction_groups else None,
+         notes),
     )
     return cur.fetchone()["id"]
 
@@ -1726,6 +1736,13 @@ def intake_sections(doc):
     """An uploaded paper's parts, or [] for one read before papers were
     split into parts. `doc` is an intake_documents row or a dict of one."""
     raw = doc["sections"] if "sections" in doc.keys() else None
+    return json.loads(raw) if raw else []
+
+
+def intake_instruction_groups(doc):
+    """A paper's instructions for groups of questions - [{section, from,
+    to, text}] - or [] when it has none (or predates them)."""
+    raw = doc["instruction_groups"] if "instruction_groups" in doc.keys() else None
     return json.loads(raw) if raw else []
 
 
@@ -2202,7 +2219,7 @@ def replace_intake_questions(conn, doc_id, drafts,
 
 _INTAKE_DOC_EDITABLE = {"paper_grade", "paper_subject", "notes", "status",
                         "raw_text", "split_style", "paper_title", "sections",
-                        "assessment_settings"}
+                        "assessment_settings", "instruction_groups"}
 
 
 def intake_assessment_settings(doc):
@@ -2219,6 +2236,9 @@ def update_intake_document(conn, doc_id, **fields):
         return
     if fields.get("sections") is not None and not isinstance(fields["sections"], str):
         fields["sections"] = json.dumps(fields["sections"])
+    if fields.get("instruction_groups") is not None and not isinstance(
+            fields["instruction_groups"], str):
+        fields["instruction_groups"] = json.dumps(fields["instruction_groups"])
     if fields.get("assessment_settings") is not None and not isinstance(
             fields["assessment_settings"], str):
         fields["assessment_settings"] = json.dumps(fields["assessment_settings"])

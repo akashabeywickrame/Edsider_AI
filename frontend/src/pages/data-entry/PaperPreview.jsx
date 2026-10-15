@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { joinSoftBreaks } from '../../lib/text.js'
 import PaperSummary from '../../components/PaperSummary.jsx'
+import { groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
 // The paper as a student sees it: the same content and layout EdSider shows
@@ -215,13 +216,29 @@ export default function PaperPreview() {
 
       <PaperSummary doc={doc} questions={questions} />
 
+      {doc.notes ? (
+        <section className="es-card">
+          <p className="pi-preview__text" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{doc.notes}</p>
+        </section>
+      ) : null}
+
       {sections.map((sec, si) => {
         const inSection = topLevel.filter((q) => (q.section ?? null) === (sec.label ?? null))
         return (
           <section key={sec.label ?? si} className="es-card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             {sec.label ? <h2 className="scr-h2" style={{ color: 'var(--primary)', margin: 0 }}>{sec.label}</h2> : null}
             {sec.instructions ? <p className="pi-preview__text" style={{ margin: 0 }}>{sec.instructions}</p> : null}
-            {inSection.map((q) => renderTree(q, 0))}
+            {inSection.map((q) => (
+              <Fragment key={`q-${q.id}`}>
+                {groupsStartingAt(doc.instruction_groups, q.section, q.question_number).map((g, gi) => (
+                  <div key={`g-${gi}`} style={{ borderLeft: '4px solid var(--primary)', paddingLeft: 12 }}>
+                    {g.title ? <h3 className="scr-h3" style={{ margin: '0 0 4px' }}>{g.title}</h3> : null}
+                    <p className="pi-preview__text" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{g.text}</p>
+                  </div>
+                ))}
+                {renderTree(q, 0)}
+              </Fragment>
+            ))}
           </section>
         )
       })}

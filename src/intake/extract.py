@@ -1543,6 +1543,47 @@ def _split_trailing_instruction(body):
     return body, None
 
 
+# "Answer questions 20 to 25 using the chart below" - an instruction for a
+# GROUP of questions, printed above the first of them, so splitting by
+# number leaves it at the end of the question before. Measured on the real
+# uploads: Sinhala Business Statistics "36 සිට 39 දක්වා ප්‍රශ්න වලට ...",
+# Biology "The responses for questions 41 to 50 should be chosen as
+# follows", Political Science "අංක 21 සිට 25 තෙක් වූ ප්‍රශ්නවලට". The
+# same papers carry number ranges that are NOT this - "Use about 75-100
+# words", "7-8 months", "30-50%", class intervals "10-19", and "(1) - (5)"
+# naming a question's own parts - so a line counts only when its range
+# starts at the very next question's number AND it says "question" (in
+# English, Sinhala or Tamil; the Sinhala ZWJ is optional, OCR drops it).
+_GROUP_RANGE = re.compile(
+    r"\(?(\d{1,3})\)?\s*(?:to|-|–|—|සිට|முதல்|and)\s*\(?(\d{1,3})\)?", re.IGNORECASE)
+_QUESTION_WORD_ANY = re.compile(r"question|ප්‍?රශ්න|வினா|கேள்வி", re.IGNORECASE)
+_MAX_GROUP_SPAN = 40
+_MAX_PAPER_INSTRUCTIONS = 2000  # a header, not a page of text
+
+
+def _split_group_instruction(body, next_number):
+    """(this question's own text, the group instruction that followed it,
+    (first, last) question numbers it covers) - or (body, None, None).
+    Everything from the instruction's line on goes with it: what follows
+    an instruction like this (a chart, a passage, a legend of answer
+    choices) belongs to the questions it introduces, not to this one. The
+    question's own first line is never taken."""
+    try:
+        following = int(next_number)
+    except (TypeError, ValueError):
+        return body, None, None
+    lines = body.split("\n")
+    for i, line in enumerate(lines[1:], 1):
+        if not _QUESTION_WORD_ANY.search(line):
+            continue
+        for m in _GROUP_RANGE.finditer(line):
+            first, last = int(m.group(1)), int(m.group(2))
+            if first == following and first < last <= first + _MAX_GROUP_SPAN:
+                kept = "\n".join(lines[:i]).rstrip()
+                return kept, "\n".join(lines[i:]).strip(), (first, last)
+    return body, None, None
+
+
 def _looks_like_marking_scheme(text, start):
     """Does the marking scheme - not another real part - begin right
     after this heading? A real Grade 12 General English paper's scheme
@@ -1617,6 +1658,15 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
         else:
             sp["starts"] = _number_starts(text, sp["body"], sp["end"])
 
+    # The paper's own opening text - title, time, "Answer all questions" -
+    # everything before its first heading or question. Kept as the paper's
+    # general instructions: it used to be dropped outright on a paper
+    # with no part headings (the Sinhala Business Statistics paper lost
+    # its whole "උපදෙස්" block this way).
+    pre = spans[0]
+    pre_end = pre["starts"][0][0] if pre["starts"] else pre["end"]
+    paper_instructions = text[pre["intro_start"]:pre_end].strip()[:_MAX_PAPER_INSTRUCTIONS] or None
+
     sections, pending = [], None
     for sp in spans:
         if not sp["starts"]:
@@ -1634,7 +1684,8 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
 
     if not sections:
         body = text.strip()
-        return {"sections": [], "questions": [{
+        return {"sections": [], "instruction_groups": [], "paper_instructions": None,
+                "questions": [{
             "seq": 1,
             "question_number": None,
             "text": body or "(no text could be extracted)",
@@ -1654,7 +1705,7 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
             if not sp["label"]:
                 sp["label"] = f"Part {_TO_ROMAN.get(n, n) if roman else n}"
 
-    drafts, parts = [], []
+    drafts, parts, groups = [], [], []
     marker = _QUESTION_WORD_START if style == "question_word" else _Q_START
     for sp in sections:
         first = sp["starts"][0][0] if sp["starts"] else sp["end"]
@@ -1679,6 +1730,20 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
             pieces.append((raw, body))
         if not pieces:
             pieces.append((None, text[sp["body"]:sp["end"]].strip()))
+
+        # An instruction for a group of questions ("answer 20 to 25...")
+        # ends up at the end of the question before them - take it off
+        # that question and keep it as the group's own (see
+        # _split_group_instruction). Before the single-question mover
+        # below, which would otherwise glue it onto question 20 alone.
+        for i in range(len(pieces) - 1):
+            raw, body = pieces[i]
+            kept, instruction, span = _split_group_instruction(body, pieces[i + 1][0])
+            if instruction:
+                pieces[i] = (raw, kept)
+                groups.append({"section": sp["label"], "from": pieces[i + 1][0],
+                                "to": str(span[1]).zfill(len(pieces[i + 1][0] or "")),
+                                "text": instruction})
 
         # A trailing instruction paragraph was handed to the question
         # before it by construction (see _split_trailing_instruction) -
@@ -1738,7 +1803,8 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
 
     if answers_at is not None:
         _attach_answers(text[answers_at:], drafts, parts)
-    return {"sections": parts, "questions": drafts}
+    return {"sections": parts, "questions": drafts, "instruction_groups": groups,
+            "paper_instructions": paper_instructions}
 
 
 def segment(text, style=DEFAULT_SPLIT_STYLE):
@@ -2649,6 +2715,8 @@ def extract_text(text, style=DEFAULT_SPLIT_STYLE, filename=None):
         "raw_text": text,
         "paper": meta,
         "sections": parsed["sections"],
+        "instruction_groups": parsed["instruction_groups"],
+        "paper_instructions": parsed["paper_instructions"],
         "questions": parsed["questions"],
     }
 
@@ -2745,5 +2813,7 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
         "raw_text": text,
         "paper": meta,
         "sections": parsed["sections"],
+        "instruction_groups": parsed["instruction_groups"],
+        "paper_instructions": parsed["paper_instructions"],
         "questions": parsed["questions"],
     }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
 import { devIdentity, isDevAuth, setDevIdentity } from '../../lib/auth.js'
@@ -6,6 +6,7 @@ import { joinSoftBreaks } from '../../lib/text.js'
 import { useToast } from '../../components/Toast.jsx'
 import PaperSummary from '../../components/PaperSummary.jsx'
 import OriginalPaper from './OriginalPaper.jsx'
+import { groupsStartingAt } from '../data-entry/GroupInstructions.jsx'
 import './TeacherReview.css'
 
 // The subject teacher's review of one paper. Mirrors
@@ -280,6 +281,12 @@ export default function TeacherReview() {
       ) : null}
 
       <div className="tr-list">
+        {doc?.notes ? (
+          <div className="es-card" role="note">
+            <strong>Instructions for the whole paper</strong>
+            <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{doc.notes}</p>
+          </div>
+        ) : null}
         {questions.map((q) => {
           const depth = q.depth || 0
           const qComments = comments[String(q.id)] || [];
@@ -292,9 +299,18 @@ export default function TeacherReview() {
           const stem = joinSoftBreaks(q.mcq ? q.mcq.stem : q.text)
           const isMcq = !!q.mcq
           return (
+            <Fragment key={q.id}>
+            {depth === 0
+              ? groupsStartingAt(doc?.instruction_groups, q.section, q.question_number).map((g, gi) => (
+                  <div key={`g-${gi}`} className="es-card" role="note"
+                    style={{ borderLeft: '4px solid var(--primary)' }}>
+                    <strong>{g.title ? `${g.title} - ` : ''}Questions {g.from} to {g.to}</strong>
+                    <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{g.text}</p>
+                  </div>
+                ))
+              : null}
             <article
               className="es-card tr-q"
-              key={q.id}
               style={{ marginLeft: depth * 28 }}
               aria-label={`${labelOf(q)} review`}
             >
@@ -412,6 +428,7 @@ export default function TeacherReview() {
                 </div>
               ) : null}
             </article>
+            </Fragment>
           )
         })}
       </div>

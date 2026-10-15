@@ -502,6 +502,21 @@ def check(req: CheckRequest):
 
 # ------------------------------------------------------------ schemas
 
+class InstructionGroup(BaseModel):
+    """Instructions for a range of questions - "Answer questions 20 to 25
+    using the chart below" - shown above the first of them. `section` is
+    the part's label (None for a paper in one piece); `from_`/`to` are
+    question numbers as printed. `title` is optional, for a part heading
+    the extractor did not recognise ("Part 2")."""
+    section: Optional[str] = None
+    from_: str = Field(..., alias="from", min_length=1)
+    to: str = Field(..., min_length=1)
+    title: Optional[str] = None
+    text: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
 class IntakeDocumentOut(BaseModel):
     id: int
     filename: str
@@ -516,13 +531,13 @@ class IntakeDocumentOut(BaseModel):
     status: str
     assigned_to: Optional[str] = None
     sections: List[Dict[str, Any]] = []
-    # Free text, unused until now - repurposed as the paper's own general
-    # instructions (the block printed above every part, e.g. "Answer all
-    # questions"), which has nowhere else to live: intake_extract.structure()
-    # deliberately excludes that preamble from `sections`, since it is not
-    # itself one of the paper's labelled parts (see its own "preamble" flag).
+    # The paper's own general instructions (the block printed above every
+    # part, e.g. "Answer all questions") - filled from the paper's opening
+    # text by intake_extract.structure()'s `paper_instructions`, editable.
+    # Not in `sections`, since it is not one of the paper's labelled parts.
     notes: Optional[str] = None
     assessment_settings: Dict[str, Any] = {}
+    instruction_groups: List[InstructionGroup] = []
 
 
 class IntakeDocumentDetail(IntakeDocumentOut):
@@ -697,6 +712,9 @@ class DocumentUpdate(BaseModel):
     # The assessment form's values - stored whole, see store's
     # assessment_settings column.
     assessment_settings: Optional[Dict[str, Any]] = None
+    # Every group instruction on the paper, sent whole (like `sections`) -
+    # adding, editing or removing one is the page sending the new list.
+    instruction_groups: Optional[List[InstructionGroup]] = None
 
 
 class ResplitPreview(BaseModel):
@@ -818,6 +836,7 @@ def _document_out(doc, detail=False):
         status=doc["status"], assigned_to=doc["assigned_to"],
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
+        instruction_groups=store.intake_instruction_groups(doc),
     )
     if detail:
         suggested = intake_extract.suggest_settings(doc["raw_text"], data["sections"])
@@ -933,6 +952,8 @@ def upload_document(
             paper_subject=result["paper"]["subject"],
             paper_title=result["paper"]["title"],
             sections=result["sections"], raw_text=result["raw_text"],
+            instruction_groups=result["instruction_groups"],
+            notes=result["paper_instructions"],
             split_style=style, file_blob=contents,
         )
         store.add_extracted_questions(
@@ -966,6 +987,8 @@ def create_document_from_text(body: PastedPaperIn,
             paper_subject=result["paper"]["subject"],
             paper_title=result["paper"]["title"],
             sections=result["sections"], raw_text=result["raw_text"],
+            instruction_groups=result["instruction_groups"],
+            notes=result["paper_instructions"],
             split_style=body.style,
         )
         store.add_extracted_questions(
@@ -1007,7 +1030,9 @@ def get_document_file(doc_id: int):
 @app.patch("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
           dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def update_document(doc_id: int, body: DocumentUpdate):
-    fields = body.model_dump(exclude_unset=True)
+    # by_alias: an instruction group is stored with "from" - the name the
+    # extractor writes it under - not the model's own "from_".
+    fields = body.model_dump(exclude_unset=True, by_alias=True)
     with store.connect() as conn:
         _require_document(conn, doc_id)
         if fields:
@@ -1065,11 +1090,16 @@ def resplit_document(doc_id: int, body: ResplitRequest):
         store.replace_intake_questions(
             conn, doc_id, parsed["questions"],
             fallback_grade=grade, fallback_subject=subject)
+        # A re-split rebuilds the group instructions from the text, like
+        # the questions they sit between. The paper's general
+        # instructions are only filled in when nobody has written any.
         store.update_intake_document(
             conn, doc_id, split_style=body.style, status="extracted",
             sections=parsed["sections"], paper_grade=grade,
             paper_subject=subject,
             paper_title=doc.get("paper_title") or meta["title"],
+            instruction_groups=parsed["instruction_groups"],
+            notes=doc.get("notes") or parsed["paper_instructions"],
         )
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)

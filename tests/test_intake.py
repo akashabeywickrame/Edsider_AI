@@ -916,9 +916,9 @@ def test_a_mid_part_instruction_moves_to_the_question_it_applies_to():
     question 20 and question 21, mid Part I, no heading involved.
     _number_starts() hands everything up to the next marker to the
     question before it, by construction, which wrongly glued this onto
-    question 20's own text. It belongs to 21 instead - and a reviewer
-    reading question 21 then sees it right there, which is also where it
-    actually governs through to question 25."""
+    question 20's own text. It governs 21 through 25, so it becomes the
+    instruction for that group - shown above question 21 - rather than
+    part of any one question's text (see _split_group_instruction)."""
     text = (
         "20. A question.\n(1) One\n(2) Two\n\n"
         "• For questions 21 to 25, choose the correct combination.\n\n"
@@ -928,8 +928,9 @@ def test_a_mid_part_instruction_moves_to_the_question_it_applies_to():
     by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
     assert "For questions 21 to 25" not in by_number["20"]
     assert by_number["20"].strip().endswith("(2) Two")
-    assert by_number["21"].startswith("• For questions 21 to 25")
-    assert "Another question" in by_number["21"]
+    assert by_number["21"].startswith("Another question")
+    assert [(g["from"], g["to"], g["text"]) for g in parsed["instruction_groups"]] == [
+        ("21", "25", "• For questions 21 to 25, choose the correct combination.")]
 
 
 def test_a_garbled_bullet_is_still_recognised_as_an_instruction():
@@ -945,7 +946,23 @@ def test_a_garbled_bullet_is_still_recognised_as_an_instruction():
     parsed = extract.structure(text)
     by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
     assert "For questions 21 to 25" not in by_number["20"]
-    assert by_number["21"].startswith("ෙ For questions 21 to 25")
+    assert [(g["from"], g["to"]) for g in parsed["instruction_groups"]] == [("21", "25")]
+    assert parsed["instruction_groups"][0]["text"].startswith("ෙ For questions 21 to 25")
+
+
+def test_a_single_question_instruction_still_moves_to_that_question():
+    """The older mover still handles an instruction that names no range -
+    it belongs to the one question after it, so it goes to that question's
+    front, not into a group."""
+    text = (
+        "20. A question.\n(1) One\n(2) Two\n\n"
+        "• Read the passage below carefully before answering.\n\n"
+        "21. Another question.\n(1) ABCD\n(2) ACDE\n"
+    )
+    parsed = extract.structure(text)
+    by_number = {q["question_number"]: q["text"] for q in parsed["questions"]}
+    assert parsed["instruction_groups"] == []
+    assert by_number["21"].startswith("• Read the passage below")
 
 
 def test_a_normal_short_last_paragraph_is_not_mistaken_for_an_instruction():

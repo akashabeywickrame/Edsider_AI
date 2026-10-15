@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useFileUrl } from '../../lib/useFileUrl.jsx'
@@ -7,6 +7,7 @@ import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
+import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
 const OCR_LANGS = [
@@ -128,6 +129,7 @@ export default function PaperIntake() {
   const [instrOpenKey, setInstrOpenKey] = useState(null)
   const [instrText, setInstrText] = useState('')
   const [instrBusy, setInstrBusy] = useState(false)
+  const [groupBusy, setGroupBusy] = useState(false)
   const [instrError, setInstrError] = useState(null)
 
   const [addOpen, setAddOpen] = useState(false)
@@ -239,6 +241,27 @@ export default function PaperIntake() {
     } catch (err) {
       setLoadError(err.message)
     }
+  }
+
+  // Every group instruction is saved as one list - see GroupInstructions.jsx.
+  async function saveGroups(list) {
+    setGroupBusy(true)
+    try {
+      setDoc(await api.updateIntakeDocument(selectedId, { instruction_groups: list }))
+      toast.success('Instructions saved.')
+    } catch (err) {
+      toast.error(`Could not save the instructions: ${err.message}`)
+      throw err
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  // The printed question numbers in one part, for the from/to choices.
+  function questionNumbersIn(section) {
+    return (questions || [])
+      .filter((q) => !q.depth && (q.section ?? null) === (section ?? null) && q.question_number)
+      .map((q) => q.question_number)
   }
 
   async function handleApplyToAll() {
@@ -729,24 +752,6 @@ export default function PaperIntake() {
                 </Button>
               </div>
 
-              <div className="es-field">
-                <label className="es-field__label" htmlFor="pi-notes">
-                  General instructions for this paper
-                </label>
-                <textarea
-                  id="pi-notes"
-                  className="es-input"
-                  rows={3}
-                  value={notes}
-                  placeholder={
-                    'The block printed above every part, not tied to one of them - ' +
-                    'e.g. "This paper consists of 50 questions. Answer all the questions. ' +
-                    'Time: 2 hours." The extractor does not capture this; add it by hand if it matters.'
-                  }
-                  onChange={(e) => setNotes(e.target.value)}
-                  onBlur={() => notes !== (doc.notes || '') && saveMeta({ notes: notes || null })}
-                />
-              </div>
             </>
           ) : null}
         </section>
@@ -803,6 +808,37 @@ export default function PaperIntake() {
 
             <div className="pi-two-col">
               <section aria-label="Questions" className="pi-question-list">
+                {/* Instructions, from the widest to the narrowest: the whole
+                    paper here, each part under its heading, and groups of
+                    questions above the first question they cover. */}
+                <div className="pi-panel" style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+                  <label className="es-field__label" htmlFor="pi-notes" style={{ margin: 0 }}>
+                    Instructions for the whole paper
+                  </label>
+                  <textarea
+                    id="pi-notes"
+                    className="es-input"
+                    rows={3}
+                    value={notes}
+                    placeholder='e.g. "This paper consists of 50 questions. Answer all the questions. Time: 2 hours."'
+                    onChange={(e) => setNotes(e.target.value)}
+                    onBlur={() => notes !== (doc.notes || '') && saveMeta({ notes: notes || null })}
+                  />
+                  <p className="es-caption" style={{ margin: 0 }}>
+                    Filled in from the paper's opening text where the extractor found it - correct or
+                    shorten it as needed. For instructions that cover only some questions (&quot;answer 20
+                    to 25...&quot;) or a part whose heading was not picked up, add a group below.
+                  </p>
+                  <div>
+                    <AddGroupInstruction
+                      groups={doc.instruction_groups || []}
+                      numbersFor={questionNumbersIn}
+                      partLabels={(doc.sections || []).map((s) => s.label).filter(Boolean)}
+                      onSave={saveGroups}
+                      busy={groupBusy}
+                    />
+                  </div>
+                </div>
                 {parts.map((part, pi) => {
                   const hasHeader = !!part.key
                   const meta = part.meta
@@ -865,8 +901,25 @@ export default function PaperIntake() {
                       ) : null}
                       <div className="pi-draft-list">
                         {part.questions.map((q) => (
+                          <Fragment key={q.id}>
+                          {!q.depth
+                            ? groupsStartingAt(doc.instruction_groups, q.section, q.question_number).map((g) => {
+                                const index = doc.instruction_groups.indexOf(g)
+                                return (
+                                  <GroupInstructionBanner
+                                    key={`group-${index}`}
+                                    group={g}
+                                    index={index}
+                                    groups={doc.instruction_groups}
+                                    numbersFor={questionNumbersIn}
+                                    partLabels={(doc.sections || []).map((s) => s.label).filter(Boolean)}
+                                    onSave={saveGroups}
+                                    busy={groupBusy}
+                                  />
+                                )
+                              })
+                            : null}
                           <PaperIntakeQuestion
-                            key={q.id}
                             q={q}
                             isStem={childrenSeqs.has(q.seq)}
                             images={images[String(q.id)] || []}
@@ -876,6 +929,7 @@ export default function PaperIntake() {
                             onRemoved={handleQuestionRemoved}
                             onImagesChanged={handleImagesChanged}
                           />
+                          </Fragment>
                         ))}
                       </div>
                     </div>

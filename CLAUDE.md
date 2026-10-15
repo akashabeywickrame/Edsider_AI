@@ -1457,6 +1457,44 @@ entry has the original paper beside the questions. Not caught: a table
 scanned with no drawn lines at all on a page Tesseract reads (the local
 reader's Surya does find those).
 
+**Instructions at three levels: the whole paper, each part, and a group
+of questions.** A paper prints instructions above everything ("This paper
+consists of 50 questions. Answer all."), above each part, and above a run
+of questions ("Choose the correct answer by reading the below 20 to 25
+questions"). Before: the paper's opening text was dropped outright on a
+paper with no part headings (`structure()` treated it as the header), the
+general-instructions box (`intake_documents.notes`) sat inside the paper
+details panel with "the extractor does not capture this", a part's
+instructions could only be entered when the extractor had recognised its
+heading, and a group instruction had nowhere to go - splitting by number
+left it glued to the end of the question before (measured: the pasted
+Sinhala paper's question 35 ended with its five choices, then "36 සිට 39
+දක්වා ප්‍රශ්න වලට ... භාවිතා කරන්න" and the chart's data).
+- `structure()` returns `paper_instructions` (the text before the first
+  heading or question, capped at 2,000 characters), saved into `notes` on
+  upload/paste and on a re-split only when `notes` is still empty.
+- `_split_group_instruction()` takes a line naming a question range off
+  the question before it, with everything after it on that question (the
+  chart, passage or legend it introduces), into `instruction_groups` (a
+  JSON column: `section`, `from`, `to`, optional `title`, `text`). Only
+  when the range starts at the very next question's number AND the line
+  says "question" (English / Sinhala ප්‍රශ්න, ZWJ optional / Tamil
+  வினா, கேள்வி) - measured against every stored paper, which also hold
+  "Use about 75-100 words", "7-8 months", "30-50%", class intervals
+  "10-19" and "(1) - (5)" (a question's own parts), none of which pass.
+  Found: Biology 41-50, Sinhala Business Statistics 36-39, Political
+  Science 21-25; no false ones on the other 16 papers; every paper's
+  questions and parts identical with and without it. It runs before the
+  older single-question mover (`_split_trailing_instruction`).
+- The data-entry page shows the paper's instructions at the top of the
+  question list, each group as a banner above its first question (edit,
+  remove), and "Add instructions for a group of questions" (part, from,
+  to, optional title, text) - the title is how a part whose heading was
+  not recognised gets its own instructions. The list is saved whole
+  through `PATCH /intake/documents/{id}` (`by_alias`, so it is stored as
+  `from`, the extractor's own key). The student preview and the
+  teacher's review show the paper's instructions and every group.
+
 **Pasting text instead of uploading - for scanned papers read on a
 data-entry computer.** Tesseract cannot read the real Sinhala Business
 Statistics scan: it turned the "A." / "B." / "C." markers into `&,` /
