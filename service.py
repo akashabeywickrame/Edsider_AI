@@ -369,6 +369,31 @@ def require_superadmin(user: dict = Depends(current_user)):
     return user
 
 
+def allow(*roles):
+    """A route's own section rule: only these roles may call it - plus
+    admin and superadmin, who oversee every section, and a local run
+    (role None, no Easy Auth at all), where everything stays open. Each
+    data route names its section with this (see the role-coverage test in
+    tests/test_service.py), so a teacher cannot work the data-entry
+    routes, an employee cannot act as a teacher, and neither can assign
+    papers - by calling the API directly, not just by typing an address
+    the page would not show them."""
+    allowed = set(roles) | {"admin", "superadmin"}
+
+    def check(user: dict = Depends(current_user)):
+        if user["role"] is not None and user["role"] not in allowed:
+            raise HTTPException(403, "Your role cannot use this part of EdsiderAI.")
+        return user
+    check.allowed_roles = frozenset(allowed)
+    return check
+
+
+EMPLOYEE = allow("employee")
+TEACHER = allow("teacher")
+EMPLOYEE_OR_TEACHER = allow("employee", "teacher")
+ADMIN = allow()
+
+
 def require_assigner(user: dict = Depends(current_user)):
     """Whoever assigns papers to teachers - admin or superadmin (or a
     local run, role None, same rule as require_superadmin)."""
@@ -392,7 +417,7 @@ def health():
     }
 
 
-@app.post("/reload", dependencies=[Depends(require_api_key)])
+@app.post("/reload", dependencies=[Depends(require_api_key), Depends(ADMIN)])
 def reload_index():
     """Pick up questions imported since this process started.
 
@@ -408,7 +433,7 @@ def reload_index():
 
 
 @app.post("/check", response_model=CheckResponse,
-          dependencies=[Depends(require_api_key)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def check(req: CheckRequest):
     if state["embedder"] is None or state["index"] is None:
         raise HTTPException(503, "Still loading the model - try again shortly.")
@@ -855,7 +880,7 @@ def _require_question(conn, q_id):
 # ----------------------------------------------------- intake documents
 
 @app.get("/intake/documents", response_model=List[IntakeDocumentOut],
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def list_documents(status: Optional[str] = None):
     """Every uploaded paper, newest first - the data-entry tool's own
     list and the assigning administrator's "ready to assign" /
@@ -869,7 +894,7 @@ def list_documents(status: Optional[str] = None):
 
 
 @app.post("/intake/documents", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def upload_document(
     file: UploadFile = File(...),
     lang: str = Form(intake_extract.DEFAULT_OCR_LANG),
@@ -920,7 +945,7 @@ def upload_document(
 
 
 @app.post("/intake/documents/from-text", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def create_document_from_text(body: PastedPaperIn,
                               identity: str = Depends(current_identity)):
     """A paper whose text was read somewhere else - the local OCR tool on
@@ -953,14 +978,14 @@ def create_document_from_text(body: PastedPaperIn,
 
 
 @app.get("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def get_document(doc_id: int):
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
 
-@app.get("/intake/documents/{doc_id}/file", dependencies=[Depends(require_api_key)])
+@app.get("/intake/documents/{doc_id}/file", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def get_document_file(doc_id: int):
     """The uploaded file's own bytes - a PDF embedded directly (real,
     selectable, copyable text, not a re-typed transcript), an image shown
@@ -980,7 +1005,7 @@ def get_document_file(doc_id: int):
 
 
 @app.patch("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
-          dependencies=[Depends(require_api_key)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def update_document(doc_id: int, body: DocumentUpdate):
     fields = body.model_dump(exclude_unset=True)
     with store.connect() as conn:
@@ -992,7 +1017,7 @@ def update_document(doc_id: int, body: DocumentUpdate):
 
 
 @app.post("/intake/documents/{doc_id}/resplit/preview",
-         response_model=ResplitPreview, dependencies=[Depends(require_api_key)])
+         response_model=ResplitPreview, dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def preview_resplit(doc_id: int, body: ResplitRequest):
     """What a different split style WOULD find, without changing
     anything - the live count the design shows before "Re-split this
@@ -1013,7 +1038,7 @@ def preview_resplit(doc_id: int, body: ResplitRequest):
 
 @app.post("/intake/documents/{doc_id}/resplit",
          response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def resplit_document(doc_id: int, body: ResplitRequest):
     """Commit a re-split - destructive, same as app.py's own button:
     the previous drafts (and any edits already made to them) are
@@ -1051,7 +1076,7 @@ def resplit_document(doc_id: int, body: ResplitRequest):
 
 
 @app.post("/intake/documents/{doc_id}/precheck-duplicates",
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
     """An early, informational duplicate check - meant to run right after
     extraction, before anyone has spent the ~40 minutes to an hour
@@ -1136,7 +1161,7 @@ def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
 
 
 @app.post("/intake/documents/{doc_id}/check-duplicates",
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def check_document_duplicates(doc_id: int) -> Dict[str, Any]:
     """The within-paper duplicate check - src.intake.review.check_batch,
     gated the same way app.py gates its button: every question must be
@@ -1169,7 +1194,7 @@ def check_document_duplicates(doc_id: int) -> Dict[str, Any]:
 
 
 @app.post("/intake/documents/{doc_id}/assign", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(ADMIN)])
 def assign_document(doc_id: int, body: AssignIn):
     """The assigning administrator's action - hands a checked paper to
     one teacher: one of EdSider's own (see sync_teachers), or someone who
@@ -1188,7 +1213,7 @@ def assign_document(doc_id: int, body: AssignIn):
 
 
 @app.post("/intake/documents/{doc_id}/finish", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(TEACHER)])
 def finish_review(doc_id: int, body: FinishIn):
     """The teacher's "Finish Review" action. Review Done and promotion
     happen together, same as teacher_app.py: three people (data-entry,
@@ -1213,7 +1238,7 @@ def finish_review(doc_id: int, body: FinishIn):
 
 @app.get("/intake/documents/{doc_id}/questions",
         response_model=List[IntakeQuestionOut],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def list_questions(doc_id: int):
     with store.connect() as conn:
         _require_document(conn, doc_id)
@@ -1223,7 +1248,7 @@ def list_questions(doc_id: int):
 
 
 @app.post("/intake/documents/{doc_id}/questions", response_model=IntakeQuestionOut,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def create_question(doc_id: int, body: QuestionCreate):
     """'Add a question the extractor missed' - a whole question, or,
     with parent_seq, a part of one already on the paper. Numbering
@@ -1261,7 +1286,7 @@ def create_question(doc_id: int, body: QuestionCreate):
 
 
 @app.patch("/intake/questions/{q_id}", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def update_question(q_id: int, body: QuestionUpdate,
                     identity: str = Depends(current_identity)):
     fields = body.model_dump(exclude_unset=True)
@@ -1279,7 +1304,7 @@ def update_question(q_id: int, body: QuestionUpdate,
 
 
 @app.post("/intake/documents/{doc_id}/marks", response_model=List[IntakeQuestionOut],
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def set_question_marks(doc_id: int, body: MarksBulkIn,
                        identity: str = Depends(current_identity)):
     """Sets each named question's marks in one transaction and returns the
@@ -1301,7 +1326,7 @@ def set_question_marks(doc_id: int, body: MarksBulkIn,
 
 
 @app.delete("/intake/questions/{q_id}", status_code=204,
-           dependencies=[Depends(require_api_key)])
+           dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def remove_question(q_id: int):
     with store.connect() as conn:
         _require_question(conn, q_id)
@@ -1309,7 +1334,7 @@ def remove_question(q_id: int):
 
 
 @app.patch("/intake/questions/{q_id}/mcq", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def update_question_mcq(q_id: int, body: McqUpdateIn,
                         identity: str = Depends(current_identity)):
     """Reassembles an edited stem and options back into this question's
@@ -1340,7 +1365,7 @@ def update_question_mcq(q_id: int, body: McqUpdateIn,
 
 
 @app.patch("/intake/questions/{q_id}/blanks", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def update_question_blanks(q_id: int, body: BlanksUpdateIn,
                            identity: str = Depends(current_identity)):
     """Reassembles a fill-in-the-blank question's edited per-blank
@@ -1367,7 +1392,7 @@ def update_question_blanks(q_id: int, body: BlanksUpdateIn,
 
 @app.get("/intake/documents/{doc_id}/comments",
         response_model=Dict[str, List[CommentOut]],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def list_comments(doc_id: int):
     with store.connect() as conn:
         _require_document(conn, doc_id)
@@ -1382,7 +1407,7 @@ def list_comments(doc_id: int):
 
 
 @app.post("/intake/questions/{q_id}/comments", response_model=CommentOut,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(TEACHER)])
 def add_comment(q_id: int, body: CommentIn,
                 identity: str = Depends(current_identity)):
     with store.connect() as conn:
@@ -1399,7 +1424,7 @@ def add_comment(q_id: int, body: CommentIn,
 
 @app.get("/intake/documents/{doc_id}/images",
         response_model=Dict[str, List[ImageOut]],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def list_document_images(doc_id: int):
     """Metadata only, grouped by question - never the image bytes
     themselves (see get_image below), so opening a paper with a dozen
@@ -1418,7 +1443,7 @@ def list_document_images(doc_id: int):
 
 
 @app.post("/intake/questions/{q_id}/images", response_model=ImageOut,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def attach_image(q_id: int, slot: str = Form(...), file: UploadFile = File(...)):
     """`slot` is 'question', 'answer', or 'option:<label>' - a specific
     MCQ option's own printed label, from intake_extract.split_mcq_options
@@ -1435,7 +1460,7 @@ def attach_image(q_id: int, slot: str = Form(...), file: UploadFile = File(...))
                     content_type=img["content_type"], created_at=None)
 
 
-@app.get("/intake/images/{image_id}", dependencies=[Depends(require_api_key)])
+@app.get("/intake/images/{image_id}", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
 def get_image(image_id: int):
     """The image's own bytes, with the content type it was uploaded
     with - an <img src="/intake/images/{id}"> tag's whole job, kept
@@ -1449,7 +1474,7 @@ def get_image(image_id: int):
 
 
 @app.delete("/intake/images/{image_id}", status_code=204,
-           dependencies=[Depends(require_api_key)])
+           dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def remove_image(image_id: int):
     with store.connect() as conn:
         store.delete_question_image(conn, image_id)
@@ -1542,7 +1567,7 @@ def remove_staff_member(email: str, user: dict = Depends(require_superadmin)):
 
 
 @app.get("/teachers", response_model=List[TeacherOut],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(ADMIN)])
 def list_teachers():
     """Who the assigning administrator can hand a paper to - every
     EdSider teacher (keyed by the email they sign in with, which is what
@@ -1574,7 +1599,7 @@ def sync_teachers_from_edsider(user: dict = Depends(require_assigner)):
 
 
 @app.post("/teachers/me/touch", response_model=TeacherOut,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(TEACHER)])
 def touch_teacher(identity: str = Depends(current_identity)):
     """Register the calling identity as a teacher - the API equivalent
     of teacher_app.py's "first visit creates the row" upsert_teacher()
@@ -1588,7 +1613,7 @@ def touch_teacher(identity: str = Depends(current_identity)):
 
 
 @app.get("/teachers/me/documents", response_model=List[IntakeDocumentOut],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(TEACHER)])
 def my_documents(identity: str = Depends(current_identity)):
     """Every paper ever assigned to the calling identity - deliberately
     keyed off the request's own header, not a path parameter, so one
@@ -1707,7 +1732,7 @@ def _require_bank():
 
 
 @app.get("/duplicates", response_model=DuplicateSweepOut,
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def find_duplicates(threshold: float = 0.95, use_guards: bool = True,
                     show_reviewed: bool = False, limit: int = 50):
     """The whole-bank sweep - app.py's "Find duplicates" page. Both
@@ -1752,7 +1777,7 @@ def find_duplicates(threshold: float = 0.95, use_guards: bool = True,
 
 
 @app.get("/within-paper-duplicates", response_model=WithinPaperSweepOut,
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def within_paper_duplicates(
     grade: Optional[str] = None, subject: Optional[str] = None,
     title_contains: Optional[str] = None, assessment_id: Optional[str] = None,
@@ -1829,7 +1854,7 @@ def within_paper_duplicates(
     )
 
 
-@app.get("/assessments", dependencies=[Depends(require_api_key)])
+@app.get("/assessments", dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def list_assessment_ids() -> List[str]:
     """Every assessment with more than one comparable question - fills
     the "Assessment #" filter dropdown on the within-paper duplicate
@@ -1843,7 +1868,7 @@ def list_assessment_ids() -> List[str]:
 
 
 @app.get("/decisions", response_model=List[DecisionOut],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def list_decisions(verdict: Optional[Literal["duplicate", "distinct"]] = None):
     """Every current verdict, newest first, with both questions' text -
     app.py's "Reviewed decisions" page."""
@@ -1852,7 +1877,7 @@ def list_decisions(verdict: Optional[Literal["duplicate", "distinct"]] = None):
     return [_decision_out(d) for d in decisions]
 
 
-@app.get("/decisions/schema", dependencies=[Depends(require_api_key)])
+@app.get("/decisions/schema", dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def decisions_schema() -> Dict[str, Optional[str]]:
     """The decisions table's real CREATE TABLE, migrated columns
     included - the "How this table is built" expander."""
@@ -1861,7 +1886,7 @@ def decisions_schema() -> Dict[str, Optional[str]]:
 
 
 @app.post("/decisions", response_model=DecisionOut,
-         dependencies=[Depends(require_api_key)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def create_decision(body: DecisionIn, identity: str = Depends(current_identity)):
     """Confirm duplicate / Not a duplicate. "Skip" has no route - it
     saves nothing even in app.py, it only hides a pair for the current
@@ -1899,7 +1924,7 @@ def create_decision(body: DecisionIn, identity: str = Depends(current_identity))
     return out
 
 
-@app.delete("/decisions", status_code=204, dependencies=[Depends(require_api_key)])
+@app.delete("/decisions", status_code=204, dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def undo_decision(a: str, b: str):
     """Send a pair back for review - deletes every verdict on it, in
     either order, same as app.py's "Undo" button."""
@@ -1908,7 +1933,7 @@ def undo_decision(a: str, b: str):
 
 
 @app.get("/search", response_model=List[SearchHitOut],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def search_by_meaning(q: str, top_k: int = 5):
     """Finds questions by what they ask about, not by matching words -
     app.py's "Search by meaning" page. Embedded as a `query:`, not a
@@ -1927,7 +1952,7 @@ def search_by_meaning(q: str, top_k: int = 5):
 
 
 @app.get("/questions", response_model=List[QuestionBrief],
-        dependencies=[Depends(require_api_key)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def list_bank_questions(grade: Optional[str] = None, subject: Optional[str] = None,
                         limit: int = 200, offset: int = 0):
     """Browse the bank - app.py's "Question bank" page. Comparable,
@@ -1942,7 +1967,7 @@ def list_bank_questions(grade: Optional[str] = None, subject: Optional[str] = No
     return [_question_brief(r) for r in rows[offset:offset + limit]]
 
 
-@app.get("/questions/facets", dependencies=[Depends(require_api_key)])
+@app.get("/questions/facets", dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def question_facets() -> Dict[str, List[str]]:
     """Distinct grades and subjects in the comparable bank - fills the
     Question bank page's filter dropdowns without shipping every row to

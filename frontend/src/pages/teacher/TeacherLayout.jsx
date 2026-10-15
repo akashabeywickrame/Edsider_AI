@@ -6,7 +6,7 @@ import RequireUser from '../../components/RequireUser.jsx'
 // top nav, then the shared content column, gated by RequireUser.
 export default function TeacherLayout() {
   return (
-    <RequireUser>
+    <RequireUser roles={['teacher']}>
       {(me) => (
         <div className="es-root">
           <TopNav app="teacher" who={`Signed in as ${me.name}`} />

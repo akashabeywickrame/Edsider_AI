@@ -1653,9 +1653,27 @@ turn an unauthenticated visitor away):
   work - assigning papers to teachers - but cannot add, remove or
   re-role anyone. `employee` is the data-entry / question-review
   person; "staff" was asked for too and confirmed to mean the same job,
-  so it is not a separate role. Nothing yet restricts which app shell
-  (`/app/admin`, `/app/teacher`, `/app/data-entry`) each role may open -
-  being on the list at all is the only gate there so far.
+  so it is not a separate role.
+- **Each role is kept to its own section - on the API, not only the
+  page.** `service.allow(*roles)` is on every data route (applied from
+  one table, so each route's section is a deliberate choice): data
+  entry (`EMPLOYEE`: upload, paste, edit, marks, pictures, duplicate
+  checks, search, decisions), teacher review (`TEACHER`: my papers,
+  comments, finish), both (`EMPLOYEE_OR_TEACHER`: reading a paper, its
+  questions, file and pictures, and editing a question - the teacher's
+  own review tick goes through that PATCH), admin (`ADMIN`: assign, the
+  teacher list, `/reload`). Admin and superadmin pass every rule - they
+  oversee all three sections - and Manage users stays superadmin only.
+  A local run (role None) is open, as everywhere else. A refusal is a
+  403, "Your role cannot use this part of EdsiderAI."
+  `tests/test_roles.py` fails if any route ever lacks a role rule, the
+  same "everything except a short list" shape as the API-key test, so a
+  new route cannot quietly be open to every signed-in person. On the
+  page, each Layout passes its `roles` to `RequireUser`, which shows
+  "This section is not for your role" with a link to the person's own
+  section instead of a page whose every request would be refused.
+  Still role-level only: a teacher can read any paper through the
+  shared routes, not just the ones assigned to them.
 - **`current_identity()` now rejects, rather than defaulting to
   "reviewer", whenever Easy Auth reports a real email that is not on
   this list** - a 403 with the same spirit as EdSider's own message.

@@ -9,7 +9,7 @@ import RequireUser from '../../components/RequireUser.jsx'
 // Auth header, same as current_identity() always has).
 export default function DataEntryLayout() {
   return (
-    <RequireUser>
+    <RequireUser roles={['employee']}>
       {(me) => (
         <div className="es-root">
           <TopNav app="data" who={`Signed in as ${me.name}`} />
