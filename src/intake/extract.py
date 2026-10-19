@@ -17,13 +17,14 @@ None of this is trusted output. It is a first pass for a person to
 correct, and the confidence flag on each draft says where to look first.
 """
 
-import html as _html
 import os
 import re
 import shutil
 import unicodedata
 from io import BytesIO
 from pathlib import Path
+
+from .ocr_html import html_to_lines, rows_are_questions as _rows_are_questions
 
 
 class ExtractionUnavailable(RuntimeError):
@@ -89,7 +90,15 @@ _MARKS_PATTERNS = [
     re.compile(r"\b(\d{1,3})\s*mark[s]?\b", re.IGNORECASE),
     re.compile(r"\[\s*(\d{1,3})\s*\]"),
     re.compile(r"\(\s*(\d{1,3})\s*\)[ \t]*$", re.MULTILINE),
+    # Sinhala: "(ලකුණු 60 යි)" - "60 marks" - after every part of a real
+    # A/L Chemistry paper. OCR also read one as "(ලකුණ 60 යි)", the final
+    # vowel sign lost, so it is optional.
+    re.compile(r"\(\s*ලකුණු?\s*(\d{1,3})\s*(?:යි|ක්)?\s*\)"),
 ]
+# Patterns that name the word "marks" next to the number. Only these may
+# read a value over 100 - an A/L structured question carries 150 - since
+# with the word written there is no "12 cm" / "in 1948" to mistake.
+_WORDED_MARKS = {0, 1, 2, 3, 4, 7}
 
 # Any way a paper or its filename writes a grade: "Grade 12", "Grade -13",
 # "Gr12", "G-13".
@@ -234,10 +243,11 @@ def _marks_matches(body):
     _strip_marks_annotation() both build on, so they can never disagree
     about which match is "the" one."""
     hits = []
-    for pat in _MARKS_PATTERNS:
+    for n, pat in enumerate(_MARKS_PATTERNS):
+        top = 300 if n in _WORDED_MARKS else 100
         for m in pat.finditer(body):
             value = int(m.group(1))
-            if 1 <= value <= 100:
+            if 1 <= value <= top:
                 hits.append((m.start(), m.end(), value))
     return hits
 
@@ -727,11 +737,32 @@ def _split_parts(body, depth=0, mcq_hint=False):
 
     parts = []
     for tag, piece in pieces:
+        # A marks line on its own after a part's last sub-part is the
+        # part's total, not that sub-part's: the real A/L Chemistry paper
+        # prints "(ලකුණු 60 යි)" once, under (a)(v), for all of (a).
+        rest, total = _trailing_marks_line(piece)
+        if total is not None:
+            inner_stem, inner_parts = _split_parts(rest, depth + 1, mcq_hint)
+            if inner_parts:
+                parts.append({"tag": tag, "text": inner_stem, "marks": total,
+                              "parts": inner_parts})
+                continue
         inner_stem, inner_parts = _split_parts(piece, depth + 1, mcq_hint)
         parts.append({"tag": tag, "text": inner_stem,
                       "marks": _own_marks(piece, inner_stem, inner_parts),
                       "parts": inner_parts})
     return _strip_blank_lines(body[:starts[0][0]]), parts
+
+
+def _trailing_marks_line(text):
+    """(text without its last line, marks) when that last line is nothing
+    but a marks annotation; (text, None) otherwise."""
+    lines = text.rstrip().split("\n")
+    last = lines[-1].strip()
+    for start, end, value in _marks_matches(last):
+        if start == 0 and end == len(last):
+            return "\n".join(lines[:-1]).rstrip(), value
+    return text, None
 
 
 def _is_roman(tag):
@@ -1195,14 +1226,19 @@ _MCQ_HINT = re.compile(
     # "choose the answer" - the real Grade 12 Sinhala-medium Business
     # Statistics paper's own instructions ("...correct or best-matching
     # answer, choose it"), with no English anywhere in the paper to
-    # match on otherwise. "ක්" is an optional indefinite marker.
+    # match on otherwise. "ක්" is an optional indefinite marker. The real
+    # A/L Chemistry paper's Part I says it as "පිළිතුර තෝරා ගෙන" ("having
+    # chosen the answer") - the same verb in another form.
     r"|පිළිතුර(?:ක්)?"
-    r"[ \t]*තෝරන්න",
+    r"[ \t]*තෝර(?:න්න|ා)",
     re.IGNORECASE,
 )
 _STRUCTURED_HINT = re.compile(r"structured|essay", re.IGNORECASE)
 _MARKS_EACH = re.compile(
-    r"(?:each|every)[ \t]+question[ \t]+carries[ \t]+(\d{1,3})[ \t]+marks?",
+    r"(?:each|every)[ \t]+question[ \t]+carries[ \t]+(\d{1,3})[ \t]+marks?"
+    # Sinhala, from the real A/L Chemistry paper: "එක් එක් ප්‍රශ්නයට ලකුණු
+    # 150 බැගින්" - "150 marks for each question".
+    r"|එක්[ \t]+එක්[ \t]+ප්‍?රශ්නයට[ \t]+ලකුණු[ \t]+(\d{1,3})[ \t]+බැගින්",
     re.IGNORECASE,
 )
 # An MCQ option - "(1) RAM", "A. Keyboard", "I. Ignoring climate data" -
@@ -1711,7 +1747,7 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
         first = sp["starts"][0][0] if sp["starts"] else sp["end"]
         intro = text[sp["intro_start"]:first].strip()
         each = _MARKS_EACH.search(intro)
-        each = int(each.group(1)) if each else None
+        each = int(each.group(1) or each.group(2)) if each else None
 
         pieces = []
         for i, (pos, _n, raw) in enumerate(sp["starts"]):
@@ -2187,25 +2223,9 @@ _TABLE_MIN_COLS = 2
 _TABLE_MAX_COVER = 0.8
 _HEADER_ZONE = 0.3  # top share of page 1 a header table sits within
 
-# A third shape: questions laid out in a grid. Political Science (page 7)
-# puts questions 26-30 in table rows - "26. <statement> | <statement>" -
-# and dropping that table deleted the five questions outright. Rows whose
-# first cell starts with a numbered item ("26. text") are questions - but
-# only when the numbers do NOT start at 1: a real data table numbers its
-# own items from 1 (Grade 13 Biology's "1. First product of CO2 fixation |
-# C3 | C4" table), while a question grid carries on the paper's numbering.
-# A bare "1" alone in its cell is never a question (Political Science's
-# page-6 legend, "1 | true | true", is a real table of answer choices).
-# Not handled: a paper whose very first questions sit in a grid numbered
-# from 1 - none of the stored papers does that.
-_NUMBERED_CELL = re.compile(r"^\s*\(?(\d{1,3})\s*[.)]\s*\S")
-
-
-def _rows_are_questions(first_cells):
-    """Whether 2+ rows of a table open with numbered items that carry on
-    the paper's question numbering (start after 1)."""
-    numbers = [int(m.group(1)) for m in (_NUMBERED_CELL.match(c or "") for c in first_cells) if m]
-    return len(numbers) >= 2 and numbers[0] > 1
+# A third shape: questions laid out in a grid ("26. <statement> |
+# <statement>", Political Science page 7) - rows_are_questions() in
+# ocr_html.py, shared with pasted OCR output and the local reader.
 
 
 def _data_tables(page, page_index):
@@ -2646,53 +2666,9 @@ def was_incomplete(extractor):
             or "not read" in extractor)
 
 
-# Block-level tags a vision OCR reader (Surya) wraps its output in - each
-# one starts a new line, which is what keeps "1." / "A." / "අ)" at a
-# line start, where segment() and the part/option markers look for them.
-_BLOCK_TAG = re.compile(r"</?(?:p|li|ul|ol|br|div|h[1-6]|tr|table)\b[^>]*>", re.IGNORECASE)
-_ANY_TAG = re.compile(r"<[^>]+>")
-_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li|td|th|tr|table)>", re.IGNORECASE)
-_BULLET = re.compile(r"^[•●▪‣⁃]\s*")
-_TABLE_HTML = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
-_CELL_END = re.compile(r"</t[dh]\s*>", re.IGNORECASE)
-_HTML_ROW = re.compile(r"<tr\b.*?</tr\s*>", re.IGNORECASE | re.DOTALL)
-_HTML_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
-
-
-def _drop_unless_questions(match):
-    """An HTML table, dropped - unless its rows are questions laid out in
-    a grid (_rows_are_questions), which stay as text."""
-    table = match.group(0)
-    first_cells = []
-    for row in _HTML_ROW.findall(table):
-        cells = [_html.unescape(_ANY_TAG.sub("", c)).strip() for c in _HTML_CELL.findall(row)]
-        first_cells.append(next((c for c in cells if c), ""))
-    return table if _rows_are_questions(first_cells) else "\n"
-
-
-def html_to_lines(text, keep_tables=False):
-    """Plain lines from OCR output that came back as HTML - one line per
-    paragraph or list item, inline tags (<b>, <i>) dropped, entities
-    decoded, and bullet glyphs ("•") stripped so the marker after one is
-    the first thing on its line. Text with no closing paragraph, list or
-    table tag is returned unchanged, so pasting plain text never loses
-    anything.
-
-    A table's content is left out (see _data_tables() for why) unless its
-    rows are questions, or `keep_tables` - the local reader keeps a
-    paper's header table that way. A kept table is one line per row,
-    cells separated by spaces."""
-    if not _LOOKS_LIKE_HTML.search(text or ""):
-        return text
-    if not keep_tables:
-        text = _TABLE_HTML.sub(_drop_unless_questions, text)
-    text = _CELL_END.sub(" ", text)
-    lines = []
-    for chunk in _BLOCK_TAG.split(text):
-        line = _BULLET.sub("", _html.unescape(_ANY_TAG.sub("", chunk)).strip())
-        if line:
-            lines.append(line)
-    return "\n".join(lines)
+# html_to_lines() - OCR output written as HTML (Surya's, pasted from the
+# local reader) to plain lines, formulas and equations as readable text -
+# lives in ocr_html.py, which the local reader ships an identical copy of.
 
 
 def extract_text(text, style=DEFAULT_SPLIT_STYLE, filename=None):

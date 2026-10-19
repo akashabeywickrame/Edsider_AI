@@ -108,3 +108,40 @@ def test_blank_pasted_text_is_refused(local_db):
     with pytest.raises(HTTPException) as exc:
         create_document_from_text(PastedPaperIn(text="   \n  "), identity="x")
     assert exc.value.status_code == 400
+
+
+# Part II, question 5 of the scanned 2025 A/L Chemistry paper (Sinhala
+# medium), as the local reader writes it once formulas and equations are
+# text. Marks are written in Sinhala - "(ලකුණු 60 යි)", "60 marks" - once
+# per part, on a line of their own after the part's last sub-part, and
+# "ලකුණු 150 බැගින්" ("150 marks each") for every question.
+CHEMISTRY_Q5 = """B කොටස — රචනා
+ප්‍රශ්න දෙකකට පමණක් පිළිතුරු සපයන්න. (එක් එක් ප්‍රශ්නයට ලකුණු 150 බැගින් ලැබේ.)
+5. (a) N₂(g) හි 1.0 mol ක් සහ H₂(g) හි 2.0 mol ක් කලින් රේචනය කරන ලද පරිමාව 1.0 dm³ වන දෘඪ-සංවෘත භාජනයක් තුළ 450 °C උෂ්ණත්වයේදී මිශ්‍ර කර පහත සමතුලිතතාවයට එළඹීමට ඉඩ හරින ලදී.
+N₂(g) + 3H₂(g) ⇌ 2NH₃(g)
+(i) 450 °C දී සමතුලිතතා පද්ධතියෙහි මුළු පීඩනය ගණනය කරන්න.
+(ii) 450 °C දී සමතුලිතතා පද්ධතියේ N₂(g), H₂(g) සහ NH₃(g) හි ආංශික පීඩන ගණනය කරන්න.
+(iii) 450 °C දී පද්ධතියෙහි සමතුලිතතා නියතය Kₚ ගණනය කරන්න.
+(ලකුණු 60 යි)
+(b) N₂(g) + 3H₂(g) ⇌ 2NH₃(g) ප්‍රතික්‍රියාවෙහි ΔH° සහ ΔS° උෂ්ණත්වය සමග වෙනස් නොවන බව උපකල්පනය කරන්න.
+(i) පද්ධතියේ උෂ්ණත්වය වැඩි කළ විට NH₃(g) හි සමතුලිත සාන්ද්‍රණය මත ඇතිවන බලපෑම පුරෝකථනය කරන්න.
+(ii) ඉහත ප්‍රතික්‍රියාව සඳහා ΔH° = -90 kJ mol⁻¹ සහ ΔS° = -200 J K⁻¹ mol⁻¹ වේ. ΔG° අගයන් ගණනය කරන්න.
+(ලකුණ 60 යි)
+(c) (i) සංශුද්ධ CCl₄(l) හි තාපාංකයේදී පවතින සමතුලිතතාවය ලියන්න.
+(ii) CCl₄(l) හි සාමාන්‍ය තාපාංකය ගණනය කරන්න.
+(ලකුණු 30 යි)
+"""
+
+
+def test_sinhala_marks_and_part_totals():
+    drafts = extract.extract_text(CHEMISTRY_Q5)["questions"]
+    by_number = {q["question_number"]: q for q in drafts}
+    # "150 marks each" is the question's mark; each "(ලකුණු N යි)" line -
+    # including the OCR's "(ලකුණ 60 යි)" with its last vowel sign lost - is
+    # the total of the part it closes, not of that part's last sub-part.
+    assert by_number["5"]["marks"] == 150
+    assert by_number["5(a)"]["marks"] == 60
+    assert by_number["5(b)"]["marks"] == 60
+    assert by_number["5(c)"]["marks"] == 30
+    assert by_number["5(a)(iii)"]["marks"] is None
+    assert [n for n in by_number if n.startswith("5(a)(")] == ["5(a)(i)", "5(a)(ii)", "5(a)(iii)"]

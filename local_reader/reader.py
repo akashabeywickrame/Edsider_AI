@@ -18,7 +18,6 @@ Usage:
 """
 
 import argparse
-import html
 import os
 import re
 import sys
@@ -47,16 +46,12 @@ IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
 
 # ---------------------------------------------------------------- text
-# Mirrors src/intake/extract.py's html_to_lines() - this folder is copied
-# to other computers on its own, so it cannot import from the repo.
-# tests/test_local_reader.py checks the two stay identical.
-
-_BLOCK_TAG = re.compile(r"</?(?:p|li|ul|ol|br|div|h[1-6]|tr|table)\b[^>]*>", re.IGNORECASE)
-_ANY_TAG = re.compile(r"<[^>]+>")
-_LOOKS_LIKE_HTML = re.compile(r"</(?:p|li|td|th|tr|table)>", re.IGNORECASE)
-_BULLET = re.compile(r"^[•●▪‣⁃]\s*")
-_TABLE_HTML = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
-_CELL_END = re.compile(r"</t[dh]\s*>", re.IGNORECASE)
+# Turning Surya's HTML into text - formulas, equations, tables - is
+# ocr_html.py, an identical copy of EdsiderAI's src/intake/ocr_html.py:
+# this folder is copied to other computers on its own and cannot import
+# from the repo. tests/test_local_reader.py fails if the two differ.
+sys.path.insert(0, str(HERE))
+from ocr_html import html_to_lines  # noqa: E402
 
 # Data entry adds every table to its question as a picture, so a table's
 # cells are left out of the text - except a paper's header laid out as a
@@ -65,45 +60,8 @@ _CELL_END = re.compile(r"</t[dh]\s*>", re.IGNORECASE)
 # extractor (src/intake/extract.py, _data_tables).
 HEADER_ZONE = 0.3
 
-# Questions laid out in a grid ("26. <statement> | <statement>" - a real
-# Political Science paper) are questions, not a table: rows whose first
-# cell starts with a numbered item keep the table - when the numbers carry
-# on the paper's numbering (not starting at 1; a data table numbers its
-# own items from 1). A bare "1" alone in a cell never counts.
-_NUMBERED_CELL = re.compile(r"^\s*\(?(\d{1,3})\s*[.)]\s*\S")
-_HTML_ROW = re.compile(r"<tr\b.*?</tr\s*>", re.IGNORECASE | re.DOTALL)
-_HTML_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", re.IGNORECASE | re.DOTALL)
-
-
-def _rows_are_questions(first_cells):
-    numbers = [int(m.group(1)) for m in (_NUMBERED_CELL.match(c or "") for c in first_cells) if m]
-    return len(numbers) >= 2 and numbers[0] > 1
-
-
-def _drop_unless_questions(match):
-    table = match.group(0)
-    first_cells = []
-    for row in _HTML_ROW.findall(table):
-        cells = [html.unescape(_ANY_TAG.sub("", c)).strip() for c in _HTML_CELL.findall(row)]
-        first_cells.append(next((c for c in cells if c), ""))
-    return table if _rows_are_questions(first_cells) else "\n"
-
-
-def html_to_lines(text, keep_tables=False):
-    """One line per paragraph or list item, so "1." / "A." / "අ)" stay at
-    the start of a line - where EdsiderAI's splitter looks for them. A
-    table's content is left out unless `keep_tables` (the header table)."""
-    if not _LOOKS_LIKE_HTML.search(text or ""):
-        return text
-    if not keep_tables:
-        text = _TABLE_HTML.sub(_drop_unless_questions, text)
-    text = _CELL_END.sub(" ", text)
-    lines = []
-    for chunk in _BLOCK_TAG.split(text):
-        line = _BULLET.sub("", html.unescape(_ANY_TAG.sub("", chunk)).strip())
-        if line:
-            lines.append(line)
-    return "\n".join(lines)
+# What Surya labels a page's own header and footer - see page_text().
+PAGE_FURNITURE = {"PageHeader", "PageFooter"}
 
 
 def _is_header_table(block, page_height, first_page):
@@ -115,9 +73,18 @@ def _is_header_table(block, page_height, first_page):
 def page_text(blocks, page_height=None, first_page=False):
     """A page's text from Surya's blocks, minus its tables (Surya labels
     them "Table") and a trailing page number - a bare "7" alone on the
-    last line belongs to the page, not the paper."""
+    last line belongs to the page, not the paper.
+
+    Page headers and footers are left out too - Surya labels them. On the
+    real A/L Chemistry scan they were the paper code and page number
+    ("AL/2025/02/S-I", "- 4 -"), a serial number, and "[see the next
+    page]" ("[පස්වැනි පිටුව බලන්න.]"), which landed in the middle of
+    whichever question ran on to the next page and hid the marks line
+    before it."""
     parts = []
     for b in blocks:
+        if b.get("label") in PAGE_FURNITURE:
+            continue
         source = b.get("html") or b.get("text") or ""
         # A table block goes through html_to_lines like the rest, which
         # drops it unless its rows are questions; a header table on page 1

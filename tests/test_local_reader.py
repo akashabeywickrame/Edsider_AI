@@ -28,6 +28,12 @@ SAMPLES = [
 ]
 
 
+def test_the_readers_copy_of_ocr_html_is_identical():
+    # The reader is copied to other computers on its own and cannot import
+    # from the repo - so it ships its own copy, which must never drift.
+    assert (ROOT / "local_reader" / "ocr_html.py").read_bytes() ==         (ROOT / "src" / "intake" / "ocr_html.py").read_bytes()
+
+
 @pytest.mark.parametrize("keep_tables", [False, True])
 @pytest.mark.parametrize("sample", SAMPLES)
 def test_the_readers_html_cleaner_matches_edsiderais(sample, keep_tables):

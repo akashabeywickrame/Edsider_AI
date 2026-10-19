@@ -1546,6 +1546,33 @@ that page splits wrongly, and correctly so: the paper's "1)" numbering
 only beats the choices' "1.-5." when there are enough questions for it
 to count up further - tests use the real page, not a shortened one.
 
+**Chemistry - formulas, equations and drawn structures.** The real
+scanned 2025 A/L Chemistry paper (Sinhala medium) came back from the
+deployed site as one empty draft: every page is a picture and the server
+has no OCR (intake upload #78 - 0 characters; #77, with Tesseract locally,
+20 of 50 questions). Through the local reader, Surya's *reading* was right
+- `N<sub>2</sub>(g)`, `dm<sup>3</sup>`, `\Delta H^\circ = -90 \text{ kJ
+mol}^{-1}`, `N_2(g) + 3H_2(g) \rightleftharpoons 2NH_3(g)` - and the damage
+was all ours: tags stripped ("dm3", "6.022 x 1023", "mol-1") and LaTeX left
+raw. `src/intake/ocr_html.py` (with an identical copy in `local_reader/`,
+checked by `tests/test_local_reader.py`) now turns `<sub>`/`<sup>` into the
+Unicode characters the question editor itself saves (N₂, dm³, Fe³⁺, Kₛₚ;
+Unicode has no subscript capitals, so K_C stays "KC" and a longer one is
+bracketed, "ΔH°(CCl₄(g))"), and `<math>` into one readable line ("N₂(g) +
+3H₂(g) ⇌ 2NH₃(g)", "ΔH° = -90 kJ mol⁻¹", fractions as "a/(b c)"). A
+**drawn structure is left out**: Surya lays a benzene-ring drawing out as
+rows joined by bond lines ("CH₃ | C₆H₅ | CHCH₂CH₂OH | OH"), which as text
+is a different molecule (the ring's substitution pattern and a C=O drawn
+under its carbon are lost) - data entry adds it as a picture, like a
+table. Also from this paper: Sinhala marks, "(ලකුණු 60 යි)" (and the OCR's
+"(ලකුණ 60 යි)") and "ලකුණු 150 බැගින්" for every question - worded marks
+may now exceed 100, bare numbers still may not; a marks line on its own
+after a part's last sub-part is that part's total; the MCQ hint accepts
+"පිළිතුර තෝරා" as well as "තෝරන්න"; the local reader drops Surya's
+PageHeader/PageFooter blocks ("- 4 -", "[see the next page]"), which had
+landed inside questions. The review page now says plainly when pages could
+not be read and sends data entry to the local reader and "Paste text".
+
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
 notation needs a maths-aware reader (see above); split picture-question

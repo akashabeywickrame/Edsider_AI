@@ -633,6 +633,19 @@ export default function PaperIntake() {
                 {doc.uploaded_at ? ` - uploaded ${doc.uploaded_at.slice(0, 10)}` : ''}
               </p>
 
+              {/* A scanned paper is pictures, not text, and this server has no
+                  OCR (Tesseract cannot be installed on its Azure hosting) - it
+                  came back as one empty draft with only the caption above to
+                  say why. Scans are read with the local reader instead. */}
+              {/not read|^unavailable/i.test(doc.extractor || '') ? (
+                <Notice tone="warning" title="Some pages of this paper could not be read here">
+                  They are pictures - a scanned paper - and this server cannot read text out of
+                  pictures. Read the paper with the EdsiderAI reader on a data-entry computer, copy
+                  its text, then choose "Paste text" above and paste it in. Sinhala and Tamil scans
+                  should always go that way.
+                </Notice>
+              ) : null}
+
               <button
                 className="pi-exp"
                 type="button"
