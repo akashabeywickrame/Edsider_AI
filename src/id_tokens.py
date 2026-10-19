@@ -27,15 +27,23 @@ GOOGLE_KEYS = "https://www.googleapis.com/oauth2/v3/certs"
 MICROSOFT_ISSUER_PREFIX = "https://login.microsoftonline.com/"
 MICROSOFT_KEYS = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
 
-# Which apps' tokens are accepted - the client IDs the eds-dev-ai-web
-# login redirects themselves name (public identifiers, not secrets):
-# its Google OAuth client and its Microsoft app registration. A token
-# Google issued to some OTHER app carries a real email too, so without
-# this check any site a person ever signed in to could replay their
-# token here. Another environment sets EDSIDER_TOKEN_AUDIENCES instead.
+# Which apps' tokens are accepted - the client IDs each environment's web
+# app sends people to at sign-in (public identifiers, not secrets): its
+# Google OAuth client and its Microsoft app registration, read off the
+# /.auth/login/* redirects. A token Google issued to some OTHER app carries
+# a real email too, so without this check any site a person ever signed in
+# to could replay their token here. Every environment has its own pair, and
+# a token from one missing here is refused as if forged - which is how
+# pre-prod's sign-in looped back to the sign-in page. EDSIDER_TOKEN_AUDIENCES
+# adds more (another environment) to these; it does not replace them, so a
+# mistyped setting cannot lock out an environment listed here.
 DEFAULT_AUDIENCES = (
+    # dev (eds-dev-ai-web)
     "326928994683-7jb55oe1agr77kqsolfea9k0u21eh5th.apps.googleusercontent.com",
     "cc17167b-b571-4af2-b16a-c30d3834e932",
+    # pre-prod (eds-preprod-ai-web)
+    "918577417431-pivh4gbds789a35mea310kupeavrkvj3.apps.googleusercontent.com",
+    "b518f1fb-147e-4ad4-a0d3-0299afd61090",
 )
 
 # A minute's grace either side for clock differences between machines.
@@ -51,7 +59,7 @@ class InvalidToken(Exception):
 def audiences():
     configured = os.environ.get("EDSIDER_TOKEN_AUDIENCES", "")
     listed = [a.strip() for a in configured.split(",") if a.strip()]
-    return listed or list(DEFAULT_AUDIENCES)
+    return list(DEFAULT_AUDIENCES) + [a for a in listed if a not in DEFAULT_AUDIENCES]
 
 
 def _signing_key(token, keys_url):

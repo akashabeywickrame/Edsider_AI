@@ -22,6 +22,7 @@ or POST to /check. See README.md for the request and response shape.
 """
 
 import json
+import logging
 import mimetypes
 import os
 import secrets
@@ -38,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+log = logging.getLogger("edsiderai")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
@@ -294,10 +296,15 @@ def _resolve_identity(x_ms_client_principal_name, id_token=None):
     elif id_token:
         try:
             email = id_tokens.email_from_id_token(id_token)
-        except id_tokens.InvalidToken:
+        except id_tokens.InvalidToken as e:
             # Usually an hour-old token - Google's and Microsoft's ID
-            # tokens expire, and signing in again issues a fresh one.
-            raise HTTPException(401, "Your sign-in has expired - sign in again.")
+            # tokens expire, and signing in again issues a fresh one. The
+            # reason goes in the message and the log: "Invalid audience"
+            # (a sign-in through an app registration not in
+            # id_tokens.DEFAULT_AUDIENCES) looked exactly like "expired"
+            # and cost a pre-prod deployment its sign-in. Never the token.
+            log.warning("ID token refused: %s", e)
+            raise HTTPException(401, f"Your sign-in was not accepted ({e}) - sign in again.")
     elif _require_signin():
         raise HTTPException(401, "Sign in first.")
     else:

@@ -78,11 +78,21 @@ def test_a_token_that_must_not_be_trusted_is_refused(bad, why):
         id_tokens.email_from_id_token(bad())
 
 
-def test_audiences_can_be_set_per_environment(monkeypatch):
+def test_another_environment_can_be_added(monkeypatch):
     monkeypatch.setenv("EDSIDER_TOKEN_AUDIENCES", "qa-client-id")
-    with pytest.raises(id_tokens.InvalidToken):
-        id_tokens.email_from_id_token(_token())
     assert id_tokens.email_from_id_token(_token(aud="qa-client-id")) == "teacher@gmail.com"
+    # Added to the built-in list, never replacing it: a mistyped setting
+    # must not lock out an environment the code already knows.
+    assert id_tokens.email_from_id_token(_token()) == "teacher@gmail.com"
+
+
+def test_preprod_sign_ins_are_accepted(monkeypatch):
+    # The client IDs pre-prod's own /.auth/login/* redirects name - without
+    # them every pre-prod sign-in was refused and looped back to sign-in.
+    monkeypatch.delenv("EDSIDER_TOKEN_AUDIENCES", raising=False)
+    for aud in ("918577417431-pivh4gbds789a35mea310kupeavrkvj3.apps.googleusercontent.com",
+                "b518f1fb-147e-4ad4-a0d3-0299afd61090"):
+        assert id_tokens.email_from_id_token(_token(aud=aud)) == "teacher@gmail.com"
 
 
 # ---- through the API, as the deployed page calls it ----

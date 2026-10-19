@@ -9,7 +9,9 @@ import { devIdentity, isDevAuth } from './auth.js'
 // the sign-in reach the API. `??`, not `||`: an empty value is a real
 // choice here, not a missing one. Unset (npm run dev with no .env) it is
 // the local API.
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
+// A trailing slash is dropped: every path below starts with one, and the
+// pre-prod build's address ended in "/", so every call went to "//me".
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/+$/, '')
 // Matches EDSIDER_API_KEY on the server, when one is set there - a build-time
 // setting (frontend/.env), never committed. Unset, the service stays open and
 // this is simply never sent, exactly as it already works locally and in the
