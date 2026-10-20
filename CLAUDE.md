@@ -1546,6 +1546,23 @@ that page splits wrongly, and correctly so: the paper's "1)" numbering
 only beats the choices' "1.-5." when there are enough questions for it
 to count up further - tests use the real page, not a shortened one.
 
+**Word's automatic list numbering.** A list made with Word's numbering
+button has no number in its text - Word draws "I." / "(a)" / "1." from
+`numbering.xml` - and 6 of the 7 real Word papers use it ("paper 6.docx"
+numbers 245 of 438 paragraphs that way, every MCQ option among them).
+`_DocxNumbering` replays Word's counters in document order (per list
+definition, so instances sharing one continue each other; `startOverride`
+restarts, which is how "restart at 1" is saved; numbering inherited from a
+paragraph style counts too) and `_docx_walk` writes each label in front of
+its paragraph. Measured: paper 6.docx 0 -> 48 of 50 MCQs with options (the
+other two are picture-only) and 0 -> 40 of 109 answers; Grade 12 Term 3
+Pure & Applied 1 -> 16 questions; General English loses 8 junk "questions"
+that were its answer key; GIT Gr12 (no auto-numbering) and every typed PDF
+unchanged. One knock-on, fixed: Accounting's question 04 holds an
+auto-numbered "1."-"10." list, and "10." (the same padded or not) jumped a
+zero-padded run 01, 03, 04 past the real "06." - a padded run no longer
+jumps to a number when a padded one in between is still to come.
+
 **Chemistry - formulas, equations and drawn structures.** The real
 scanned 2025 A/L Chemistry paper (Sinhala medium) came back from the
 deployed site as one empty draft: every page is a picture and the server

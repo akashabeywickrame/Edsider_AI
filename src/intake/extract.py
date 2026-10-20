@@ -389,6 +389,20 @@ def _number_starts(text, start=0, end=None):
                 if run and n <= last_n:
                     dropped += 1
                     continue
+                # Zero-padded questions ("01." "03." "04.") do not jump to a
+                # "10." while a padded number in between is still to come:
+                # on the real Accounting paper (Word), question 04's own
+                # auto-numbered list of errors runs "1." to "10.", "10."
+                # reads the same padded or not, and taking it lost the real
+                # "06." after it. Only padded numbers count as "still to
+                # come" - a list item is never zero-padded, so one inside a
+                # later question cannot block a real question.
+                if padded and run and n > last_n + 1 and any(
+                        k2 == kind and p2 > pos and last_n < n2 < n and n2 < 10
+                        and len(r2) > 1 and r2[0] == "0"
+                        for p2, n2, r2, k2 in found):
+                    dropped += 1
+                    continue
                 run.append((pos, n, raw))
                 last_n = n
             # A format that numbers only one thing is not a numbering at
@@ -2496,6 +2510,162 @@ def _run_is_bold(run_el):
 _MIN_BOLD_ANSWER_CHARS = 3
 
 
+# ------------------------------------------------- Word automatic numbering
+#
+# A numbered or lettered list made with Word's own numbering button has no
+# number in its text: "I." / "(a)" / "1." are drawn by Word from
+# numbering.xml, so python-docx and our walk read "Ignoring climate data"
+# with no marker at all. Measured on the real Word papers: 6 of 7 use it -
+# "paper 6.docx" (Grade 13 Biosystem Technology) numbers 245 of its 438
+# paragraphs that way, every MCQ option among them, so 0 of its 50 MCQs had
+# options and none of Part II's parts split (the PDF of the same paper,
+# where the labels are printed text, gave 33 of 50). The labels are put
+# back as text, exactly as Word would draw them.
+
+def _roman(n):
+    out = ""
+    for value, digits in ((1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"),
+                          (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"),
+                          (5, "v"), (4, "iv"), (1, "i")):
+        while n >= value:
+            out, n = out + digits, n - value
+    return out
+
+
+def _letters(n):
+    # Word's own sequence: a..z, then aa..zz, bbb...
+    n = max(n, 1)
+    return chr(ord("a") + (n - 1) % 26) * ((n - 1) // 26 + 1)
+
+
+def _format_list_number(n, fmt):
+    if fmt == "decimalZero":
+        return f"{n:02d}"
+    if fmt == "lowerLetter":
+        return _letters(n)
+    if fmt == "upperLetter":
+        return _letters(n).upper()
+    if fmt == "lowerRoman":
+        return _roman(n)
+    if fmt == "upperRoman":
+        return _roman(n).upper()
+    return str(n)  # decimal, and anything rarer read as a plain number
+
+
+class _DocxNumbering:
+    """Replays Word's list counters in document order and gives each
+    numbered paragraph the label Word draws for it ("I.", "(a)", "1.").
+
+    Counters belong to the list definition (abstractNum), so two list
+    instances that share one definition continue each other - Word's
+    "continue numbering" - unless the instance restarts a level with
+    startOverride, which is how "restart at 1" is saved (the next MCQ's
+    options start again at I)."""
+
+    def __init__(self, numbering_xml, styles_xml):
+        import xml.etree.ElementTree as ET
+
+        def val(el, name, default=None):
+            found = el.find(_W + name) if el is not None else None
+            return found.get(_W + "val", default) if found is not None else default
+
+        def levels(parent):
+            out = {}
+            for lvl in parent.findall(_W + "lvl"):
+                out[int(lvl.get(_W + "ilvl", "0"))] = {
+                    "fmt": val(lvl, "numFmt", "decimal"),
+                    "text": val(lvl, "lvlText"),
+                    "start": int(val(lvl, "start", "1") or 1),
+                    "style": val(lvl, "pStyle"),
+                }
+            return out
+
+        self.abstract, self.nums, self.styles = {}, {}, {}
+        if numbering_xml:
+            root = ET.fromstring(numbering_xml)
+            for a in root.findall(_W + "abstractNum"):
+                self.abstract[a.get(_W + "abstractNumId")] = levels(a)
+            for n in root.findall(_W + "num"):
+                restarts, replaced = {}, {}
+                for o in n.findall(_W + "lvlOverride"):
+                    ilvl = int(o.get(_W + "ilvl", "0"))
+                    start = val(o, "startOverride")
+                    if start is not None:
+                        restarts[ilvl] = int(start)
+                    replaced.update(levels(o))
+                self.nums[n.get(_W + "numId")] = {
+                    "abstract": val(n, "abstractNumId"), "restarts": restarts,
+                    "replaced": replaced}
+        if styles_xml:
+            root = ET.fromstring(styles_xml)
+            for s in root.findall(_W + "style"):
+                p_pr = s.find(_W + "pPr")
+                num_pr = p_pr.find(_W + "numPr") if p_pr is not None else None
+                self.styles[s.get(_W + "styleId")] = {
+                    "num": val(num_pr, "numId"), "ilvl": val(num_pr, "ilvl"),
+                    "based": val(s, "basedOn")}
+        self.counters = {}
+        self.started = set()
+
+    def _style_numbering(self, style_id):
+        seen = set()
+        while style_id and style_id not in seen:
+            seen.add(style_id)
+            style = self.styles.get(style_id)
+            if style is None:
+                return None, None
+            if style["num"] is not None:
+                return style["num"], style["ilvl"]
+            style_id = style["based"]
+        return None, None
+
+    def label(self, paragraph):
+        p_pr = paragraph.find(_W + "pPr")
+        if p_pr is None:
+            return ""
+        style_el = p_pr.find(_W + "pStyle")
+        style_id = style_el.get(_W + "val") if style_el is not None else None
+        num_pr = p_pr.find(_W + "numPr")
+        num_id = ilvl = None
+        if num_pr is not None:
+            n, i = num_pr.find(_W + "numId"), num_pr.find(_W + "ilvl")
+            num_id = n.get(_W + "val") if n is not None else None
+            ilvl = i.get(_W + "val") if i is not None else None
+        if num_id is None and style_id:
+            num_id, style_ilvl = self._style_numbering(style_id)
+            ilvl = ilvl if ilvl is not None else style_ilvl
+        num = self.nums.get(num_id)
+        if num_id in (None, "0") or num is None:
+            return ""  # numId 0 is Word's "numbering removed here"
+        lvls = dict(self.abstract.get(num["abstract"], {}))
+        lvls.update(num["replaced"])
+        if ilvl is None:
+            ilvl = next((k for k, v in lvls.items() if style_id and v["style"] == style_id), 0)
+        ilvl = int(ilvl)
+        level = lvls.get(ilvl)
+        if level is None:
+            return ""
+        counters = self.counters.setdefault(num["abstract"], {})
+        if num_id not in self.started:
+            self.started.add(num_id)
+            for restart_lvl, start in num["restarts"].items():
+                counters[restart_lvl] = start - 1
+                for deeper in [k for k in counters if k > restart_lvl]:
+                    del counters[deeper]
+        counters[ilvl] = counters[ilvl] + 1 if ilvl in counters else level["start"]
+        for deeper in [k for k in counters if k > ilvl]:
+            del counters[deeper]
+        if level["fmt"] in ("bullet", "none") or not level["text"]:
+            return ""
+
+        def number(match):
+            k = int(match.group(1)) - 1
+            lv = lvls.get(k) or {"fmt": "decimal", "start": 1}
+            return _format_list_number(counters.get(k, lv["start"]), lv["fmt"])
+
+        return re.sub(r"%(\d)", number, level["text"]).strip()
+
+
 # Question 1's number at the start of a line - before it, a table is the
 # paper's header (subject / grade / term), which is kept.
 _FIRST_QUESTION = re.compile(r"(?m)^\s*(?:Q(?:uestion)?\.?\s*)?\(?0?1\s*[.):]")
@@ -2521,7 +2691,7 @@ def _is_docx_data_table(tbl, text_so_far):
     return bool(_FIRST_QUESTION.search(text_so_far))
 
 
-def _docx_walk(el, out, picture, bold_runs=None, skipped=None):
+def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
     """Body XML -> text, in document order. python-docx's own
     `document.paragraphs` skips tables, equations and pictures - on a
     maths paper, that is most of the content.
@@ -2548,7 +2718,7 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None):
     if tag == _W + "r" and _run_is_bold(el):
         local = []
         for child in el:
-            _docx_walk(child, local, picture, bold_runs, skipped)
+            _docx_walk(child, local, picture, bold_runs, skipped, numbering)
         text = "".join(local)
         out.append(text)
         if bold_runs is not None and len(text.strip()) >= _MIN_BOLD_ANSWER_CHARS:
@@ -2574,7 +2744,7 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None):
         # text box side by side; reading both would double it.
         choice = el.find(_MC + "Choice")
         if choice is not None:
-            _docx_walk(choice, out, picture, bold_runs, skipped)
+            _docx_walk(choice, out, picture, bold_runs, skipped, numbering)
         return
     if tag == _W + "tr":
         # One line per row: an MCQ options grid becomes
@@ -2586,14 +2756,39 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None):
         cells = []
         for tc in el.findall(_W + "tc"):
             sub = []
-            _docx_walk(tc, sub, picture, skipped=skipped)
+            _docx_walk(tc, sub, picture, skipped=skipped, numbering=numbering)
             cells.append(" ".join("".join(sub).split()))
         out.append(" | ".join(c for c in cells if c) + "\n")
         return
+    if tag == _W + "p" and numbering is not None:
+        # Word's own list label ("I.", "(a)", "1.") - not in the text; see
+        # _DocxNumbering.
+        label = numbering.label(el)
+        if label:
+            out.append(label + " ")
     for child in el:
-        _docx_walk(child, out, picture, bold_runs, skipped)
+        _docx_walk(child, out, picture, bold_runs, skipped, numbering)
     if tag == _W + "p":
         out.append("\n")
+
+
+def _docx_numbering(path):
+    """The file's list definitions and paragraph styles, for
+    _DocxNumbering - read straight from the .docx (a zip), since
+    python-docx exposes neither in a form that says how a list counts.
+    None when the file cannot be read that way; the walk then simply adds
+    no labels, as before."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            names = set(z.namelist())
+            numbering = z.read("word/numbering.xml") if "word/numbering.xml" in names else None
+            styles = z.read("word/styles.xml") if "word/styles.xml" in names else None
+        if numbering is None:
+            return None
+        return _DocxNumbering(numbering, styles)
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError, SyntaxError):
+        return None
 
 
 def read_docx(path, ocr):
@@ -2640,7 +2835,7 @@ def read_docx(path, ocr):
         return "\n[image - not read]\n"
 
     out, bold_runs, skipped = [], [], []
-    _docx_walk(document.element.body, out, picture, bold_runs, skipped)
+    _docx_walk(document.element.body, out, picture, bold_runs, skipped, _docx_numbering(path))
     text = re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
 
     note = "docx-text"
