@@ -1208,6 +1208,18 @@ missed question 7 sits between 6 and 8 in review, preview and teacher
 review, not at the end of the paper. The page re-reads the list after an
 add, since the questions after it have moved.
 
+**Finding a paper among hundreds.** The paper picker was a dropdown of
+every upload, and the list behind it was `SELECT *` - every stored PDF
+(`file_blob`) and its whole `raw_text` came along just to show names.
+`PaperFinder.jsx` filters by status (Extracted, Ready to assign, Awaiting
+teacher review, Sent back for changes, Review done), subject and grade -
+each choice with its count - and searches file name and title, 25 a page,
+newest first, through `GET /intake/documents/search`
+(`store.search_intake_documents()` / `intake_document_facets()`, list
+columns only; `GET /intake/documents` uses the same light query now).
+Nothing opens by itself: a new session starts with no paper open until
+one is picked (the old picker opened the newest upload).
+
 **Marks set in the Marks section reach every question card.** "Apply to
 all questions" and the per-question boxes there always saved each
 question's marks, but a card's own Marks box read `q.marks` once when it

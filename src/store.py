@@ -1810,6 +1810,48 @@ def intake_documents(conn):
     ).fetchall()
 
 
+# What a list of papers shows - never raw_text or file_blob. With every
+# column, listing 1,000 papers meant downloading every uploaded PDF and its
+# whole read text just to fill a list.
+_DOCUMENT_LIST_COLUMNS = (
+    "id, filename, file_type, extractor, uploaded_by, uploaded_at, paper_grade, "
+    "paper_subject, paper_title, split_style, status, assigned_to, sections, notes, "
+    "assessment_settings, instruction_groups")
+
+
+def search_intake_documents(conn, status=None, subject=None, grade=None, search=None,
+                            limit=50, offset=0):
+    """(total, rows) - one page of papers matching every filter given,
+    newest first. `search` matches the file name or the paper's title,
+    any case; "" / None means no filter."""
+    where, params = [], []
+    for column, value in (("status", status), ("paper_subject", subject), ("paper_grade", grade)):
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    if search and search.strip():
+        where.append("(filename ILIKE ? OR coalesce(paper_title, '') ILIKE ?)")
+        pattern = f"%{search.strip()}%"
+        params += [pattern, pattern]
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    total = conn.execute(f"SELECT count(*) AS n FROM intake_documents {clause}", params).fetchone()["n"]
+    rows = conn.execute(
+        f"SELECT {_DOCUMENT_LIST_COLUMNS} FROM intake_documents {clause} "
+        "ORDER BY id DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
+    return total, rows
+
+
+def intake_document_facets(conn):
+    """How many papers there are per status, subject and grade - the
+    paper finder's filter menus, each with its count."""
+    out = {}
+    for key, column in (("status", "status"), ("subject", "paper_subject"), ("grade", "paper_grade")):
+        out[key] = {r["v"]: r["n"] for r in conn.execute(
+            f"SELECT {column} AS v, count(*) AS n FROM intake_documents "
+            f"WHERE {column} IS NOT NULL AND {column} <> '' GROUP BY {column} ORDER BY {column}").fetchall()}
+    return out
+
+
 def get_intake_document(conn, doc_id):
     return conn.execute(
         "SELECT * FROM intake_documents WHERE id = ?", (doc_id,)

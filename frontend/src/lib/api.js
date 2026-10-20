@@ -165,6 +165,8 @@ export const api = {
 
   // ---- paper intake ----
   listIntakeDocuments: (status) => request(`/intake/documents${query({ status })}`),
+  // One page of papers for the paper finder - {total, items, facets}.
+  searchIntakeDocuments: (filters) => request(`/intake/documents/search${query(filters)}`),
   uploadIntakeDocument: (file, lang, style, forceOcr = false) => {
     const form = new FormData()
     form.set('file', file)

@@ -199,6 +199,35 @@ def test_a_question_can_go_before_the_first(document):
     assert [q.question_number for q in list_questions(document.id)][0] == "0"
 
 
+def test_the_paper_finder_filters_and_pages(document, docx_bytes):
+    other = upload_document(file=_upload("physics term test.docx", docx_bytes),
+                            lang="eng", style="number", identity="data-entry-1")
+    update_document(document.id, DocumentUpdate(paper_subject="Chemistry", paper_grade="G13",
+                                                 paper_title="Model Paper"))
+    update_document(other.id, DocumentUpdate(paper_subject="Physics", paper_grade="G12"))
+    with service.store.connect() as conn:
+        service.store.update_intake_document(conn, document.id, status="refer_back")
+
+    def ids(**filters):
+        return [d.id for d in service.search_documents(**filters).items]
+
+    assert ids(subject="Chemistry") == [document.id]
+    assert ids(grade="G12") == [other.id]
+    assert ids(status="refer_back") == [document.id]
+    assert ids(status="extracted", subject="Chemistry") == []
+    # Search matches the file name or the title, any case.
+    assert ids(q="PHYSICS") == [other.id]
+    assert ids(q="model") == [document.id]
+    # Newest first, a page at a time, with the total for every page.
+    first = service.search_documents(limit=1, offset=0)
+    second = service.search_documents(limit=1, offset=1)
+    assert first.total == second.total == 2
+    assert [first.items[0].id, second.items[0].id] == [other.id, document.id]
+    # The filter menus' counts.
+    assert first.facets["subject"] == {"Chemistry": 1, "Physics": 1}
+    assert first.facets["status"]["refer_back"] == 1
+
+
 def test_add_a_part_of_an_unknown_question_is_404(document):
     with pytest.raises(HTTPException) as err:
         create_question(document.id,

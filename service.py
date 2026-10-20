@@ -919,9 +919,35 @@ def list_documents(status: Optional[str] = None):
     client-side-friendly via the optional query param rather than two
     different endpoints for what is the same table."""
     with store.connect() as conn:
-        docs = [d for d in store.intake_documents(conn)
-               if status is None or d["status"] == status]
+        # Light columns only - every stored PDF came along with the list.
+        _total, docs = store.search_intake_documents(conn, status=status, limit=None)
     return [_document_out(d) for d in docs]
+
+
+class PaperSearchOut(BaseModel):
+    total: int
+    items: List[IntakeDocumentOut]
+    # Papers per status / subject / grade, across all papers - the filter
+    # menus show each choice with its count.
+    facets: Dict[str, Dict[str, int]]
+
+
+@app.get("/intake/documents/search", response_model=PaperSearchOut,
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+def search_documents(status: Optional[str] = None, subject: Optional[str] = None,
+                     grade: Optional[str] = None, q: Optional[str] = None,
+                     limit: int = 50, offset: int = 0):
+    """The data-entry paper finder: one page of papers matching the
+    filters (status, subject, grade, and a search over file name and
+    title), newest first. A dropdown of every paper stops working long
+    before 1,000 of them."""
+    limit = max(1, min(limit, 200))
+    with store.connect() as conn:
+        total, docs = store.search_intake_documents(
+            conn, status=status, subject=subject, grade=grade, search=q,
+            limit=limit, offset=max(offset, 0))
+        facets = store.intake_document_facets(conn)
+    return PaperSearchOut(total=total, items=[_document_out(d) for d in docs], facets=facets)
 
 
 @app.post("/intake/documents", response_model=IntakeDocumentDetail,

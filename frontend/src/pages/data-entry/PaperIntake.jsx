@@ -8,6 +8,7 @@ import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
 import AddQuestion from './AddQuestion.jsx'
+import PaperFinder from './PaperFinder.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
@@ -99,8 +100,7 @@ export default function PaperIntake() {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
 
-  const [docs, setDocs] = useState(null)
-  const [docsError, setDocsError] = useState(null)
+  const [listVersion, setListVersion] = useState(0)
 
   const [doc, setDoc] = useState(null)
   const [questions, setQuestions] = useState(null)
@@ -149,17 +149,11 @@ export default function PaperIntake() {
     api.questionFacets().then(setFacets).catch(() => {})
   }, [])
 
-  function loadDocs(andSelect) {
-    api
-      .listIntakeDocuments()
-      .then((list) => {
-        setDocs(list)
-        if (andSelect && list.length) setSearchParams({ doc: String(list[0].id) })
-        else if (!selectedId && list.length) setSearchParams({ doc: String(list[0].id) }, { replace: true })
-      })
-      .catch((err) => setDocsError(err.message))
+  // The paper finder reads its own page of papers; bumping this makes it
+  // read again after something here changed a paper's status or title.
+  function refreshList() {
+    setListVersion((v) => v + 1)
   }
-  useEffect(() => loadDocs(false), [])
 
   function loadSelected(id) {
     if (!id) {
@@ -216,7 +210,7 @@ export default function PaperIntake() {
       setFile(null)
       setPasted('')
       setPastedTitle('')
-      loadDocs(false)
+      refreshList()
       setSearchParams({ doc: String(d.id) })
       toast.success(`${d.filename} added - its questions have been extracted.`)
     } catch (err) {
@@ -231,7 +225,7 @@ export default function PaperIntake() {
     try {
       const d = await api.updateIntakeDocument(selectedId, fields)
       setDoc(d)
-      loadDocs(false)
+      refreshList()
     } catch (err) {
       setLoadError(err.message)
     }
@@ -301,7 +295,7 @@ export default function PaperIntake() {
       await api.resplitDocument(selectedId, splitStyle)
       setPreview(null)
       loadSelected(selectedId)
-      loadDocs(false)
+      refreshList()
       toast.success('Paper re-split - its questions have been replaced.')
     } catch (err) {
       setResplitError(err.message)
@@ -351,7 +345,7 @@ export default function PaperIntake() {
       const res = await api.checkDocumentDuplicates(selectedId)
       setCheckResult(res)
       setDoc(await api.getIntakeDocument(selectedId))
-      loadDocs(false)
+      refreshList()
       const exact = res.exact_groups.length
       const similar = res.similar_pairs.length
       toast.success(
@@ -555,33 +549,21 @@ export default function PaperIntake() {
           </form>
         </section>
 
-        {docsError ? (
-          <Notice tone="error" title="Could not load uploaded papers">
-            {docsError}
-          </Notice>
-        ) : null}
-
         <section id="paper" className="es-card" aria-label="Paper details" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <div className="pi-paper__head">
-            <div className="es-field pi-paper__picker">
-              <label className="es-field__label" htmlFor="pi-picker">
-                Uploaded papers
-              </label>
-              <select
-                id="pi-picker"
-                className="es-input"
-                value={selectedId || ''}
-                onChange={(e) => setSearchParams({ doc: e.target.value })}
-              >
-                {(docs || []).map((d) => (
-                  <option key={d.id} value={d.id}>
-                    #{d.id} - {d.filename} ({d.status})
-                  </option>
-                ))}
-              </select>
+          <h2 className="scr-h2" style={{ margin: 0 }}>Uploaded papers</h2>
+          <PaperFinder
+            selectedId={selectedId}
+            onSelect={(id, opts) => setSearchParams({ doc: id }, opts)}
+            refreshKey={listVersion}
+          />
+          {doc ? (
+            <div className="pi-paper__head">
+              <p className="scr-h3" style={{ margin: 0 }}>
+                Open: #{doc.id} - {doc.paper_title || doc.filename}
+              </p>
+              <StatusPill status={doc.status} />
             </div>
-            {doc ? <StatusPill status={doc.status} /> : null}
-          </div>
+          ) : null}
 
           {doc && doc.status === 'refer_back' ? (
             <Notice tone="warning" title="Referred back by the teacher">
@@ -598,7 +580,11 @@ export default function PaperIntake() {
           ) : null}
           {loading ? <Notice tone="info">Loading...</Notice> : null}
 
-          {!loading && !doc ? <Notice tone="info">Upload a paper above to get started.</Notice> : null}
+          {!loading && !doc ? (
+            <Notice tone="info">
+              No paper is open. Choose one from the list above to carry on reviewing it, or upload a new paper.
+            </Notice>
+          ) : null}
 
           {doc ? (
             <>
