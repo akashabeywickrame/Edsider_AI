@@ -7,6 +7,7 @@ import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
+import AddQuestion from './AddQuestion.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
@@ -133,13 +134,6 @@ export default function PaperIntake() {
   const [instrError, setInstrError] = useState(null)
 
   const [addOpen, setAddOpen] = useState(false)
-  const [newText, setNewText] = useState('')
-  const [newNumber, setNewNumber] = useState('')
-  const [newMarks, setNewMarks] = useState('')
-  const [newParentSeq, setNewParentSeq] = useState('')
-  const [newSection, setNewSection] = useState('')
-  const [addBusy, setAddBusy] = useState(false)
-  const [addError, setAddError] = useState(null)
 
   const [checkBusy, setCheckBusy] = useState(false)
   const [checkError, setCheckError] = useState(null)
@@ -343,31 +337,11 @@ export default function PaperIntake() {
     }
   }
 
-  async function handleAddQuestion(e) {
-    e.preventDefault()
-    if (!newText.trim()) return
-    setAddBusy(true)
-    setAddError(null)
-    try {
-      const q = await api.createIntakeQuestion(selectedId, {
-        text: newText,
-        question_number: newNumber || undefined,
-        marks: newMarks === '' ? undefined : Number(newMarks),
-        parent_seq: newParentSeq === '' ? undefined : Number(newParentSeq),
-        section: newSection || undefined,
-      })
-      setQuestions((prev) => [...prev, q])
-      toast.success('Question added.')
-      setNewText('')
-      setNewNumber('')
-      setNewMarks('')
-      setNewParentSeq('')
-      setNewSection('')
-    } catch (err) {
-      setAddError(err.message)
-    } finally {
-      setAddBusy(false)
-    }
+  // A question added by hand is placed in the middle of the paper, so the
+  // ones after it have moved down a place - read the list again.
+  async function handleQuestionAdded(number) {
+    setQuestions(await api.listIntakeQuestions(selectedId))
+    toast.success(`Question ${number} added.`)
   }
 
   async function handleCheckDuplicates() {
@@ -959,74 +933,7 @@ export default function PaperIntake() {
                   <span className="pi-exp__chev">{addOpen ? 'Hide' : 'Show'}</span>
                 </button>
                 {addOpen ? (
-                  <form className="pi-panel" onSubmit={handleAddQuestion}>
-                    <div className="es-field">
-                      <label className="es-field__label">Question text</label>
-                      <textarea
-                        className="es-input"
-                        rows={3}
-                        value={newText}
-                        onChange={(e) => setNewText(e.target.value)}
-                      />
-                    </div>
-                    <div className="pi-add__grid">
-                      <div className="es-field">
-                        <label className="es-field__label">Part of which question? (optional)</label>
-                        <select
-                          className="es-input"
-                          value={newParentSeq}
-                          onChange={(e) => setNewParentSeq(e.target.value)}
-                        >
-                          <option value="">Standalone question</option>
-                          {questions.map((q) => (
-                            <option key={q.seq} value={q.seq}>
-                              {q.question_number || q.seq}: {(q.text || '').slice(0, 60)}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="es-field">
-                        <label className="es-field__label">Which part of the paper?</label>
-                        <select className="es-input" value={newSection} onChange={(e) => setNewSection(e.target.value)}>
-                          <option value="">No specific part</option>
-                          {(doc.sections || []).map((s) => (
-                            <option key={s.label} value={s.label}>
-                              {s.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="es-field">
-                        <label className="es-field__label">Number (optional - auto-filled for a part)</label>
-                        <input
-                          className="es-input"
-                          value={newNumber}
-                          onChange={(e) => setNewNumber(e.target.value)}
-                          placeholder="e.g. 51"
-                        />
-                      </div>
-                      <div className="es-field">
-                        <label className="es-field__label">Marks</label>
-                        <input
-                          className="es-input"
-                          type="number"
-                          min="0"
-                          value={newMarks}
-                          onChange={(e) => setNewMarks(e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    {addError ? (
-                      <Notice tone="error" title="Could not add this question">
-                        {addError}
-                      </Notice>
-                    ) : null}
-                    <div>
-                      <Button variant="primary" type="submit" disabled={!newText.trim() || addBusy}>
-                        {addBusy ? 'Adding...' : 'Add question'}
-                      </Button>
-                    </div>
-                  </form>
+                  <AddQuestion docId={selectedId} tree={tree} parts={parts} onAdded={handleQuestionAdded} />
                 ) : null}
               </section>
 

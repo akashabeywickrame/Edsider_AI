@@ -700,6 +700,11 @@ class QuestionCreate(BaseModel):
         None, description="The seq of the question this is a part of, "
                           "within the same document - omit for a "
                           "standalone question.")
+    after_seq: Optional[int] = Field(
+        None, description="Place the new question straight after this seq "
+                          "(the questions after it move down one) - a "
+                          "missed question 7 goes between 6 and 8, not at "
+                          "the end of the paper. Omit to add at the end.")
 
 
 class DocumentUpdate(BaseModel):
@@ -1306,7 +1311,18 @@ def create_question(doc_id: int, body: QuestionCreate):
             siblings = sum(1 for d in drafts if d.get("parent_seq") == parent["seq"])
             number = f"{parent['question_number'] or ''}({chr(ord('a') + siblings)})"
 
-        seq = max((d["seq"] for d in drafts), default=0) + 1
+        if body.after_seq is not None:
+            # 0 is "before the first question" - a missed question 1.
+            if body.after_seq != 0 and body.after_seq not in by_seq:
+                raise HTTPException(
+                    404, f"No question with seq {body.after_seq} on this paper.")
+            store.make_room_after(conn, doc_id, body.after_seq)
+            seq = body.after_seq + 1
+            # The parent itself may have moved down to make room.
+            if parent and parent["seq"] > body.after_seq:
+                parent = dict(parent, seq=parent["seq"] + 1)
+        else:
+            seq = max((d["seq"] for d in drafts), default=0) + 1
         new_id = store.add_intake_question(
             conn, doc_id, seq, body.text, question_number=number,
             # Grade/subject are paper-level, same as every extracted

@@ -1771,6 +1771,16 @@ def add_intake_question(conn, document_id, seq, text, question_number=None,
     return cur.fetchone()["id"]
 
 
+def make_room_after(conn, document_id, after_seq):
+    """Move every question after `after_seq` down one place, so a question
+    added by hand can sit where it belongs on the paper. Parts point at
+    their question by seq, so those links move with it."""
+    conn.execute("UPDATE intake_questions SET seq = seq + 1 WHERE document_id = ? AND seq > ?",
+                 (document_id, after_seq))
+    conn.execute("UPDATE intake_questions SET parent_seq = parent_seq + 1 "
+                 "WHERE document_id = ? AND parent_seq > ?", (document_id, after_seq))
+
+
 def add_extracted_questions(conn, document_id, drafts,
                             fallback_grade=None, fallback_subject=None):
     """Bulk-insert the output of intake.extract()['questions'].

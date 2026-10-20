@@ -1193,12 +1193,26 @@ nothing about keeps an empty box. On the real GIT paper, 29 of Part II's
 44 drafts come back with their own answer. The label pattern deliberately
 ignores "(2 marks - 1 for ...)", which opens a line in the same shape.
 
-**"Add a question" can add a PART**, picking the question (or part) it
-belongs to, and names it the way the paper would - the question's number
-plus the next letter after its existing parts ("01(c)"). The review page
-orders drafts by their position in the tree rather than by seq, so a part
-added later still renders under its own question instead of at the end of
-the paper.
+**"Add a question" is dropdowns only - nobody types a number.** Data entry
+picks a whole question or a part; a whole question can only be a number
+the paper is missing (a gap between two questions, or before the first)
+or the next one at the end of a part, zero-padding kept ("07" after
+"06"); a part can only be a label missing among its siblings or the next
+one, in the style those siblings use - (a), (i), (1), or Sinhala අ/ආ -
+defaulting to letters under a question and roman under a part
+(`frontend/.../addQuestionChoices.js`). Each choice carries `after_seq`,
+and `POST /intake/documents/{id}/questions` places the question there
+(`store.make_room_after()` moves every later seq, and every `parent_seq`
+pointing at one, down a place; `after_seq=0` is before the first), so a
+missed question 7 sits between 6 and 8 in review, preview and teacher
+review, not at the end of the paper. The page re-reads the list after an
+add, since the questions after it have moved.
+
+**Marks set in the Marks section reach every question card.** "Apply to
+all questions" and the per-question boxes there always saved each
+question's marks, but a card's own Marks box read `q.marks` once when it
+appeared, so it went on showing the old figure; it now follows the saved
+value.
 
 **Fill-in-the-blank questions - English papers have no MCQ options at
 all.** A real Grade 12 General English paper (intake upload #66) has no

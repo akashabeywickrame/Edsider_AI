@@ -164,6 +164,41 @@ def test_add_a_part_is_numbered_like_the_paper_would(document):
     assert part.parent_seq == qs[0].seq
 
 
+def test_a_missed_question_is_placed_where_it_belongs(document):
+    # The paper has questions 1 and 2. The page sends after_seq from the
+    # place data entry picked: a part of question 1, then a whole question
+    # between 1 (with its new part) and 2 - not at the end of the paper.
+    q1, q2 = list_questions(document.id)
+    create_question(document.id, QuestionCreate(
+        text="Show your working.", question_number="1(a)",
+        parent_seq=q1.seq, after_seq=q1.seq))
+    create_question(document.id, QuestionCreate(
+        text="A question the extractor missed.", question_number="1A",
+        after_seq=q1.seq + 1))  # after question 1's new part
+    numbers = [q.question_number for q in list_questions(document.id)]
+    assert numbers == ["1", "1(a)", "1A", "2"]
+    # Question 2 moved down two places and is still the same row.
+    moved = [q for q in list_questions(document.id) if q.id == q2.id][0]
+    assert moved.seq == q2.seq + 2
+
+
+def test_a_part_keeps_its_question_when_rows_move(document):
+    q1, q2 = list_questions(document.id)
+    part = create_question(document.id, QuestionCreate(
+        text="Explain.", question_number="2(a)", parent_seq=q2.seq, after_seq=q2.seq))
+    # A whole question placed before question 2 moves 2 and its part down:
+    # the part must still point at question 2.
+    create_question(document.id, QuestionCreate(
+        text="Before two.", question_number="1A", after_seq=q1.seq))
+    after = {q.id: q for q in list_questions(document.id)}
+    assert after[part.id].parent_seq == after[q2.id].seq
+
+
+def test_a_question_can_go_before_the_first(document):
+    create_question(document.id, QuestionCreate(text="First.", question_number="0", after_seq=0))
+    assert [q.question_number for q in list_questions(document.id)][0] == "0"
+
+
 def test_add_a_part_of_an_unknown_question_is_404(document):
     with pytest.raises(HTTPException) as err:
         create_question(document.id,

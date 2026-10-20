@@ -175,6 +175,15 @@ export default function PaperIntakeQuestion({
   const { Button, Notice } = window.EdSider
 
   const [marks, setMarks] = useState(q.marks ?? '')
+  // Marks can also change from outside this card - "Apply to all questions"
+  // and the per-question boxes in the Marks section above. The box only read
+  // q.marks once, so after setting marks there every card still showed the
+  // old figure; follow the question whenever its saved marks change.
+  const [savedMarks, setSavedMarks] = useState(q.marks)
+  if (q.marks !== savedMarks) {
+    setSavedMarks(q.marks)
+    setMarks(q.marks ?? '')
+  }
   const [topic, setTopic] = useState(q.topic || '')
   const [reviewed, setReviewed] = useState(!!q.reviewed)
   const [busy, setBusy] = useState(false)
