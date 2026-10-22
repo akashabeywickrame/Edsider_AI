@@ -165,6 +165,8 @@ export const api = {
 
   // ---- paper intake ----
   listIntakeDocuments: (status) => request(`/intake/documents${query({ status })}`),
+  // EdSider's own reference lists as last copied - {synced_at, lists: {kind: [...]}}.
+  edsiderLists: () => request('/edsider/lists'),
   // One page of papers for the paper finder - {total, items, facets}.
   searchIntakeDocuments: (filters) => request(`/intake/documents/search${query(filters)}`),
   uploadIntakeDocument: (file, lang, style, forceOcr = false) => {

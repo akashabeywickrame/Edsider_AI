@@ -9,6 +9,7 @@ import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
+import EdsiderLabels from './EdsiderLabels.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
@@ -724,6 +725,7 @@ export default function PaperIntake() {
                   {applyBusy ? 'Applying...' : 'Apply to all'}
                 </Button>
               </div>
+              <EdsiderLabels key={`edsider-${doc.id}`} doc={doc} onSaved={setDoc} />
 
             </>
           ) : null}

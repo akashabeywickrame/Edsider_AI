@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src import id_tokens, store, dedupe
+from src.edsider import labels as edsider_labels
 from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.intake import extract as intake_extract
@@ -545,6 +546,9 @@ class IntakeDocumentOut(BaseModel):
     notes: Optional[str] = None
     assessment_settings: Dict[str, Any] = {}
     instruction_groups: List[InstructionGroup] = []
+    # EdSider's labels for this paper, as EdSider ids - see
+    # src/edsider/labels.py. Empty until data entry saves them.
+    edsider_labels: Dict[str, Optional[int]] = {}
 
 
 class IntakeDocumentDetail(IntakeDocumentOut):
@@ -556,6 +560,9 @@ class IntakeDocumentDetail(IntakeDocumentOut):
     # offered to the assessment form as its starting values, never saved
     # until the data-entry person saves the form.
     suggested_settings: Dict[str, Any] = {}
+    # Medium, term and year as the paper itself states them, as EdSider ids
+    # - offered as the starting values, saved only when data entry saves.
+    suggested_edsider_labels: Dict[str, int] = {}
 
 
 class McqOptionOut(BaseModel):
@@ -724,6 +731,8 @@ class DocumentUpdate(BaseModel):
     # The assessment form's values - stored whole, see store's
     # assessment_settings column.
     assessment_settings: Optional[Dict[str, Any]] = None
+    # EdSider's labels, as EdSider ids - stored whole, see src/edsider/labels.py.
+    edsider_labels: Optional[Dict[str, Any]] = None
     # Every group instruction on the paper, sent whole (like `sections`) -
     # adding, editing or removing one is the page sending the new list.
     instruction_groups: Optional[List[InstructionGroup]] = None
@@ -849,12 +858,30 @@ def _document_out(doc, detail=False):
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
         instruction_groups=store.intake_instruction_groups(doc),
+        edsider_labels=store.intake_edsider_labels(doc),
     )
     if detail:
         suggested = intake_extract.suggest_settings(doc["raw_text"], data["sections"])
-        return IntakeDocumentDetail(raw_text=doc["raw_text"],
-                                    suggested_settings=suggested, **data)
+        labels = edsider_labels.suggest(doc["raw_text"], doc["filename"], doc["paper_title"],
+                                        _edsider_lists())
+        return IntakeDocumentDetail(raw_text=doc["raw_text"], suggested_settings=suggested,
+                                    suggested_edsider_labels=labels, **data)
     return IntakeDocumentOut(**data)
+
+
+# EdSider's lists change rarely and are read on every paper opened - held
+# here for a few minutes rather than read from the database each time.
+_EDSIDER_LISTS = {"at": 0.0, "lists": None}
+_EDSIDER_LISTS_SECONDS = 300
+
+
+def _edsider_lists(refresh=False):
+    now = time.time()
+    if refresh or _EDSIDER_LISTS["lists"] is None or now - _EDSIDER_LISTS["at"] > _EDSIDER_LISTS_SECONDS:
+        with store.connect() as conn:
+            _EDSIDER_LISTS["lists"] = store.edsider_lookups(conn)
+        _EDSIDER_LISTS["at"] = now
+    return _EDSIDER_LISTS["lists"]
 
 
 def _question_out(q, has_parts=False):
@@ -1071,12 +1098,28 @@ def update_document(doc_id: int, body: DocumentUpdate):
     # by_alias: an instruction group is stored with "from" - the name the
     # extractor writes it under - not the model's own "from_".
     fields = body.model_dump(exclude_unset=True, by_alias=True)
+    if fields.get("edsider_labels") is not None:
+        fields["edsider_labels"] = _checked_edsider_labels(fields["edsider_labels"])
     with store.connect() as conn:
         _require_document(conn, doc_id)
         if fields:
             store.update_intake_document(conn, doc_id, **fields)
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
+
+
+def _checked_edsider_labels(given):
+    """Only known keys, and each id on EdSider's own list - a typo or a stale
+    page cannot store an id EdSider would reject when the paper is sent."""
+    labels = edsider_labels.clean(given)
+    lists = _edsider_lists()
+    for key, value in labels.items():
+        if value is None:
+            continue
+        kind = edsider_labels.LIST_FOR[key]
+        if not any(item["id"] == value for item in lists.get(kind, [])):
+            raise HTTPException(400, f"{value} is not on EdSider's {kind.replace('_', ' ')} list.")
+    return labels
 
 
 @app.post("/intake/documents/{doc_id}/resplit/preview",
@@ -1710,6 +1753,7 @@ def sync_edsider_lists():
     except (Exception, SystemExit) as e:
         # SystemExit: _pg_connect() exits that way when PG_* is unset.
         raise HTTPException(502, f"Could not refresh EdSider's lists: {e}")
+    _edsider_lists(refresh=True)
     return edsider_lists()
 
 

@@ -747,6 +747,10 @@ MIGRATIONS = [
     # found by intake.extract._split_group_instruction or added by hand.
     # Kept on the paper, not on a question: it belongs to the range.
     ("intake_documents", "instruction_groups", "TEXT"),
+    # The labels EdSider needs on a paper (medium, term, year, exam category,
+    # difficulty, source, author) as EdSider's own ids - JSON, see
+    # src/edsider/labels.py.
+    ("intake_documents", "edsider_labels", "TEXT"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -1763,6 +1767,12 @@ def intake_instruction_groups(doc):
     return json.loads(raw) if raw else []
 
 
+def intake_edsider_labels(doc):
+    """{medium_id, term_id, ...} as saved, or {} for a paper with none yet."""
+    raw = doc["edsider_labels"] if "edsider_labels" in doc.keys() else None
+    return json.loads(raw) if raw else {}
+
+
 def add_intake_question(conn, document_id, seq, text, question_number=None,
                         grade=None, subject=None, marks=None, topic=None,
                         answer=None, extraction_confidence="ok",
@@ -1833,7 +1843,7 @@ def intake_documents(conn):
 _DOCUMENT_LIST_COLUMNS = (
     "id, filename, file_type, extractor, uploaded_by, uploaded_at, paper_grade, "
     "paper_subject, paper_title, split_style, status, assigned_to, sections, notes, "
-    "assessment_settings, instruction_groups")
+    "assessment_settings, instruction_groups, edsider_labels")
 
 
 def search_intake_documents(conn, status=None, subject=None, grade=None, search=None,
@@ -2343,7 +2353,7 @@ def replace_intake_questions(conn, doc_id, drafts,
 
 _INTAKE_DOC_EDITABLE = {"paper_grade", "paper_subject", "notes", "status",
                         "raw_text", "split_style", "paper_title", "sections",
-                        "assessment_settings", "instruction_groups"}
+                        "assessment_settings", "instruction_groups", "edsider_labels"}
 
 
 def intake_assessment_settings(doc):
@@ -2366,6 +2376,9 @@ def update_intake_document(conn, doc_id, **fields):
     if fields.get("assessment_settings") is not None and not isinstance(
             fields["assessment_settings"], str):
         fields["assessment_settings"] = json.dumps(fields["assessment_settings"])
+    if fields.get("edsider_labels") is not None and not isinstance(
+            fields["edsider_labels"], str):
+        fields["edsider_labels"] = json.dumps(fields["edsider_labels"])
     cols = ", ".join(f"{k} = ?" for k in fields)
     conn.execute(
         f"UPDATE intake_documents SET {cols} WHERE id = ?",

@@ -601,6 +601,26 @@ never deleted, since a paper already sent may name it; a kind missing from
 a pull is left alone; an empty pull is refused. `GET /edsider/lists`
 (data entry) and `POST /edsider/lists/sync` (admin) read and refresh it.
 
+**A paper's EdSider labels** (step 2). EdSider needs a medium, term, year,
+exam category, difficulty, source and author on every paper; we captured
+none of them. `intake_documents.edsider_labels` (JSON) holds them as
+EdSider ids, chosen on the data-entry page ("For EdSider", under Paper
+details) from the copied lists; `PATCH /intake/documents/{id}` refuses an
+id not on EdSider's list. Medium, term and year are read from the paper
+(`src/edsider/labels.py`) and offered as `suggested_edsider_labels`, saved
+only when data entry saves - the same rule as the assessment settings.
+Measured on the 21 stored papers before writing the rules: medium is the
+script that makes up 30%+ of the letters (Sinhala papers 98-100%, Tamil
+86-92%, English 100% Latin), else EdSider's medium code in the file name
+("Chemistry Part I SM.pdf", a scan with no text); term from "1st term",
+"FirstTT", "Term02", "THIRD", "1 වන වාරය" (no word boundary before
+"term"/"1st": file names write "TechnologyTerm02", "_1st term"); year only
+from the file name, title and first 300 characters, since further in it
+is question content (an MCQ option "E. 2012", a date in a question).
+Decimal marks were left for later on purpose: changing `marks` from
+INTEGER rewrites and locks the live, shared table, and the deployed
+version would fail on a half mark.
+
 `tests/test_sync.py` fakes psycopg2's connection and cursor rather than
 requiring a real server - same reasoning as everywhere else in this
 suite - and proves the watermark, read-only, and crash-safety behavior
