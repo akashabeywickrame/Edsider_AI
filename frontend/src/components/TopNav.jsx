@@ -15,7 +15,8 @@ const LINKS = {
   ],
   teacher: [{ to: '/app/teacher', label: 'My papers' }],
   admin: [
-    { to: '/app/admin', label: 'Assign papers' },
+    { to: '/app/admin/data-entry', label: 'Data entry' },
+    { to: '/app/admin', label: 'Assign to teachers', end: true },
     { to: '/app/admin/users', label: 'Manage users', superadminOnly: true },
   ],
 }
@@ -40,7 +41,9 @@ export default function TopNav({ app, who, role = null }) {
       <ul className="tn__links">
         {links.map((l) => (
           <li key={l.to}>
-            <NavLink to={l.to}>{l.label}</NavLink>
+            <NavLink to={l.to} end={l.end}>
+              {l.label}
+            </NavLink>
           </li>
         ))}
       </ul>

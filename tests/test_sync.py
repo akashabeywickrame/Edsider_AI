@@ -394,7 +394,7 @@ def test_an_entry_edsider_drops_goes_inactive_and_other_lists_are_kept(local_db)
         # EdSider removed term 4; the year list was not part of this pull.
         store.sync_edsider_lookups(conn, [lookup("term", 1, "First Term Test", "T1")])
         lists = store.edsider_lookups(conn)
-        dropped = conn.execute("SELECT active FROM edsider_lookups WHERE kind='term' AND edsider_id=4").fetchone()
+        dropped = conn.execute("SELECT active FROM common.term WHERE id = 4").fetchone()
     assert [t["id"] for t in lists["term"]] == [1]
     assert dropped["active"] is False          # kept, not deleted - a sent paper may name it
     assert [y["name"] for y in lists["year"]] == ["2026"]

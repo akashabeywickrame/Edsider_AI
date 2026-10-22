@@ -11,6 +11,7 @@ Point EDSIDER_TEST_DB at a database nobody minds losing (see
 themselves with a clear message if no server is reachable at all.
 """
 
+import json
 import os
 import sys
 import uuid
@@ -23,6 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import store  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# A copy of EdSider's real lists (ids as EdSider has them), from the sync.
+EDSIDER_LISTS = json.loads((ROOT / "tests" / "edsider_lists.json").read_text(encoding="utf-8"))
 
 
 def _test_dsn():
@@ -89,6 +93,14 @@ def local_db():
     # never land in the file the real app reads.
     store.CACHE_DIR = None
     store.use_database(dsn, schema=schema)
+    # EdSider's own grades, subjects, mediums and the rest, as the sync
+    # copies them - a paper's grade and subject are ids on these lists.
+    with store.connect() as conn:
+        store.sync_edsider_lookups(conn, EDSIDER_LISTS)
+    # The API holds the lists for a few minutes; a previous test's must
+    # not answer for this one.
+    if "service" in sys.modules:
+        sys.modules["service"]._EDSIDER_LISTS["lists"] = None
     try:
         yield
     finally:
@@ -101,7 +113,8 @@ def local_db():
         raw = psycopg2.connect(dsn)
         raw.autocommit = True
         try:
-            raw.cursor().execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            for name in (schema, *store.schema_names()):
+                raw.cursor().execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
         finally:
             raw.close()
         store.use_database(previous_dsn, schema=previous_schema)

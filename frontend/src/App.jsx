@@ -12,6 +12,7 @@ import PaperPreview from './pages/data-entry/PaperPreview.jsx'
 import ComingSoon from './pages/data-entry/ComingSoon.jsx'
 import AdminLayout from './pages/admin/AdminLayout.jsx'
 import PaperAssignment from './pages/admin/PaperAssignment.jsx'
+import AssignOperators from './pages/admin/AssignOperators.jsx'
 import ManageUsers from './pages/admin/ManageUsers.jsx'
 import TeacherLayout from './pages/teacher/TeacherLayout.jsx'
 import TeacherReview from './pages/teacher/TeacherReview.jsx'
@@ -42,6 +43,7 @@ export default function App() {
         </Route>
         <Route path="/app/admin" element={<AdminLayout />}>
           <Route index element={<PaperAssignment />} />
+          <Route path="data-entry" element={<AssignOperators />} />
           <Route path="users" element={<ManageUsers />} />
         </Route>
         <Route path="*" element={<ComingSoon title="Not found" />} />

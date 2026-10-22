@@ -1355,10 +1355,6 @@ elif page == "Paper intake":
                 conn, doc_id, paper_grade=pg or None, paper_subject=ps or None,
                 paper_title=ptitle.strip() or None,
             )
-            for d in drafts:
-                store.update_intake_question(
-                    conn, d["id"], grade=pg or None, subject=ps or None,
-                )
         _load_intake_docs.clear()
         _load_intake_drafts.clear()
         st.rerun()

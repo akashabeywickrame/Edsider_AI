@@ -14,7 +14,7 @@ export default function DataEntryLayout() {
         <div className="es-root">
           <TopNav app="data" who={`Signed in as ${me.name}`} />
           <main className="scr-main">
-            <Outlet />
+            <Outlet context={me} />
           </main>
         </div>
       )}

@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -410,6 +410,65 @@ def require_assigner(user: dict = Depends(current_user)):
     return user
 
 
+# Statuses in which a teacher has the paper: data entry cannot change it
+# until the teacher sends it back.
+_WITH_TEACHER = {"teacher_review", "review_done", "published"}
+
+
+def paper_access(request: Request, user: dict = Depends(current_user)):
+    """The paper-level rule, on every route that names a paper, a question
+    or a picture in its path: a Data Entry Operator works only on the
+    papers an administrator assigned to them, and not while a teacher has
+    one; a teacher opens only the papers assigned to them, and changes one
+    only while their review is open. Admins and a local run reach every
+    paper. Resolved from the path, so a paper cannot be reached by
+    guessing its number."""
+    role = user["role"]
+    if role in (None, "admin", "superadmin"):
+        return user
+    params = request.path_params
+    key = next((k for k in ("doc_id", "q_id", "image_id") if k in params), None)
+    if key is None or not str(params[key]).isdigit():
+        return user
+    with store.connect() as conn:
+        held = store.paper_holders(conn, **{key: int(params[key])})
+    if held is None:
+        return user                    # the route itself answers 404
+    writing = request.method not in ("GET", "HEAD")
+    if role == "employee":
+        if held["operator"] != user["identity"]:
+            raise HTTPException(403, "This paper is not assigned to you.")
+        if writing and held["status"] in _WITH_TEACHER:
+            raise HTTPException(409, "This paper is with a teacher - it can be changed "
+                                     "again once it is sent back.")
+    elif role == "teacher":
+        if held["teacher"] != user["identity"]:
+            raise HTTPException(403, "This paper is not assigned to you.")
+        if writing and held["status"] != "teacher_review":
+            raise HTTPException(409, "Your review of this paper is finished.")
+    return user
+
+
+PAPER = Depends(paper_access)
+
+
+def _actor(identity):
+    """Who to log an action against - None when a route is called directly
+    (the tests), not through a request."""
+    return identity if isinstance(identity, str) else None
+
+
+def _own_papers(user):
+    """(operator, teacher) a paper list is narrowed to: a Data Entry
+    Operator sees only their own papers, a teacher only theirs."""
+    role = user.get("role") if isinstance(user, dict) else None
+    if role == "employee":
+        return user["identity"], None
+    if role == "teacher":
+        return None, user["identity"]
+    return None, None
+
+
 @app.get("/health")
 def health():
     """Is it up, and what is it actually serving against.
@@ -532,11 +591,19 @@ class IntakeDocumentOut(BaseModel):
     extractor: Optional[str] = None
     uploaded_by: Optional[str] = None
     uploaded_at: Optional[str] = None
+    # The paper's grade and subject are EdSider ids (common.grade,
+    # common.subject); paper_grade (EdSider's code, "G12") and
+    # paper_subject (its name) are the same entries, for showing.
+    grade_id: Optional[int] = None
+    subject_id: Optional[int] = None
     paper_grade: Optional[str] = None
     paper_subject: Optional[str] = None
     paper_title: Optional[str] = None
     split_style: Optional[str] = None
     status: str
+    # Who has it now: the Data Entry Operator working on it, and the
+    # teacher reviewing it (see intake.review).
+    operator: Optional[str] = None
     assigned_to: Optional[str] = None
     sections: List[Dict[str, Any]] = []
     # The paper's own general instructions (the block printed above every
@@ -650,8 +717,6 @@ class QuestionUpdate(BaseModel):
     so a PATCH never resets a column the caller did not mean to touch."""
     question_number: Optional[str] = None
     text: Optional[str] = None
-    grade: Optional[str] = None
-    subject: Optional[str] = None
     marks: Optional[int] = None
     topic: Optional[str] = None
     answer: Optional[str] = None
@@ -715,6 +780,10 @@ class QuestionCreate(BaseModel):
 
 
 class DocumentUpdate(BaseModel):
+    # By EdSider id - what the page sends. paper_grade / paper_subject (a
+    # code or a name) are still accepted for older callers.
+    grade_id: Optional[int] = None
+    subject_id: Optional[int] = None
     paper_grade: Optional[str] = None
     paper_subject: Optional[str] = None
     paper_title: Optional[str] = None
@@ -840,6 +909,26 @@ class AssignIn(BaseModel):
     teacher_identity: str = Field(..., min_length=1)
 
 
+class OperatorOut(BaseModel):
+    identity: str
+    display_name: Optional[str] = None
+
+
+class OperatorAssignIn(BaseModel):
+    # null takes the paper off whoever has it.
+    operator_identity: Optional[str] = None
+
+
+class HistoryOut(BaseModel):
+    action: str
+    stage: Optional[str] = None
+    actor: Optional[str] = None
+    assigned_to: Optional[str] = None
+    from_status: Optional[str] = None
+    to_status: Optional[str] = None
+    at: Optional[str] = None
+
+
 class FinishIn(BaseModel):
     status: Literal["refer_back", "review_done"] = Field(
         ..., description="Refer Back - issues need correction, goes back "
@@ -852,9 +941,10 @@ def _document_out(doc, detail=False):
         id=doc["id"], filename=doc["filename"], file_type=doc["file_type"],
         extractor=doc["extractor"], uploaded_by=doc["uploaded_by"],
         uploaded_at=str(doc["uploaded_at"]) if doc["uploaded_at"] else None,
+        grade_id=doc["grade_id"], subject_id=doc["subject_id"],
         paper_grade=doc["paper_grade"], paper_subject=doc["paper_subject"],
         paper_title=doc["paper_title"], split_style=doc["split_style"],
-        status=doc["status"], assigned_to=doc["assigned_to"],
+        status=doc["status"], operator=doc["operator"], assigned_to=doc["assigned_to"],
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
         instruction_groups=store.intake_instruction_groups(doc),
@@ -939,7 +1029,7 @@ def _require_question(conn, q_id):
 
 @app.get("/intake/documents", response_model=List[IntakeDocumentOut],
          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
-def list_documents(status: Optional[str] = None):
+def list_documents(status: Optional[str] = None, user: dict = Depends(current_user)):
     """Every uploaded paper, newest first - the data-entry tool's own
     list and the assigning administrator's "ready to assign" /
     "already assigned" tables both read this, filtering on `status`
@@ -947,7 +1037,8 @@ def list_documents(status: Optional[str] = None):
     different endpoints for what is the same table."""
     with store.connect() as conn:
         # Light columns only - every stored PDF came along with the list.
-        _total, docs = store.search_intake_documents(conn, status=status, limit=None)
+        _total, docs = store.search_intake_documents(
+            conn, status=status, limit=None, operator=_own_papers(user)[0])
     return [_document_out(d) for d in docs]
 
 
@@ -963,22 +1054,24 @@ class PaperSearchOut(BaseModel):
          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def search_documents(status: Optional[str] = None, subject: Optional[str] = None,
                      grade: Optional[str] = None, q: Optional[str] = None,
-                     limit: int = 50, offset: int = 0):
-    """The data-entry paper finder: one page of papers matching the
-    filters (status, subject, grade, and a search over file name and
-    title), newest first. A dropdown of every paper stops working long
-    before 1,000 of them."""
+                     limit: int = 50, offset: int = 0, operator: Optional[str] = None,
+                     user: dict = Depends(current_user)):
+    """The paper finder: one page of papers matching the filters (status,
+    subject, grade, Data Entry Operator - "none" for papers nobody has yet
+    - and a search over file name and title), newest first. A Data Entry
+    Operator only ever sees the papers assigned to them."""
     limit = max(1, min(limit, 200))
+    mine = _own_papers(user)[0]
     with store.connect() as conn:
         total, docs = store.search_intake_documents(
             conn, status=status, subject=subject, grade=grade, search=q,
-            limit=limit, offset=max(offset, 0))
-        facets = store.intake_document_facets(conn)
+            limit=limit, offset=max(offset, 0), operator=mine or operator)
+        facets = store.intake_document_facets(conn, operator=mine)
     return PaperSearchOut(total=total, items=[_document_out(d) for d in docs], facets=facets)
 
 
 @app.post("/intake/documents", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(ADMIN)])
 def upload_document(
     file: UploadFile = File(...),
     lang: str = Form(intake_extract.DEFAULT_OCR_LANG),
@@ -1031,7 +1124,7 @@ def upload_document(
 
 
 @app.post("/intake/documents/from-text", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(ADMIN)])
 def create_document_from_text(body: PastedPaperIn,
                               identity: str = Depends(current_identity)):
     """A paper whose text was read somewhere else - the local OCR tool on
@@ -1066,14 +1159,14 @@ def create_document_from_text(body: PastedPaperIn,
 
 
 @app.get("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def get_document(doc_id: int):
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
 
-@app.get("/intake/documents/{doc_id}/file", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+@app.get("/intake/documents/{doc_id}/file", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def get_document_file(doc_id: int):
     """The uploaded file's own bytes - a PDF embedded directly (real,
     selectable, copyable text, not a re-typed transcript), an image shown
@@ -1093,37 +1186,47 @@ def get_document_file(doc_id: int):
 
 
 @app.patch("/intake/documents/{doc_id}", response_model=IntakeDocumentDetail,
-          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
-def update_document(doc_id: int, body: DocumentUpdate):
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def update_document(doc_id: int, body: DocumentUpdate,
+                    identity: str = Depends(current_identity)):
     # by_alias: an instruction group is stored with "from" - the name the
     # extractor writes it under - not the model's own "from_".
     fields = body.model_dump(exclude_unset=True, by_alias=True)
     if fields.get("edsider_labels") is not None:
         fields["edsider_labels"] = _checked_edsider_labels(fields["edsider_labels"])
+    for key, kind in (("grade_id", "grade"), ("subject_id", "subject")):
+        if fields.get(key) is not None:
+            _check_on_list(kind, fields[key])
+    if fields.get("status") is not None and fields["status"] not in dict(store.INTAKE_STATUSES):
+        raise HTTPException(400, f"{fields['status']!r} is not a paper status.")
     with store.connect() as conn:
         _require_document(conn, doc_id)
         if fields:
-            store.update_intake_document(conn, doc_id, **fields)
+            try:
+                store.update_intake_document(conn, doc_id, actor=_actor(identity), **fields)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
+
+
+def _check_on_list(kind, value):
+    if not any(item["id"] == value for item in _edsider_lists().get(kind, [])):
+        raise HTTPException(400, f"{value} is not on EdSider's {kind.replace('_', ' ')} list.")
 
 
 def _checked_edsider_labels(given):
     """Only known keys, and each id on EdSider's own list - a typo or a stale
     page cannot store an id EdSider would reject when the paper is sent."""
     labels = edsider_labels.clean(given)
-    lists = _edsider_lists()
     for key, value in labels.items():
-        if value is None:
-            continue
-        kind = edsider_labels.LIST_FOR[key]
-        if not any(item["id"] == value for item in lists.get(kind, [])):
-            raise HTTPException(400, f"{value} is not on EdSider's {kind.replace('_', ' ')} list.")
+        if value is not None:
+            _check_on_list(edsider_labels.LIST_FOR[key], value)
     return labels
 
 
 @app.post("/intake/documents/{doc_id}/resplit/preview",
-         response_model=ResplitPreview, dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         response_model=ResplitPreview, dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def preview_resplit(doc_id: int, body: ResplitRequest):
     """What a different split style WOULD find, without changing
     anything - the live count the design shows before "Re-split this
@@ -1144,8 +1247,9 @@ def preview_resplit(doc_id: int, body: ResplitRequest):
 
 @app.post("/intake/documents/{doc_id}/resplit",
          response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
-def resplit_document(doc_id: int, body: ResplitRequest):
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def resplit_document(doc_id: int, body: ResplitRequest,
+                     identity: str = Depends(current_identity)):
     """Commit a re-split - destructive, same as app.py's own button:
     the previous drafts (and any edits already made to them) are
     replaced by a fresh segmentation. See store.replace_intake_questions."""
@@ -1158,28 +1262,22 @@ def resplit_document(doc_id: int, body: ResplitRequest):
         parsed = intake_extract.structure(doc["raw_text"], style=body.style)
         meta = intake_extract.detect_paper_meta(
             doc["raw_text"], filename=doc["filename"])
-        # A paper read before grades/subjects came back as the bank's own
-        # codes may hold something like "13" or "Combined Mathematics" -
-        # not a real code, so a fresh reading replaces it; a reviewer's
-        # own already-valid choice is left alone. Same rule as app.py.
-        grade = (doc["paper_grade"]
-                if intake_extract.is_grade_code(doc["paper_grade"])
-                else meta["grade"] or doc["paper_grade"])
-        subject = (doc["paper_subject"]
-                  if doc["paper_subject"] in intake_extract.KNOWN_SUBJECTS
-                  else meta["subject"] or doc["paper_subject"])
+        # The parts and group instructions are rebuilt from the text along
+        # with the questions they hold.
         store.replace_intake_questions(
-            conn, doc_id, parsed["questions"],
-            fallback_grade=grade, fallback_subject=subject)
-        # A re-split rebuilds the group instructions from the text, like
-        # the questions they sit between. The paper's general
-        # instructions are only filled in when nobody has written any.
+            conn, doc_id, parsed["questions"], sections=parsed["sections"],
+            instruction_groups=parsed["instruction_groups"])
+        # A grade or subject someone chose is kept; one never set takes
+        # what the fresh reading finds, if it is on EdSider's list. The
+        # paper's general instructions are only filled in when nobody has
+        # written any.
         store.update_intake_document(
-            conn, doc_id, split_style=body.style, status="extracted",
-            sections=parsed["sections"], paper_grade=grade,
-            paper_subject=subject,
+            conn, doc_id, actor=_actor(identity), split_style=body.style,
+            status="extracted",
+            grade_id=doc["grade_id"] or store.list_id(conn, "grade", meta["grade"], strict=False),
+            subject_id=doc["subject_id"] or store.list_id(conn, "subject", meta["subject"],
+                                                          strict=False),
             paper_title=doc.get("paper_title") or meta["title"],
-            instruction_groups=parsed["instruction_groups"],
             notes=doc.get("notes") or parsed["paper_instructions"],
         )
         doc = store.get_intake_document(conn, doc_id)
@@ -1187,7 +1285,7 @@ def resplit_document(doc_id: int, body: ResplitRequest):
 
 
 @app.post("/intake/documents/{doc_id}/precheck-duplicates",
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
     """An early, informational duplicate check - meant to run right after
     extraction, before anyone has spent the ~40 minutes to an hour
@@ -1272,8 +1370,9 @@ def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
 
 
 @app.post("/intake/documents/{doc_id}/check-duplicates",
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
-def check_document_duplicates(doc_id: int) -> Dict[str, Any]:
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def check_document_duplicates(doc_id: int,
+                              identity: str = Depends(current_identity)) -> Dict[str, Any]:
     """The within-paper duplicate check - src.intake.review.check_batch,
     gated the same way app.py gates its button: every question must be
     reviewed first, because running it on uncorrected text is
@@ -1300,13 +1399,16 @@ def check_document_duplicates(doc_id: int) -> Dict[str, Any]:
             if d["seq"] not in stems and (d["text"] or "").strip()]
     out = intake_review.check_batch(fresh, state["embedder"])
     with store.connect() as conn:
-        store.update_intake_document(conn, doc_id, status="checked")
+        # Data entry's part is done - the paper waits for a teacher.
+        store.set_document_status(conn, doc_id, "checked", actor=_actor(identity))
+        store.finish_stage(conn, doc_id, "data_entry", actor=_actor(identity))
     return out
 
 
 @app.post("/intake/documents/{doc_id}/assign", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(ADMIN)])
-def assign_document(doc_id: int, body: AssignIn):
+         dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def assign_document(doc_id: int, body: AssignIn,
+                    identity: str = Depends(current_identity)):
     """The assigning administrator's action - hands a checked paper to
     one teacher: one of EdSider's own (see sync_teachers), or someone who
     has opened the teacher app here. Moves the paper straight to
@@ -1318,14 +1420,56 @@ def assign_document(doc_id: int, body: AssignIn):
             raise HTTPException(
                 404, f"{body.teacher_identity!r} is not an EdSider teacher "
                     "and has never opened the teacher app here.")
-        store.assign_document(conn, doc_id, body.teacher_identity)
+        store.assign_document(conn, doc_id, body.teacher_identity,
+                              assigned_by=_actor(identity))
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
 
+@app.get("/operators", response_model=List[OperatorOut],
+         dependencies=[Depends(require_api_key), Depends(ADMIN)])
+def list_operators():
+    """Who a paper can be given to for data entry - every Data Entry
+    Operator (role 'employee') who may sign in now."""
+    with store.connect() as conn:
+        return [OperatorOut(**dict(r)) for r in store.assignable_operators(conn)]
+
+
+@app.post("/intake/documents/{doc_id}/operator", response_model=IntakeDocumentDetail,
+          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def assign_operator(doc_id: int, body: OperatorAssignIn,
+                    identity: str = Depends(current_identity)):
+    """The administrator giving a paper to a Data Entry Operator - from
+    then on only they (and admins) can open and correct it. Giving it to
+    someone else takes it off the previous person; null takes it off
+    everyone. Their earlier assignments stay in the paper's history."""
+    who = (body.operator_identity or "").strip().lower() or None
+    with store.connect() as conn:
+        _require_document(conn, doc_id)
+        if who and who not in {o["identity"] for o in store.assignable_operators(conn)}:
+            raise HTTPException(
+                404, f"{who!r} is not a Data Entry Operator - add them on Manage users first.")
+        store.assign_review(conn, doc_id, "data_entry", who, assigned_by=_actor(identity))
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
+@app.get("/intake/documents/{doc_id}/history", response_model=List[HistoryOut],
+         dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def document_history(doc_id: int):
+    """Everything that happened to a paper, oldest first - uploaded,
+    assigned, handed on, sent back, added to the question bank."""
+    with store.connect() as conn:
+        _require_document(conn, doc_id)
+        rows = store.document_history(conn, doc_id)
+    return [HistoryOut(**{**dict(r), "at": r["at"].isoformat() if r["at"] else None})
+            for r in rows]
+
+
 @app.post("/intake/documents/{doc_id}/finish", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(TEACHER)])
-def finish_review(doc_id: int, body: FinishIn):
+         dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+def finish_review(doc_id: int, body: FinishIn,
+                  identity: str = Depends(current_identity)):
     """The teacher's "Finish Review" action. Review Done and promotion
     happen together, same as teacher_app.py: three people (data-entry,
     the assigning administrator, and the teacher) have all signed off
@@ -1338,9 +1482,14 @@ def finish_review(doc_id: int, body: FinishIn):
             raise HTTPException(
                 409, f"Cannot finish review from status {doc['status']!r} "
                     "- this paper is not currently with a teacher.")
-        store.update_intake_document(conn, doc_id, status=body.status)
+        who = _actor(identity)
+        store.set_document_status(conn, doc_id, body.status, actor=who)
+        store.finish_stage(conn, doc_id, "teacher", actor=who)
         if body.status == "review_done":
-            store.promote_document(conn, doc_id)
+            store.promote_document(conn, doc_id, actor=who)
+        else:
+            # Back to the Data Entry Operator who worked on it.
+            store.reopen_stage(conn, doc_id, "data_entry", actor=who)
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
@@ -1349,7 +1498,7 @@ def finish_review(doc_id: int, body: FinishIn):
 
 @app.get("/intake/documents/{doc_id}/questions",
         response_model=List[IntakeQuestionOut],
-        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def list_questions(doc_id: int):
     with store.connect() as conn:
         _require_document(conn, doc_id)
@@ -1359,7 +1508,7 @@ def list_questions(doc_id: int):
 
 
 @app.post("/intake/documents/{doc_id}/questions", response_model=IntakeQuestionOut,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def create_question(doc_id: int, body: QuestionCreate):
     """'Add a question the extractor missed' - a whole question, or,
     with parent_seq, a part of one already on the paper. Numbering
@@ -1408,7 +1557,7 @@ def create_question(doc_id: int, body: QuestionCreate):
 
 
 @app.patch("/intake/questions/{q_id}", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def update_question(q_id: int, body: QuestionUpdate,
                     identity: str = Depends(current_identity)):
     fields = body.model_dump(exclude_unset=True)
@@ -1426,7 +1575,7 @@ def update_question(q_id: int, body: QuestionUpdate,
 
 
 @app.post("/intake/documents/{doc_id}/marks", response_model=List[IntakeQuestionOut],
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def set_question_marks(doc_id: int, body: MarksBulkIn,
                        identity: str = Depends(current_identity)):
     """Sets each named question's marks in one transaction and returns the
@@ -1448,7 +1597,7 @@ def set_question_marks(doc_id: int, body: MarksBulkIn,
 
 
 @app.delete("/intake/questions/{q_id}", status_code=204,
-           dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+           dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def remove_question(q_id: int):
     with store.connect() as conn:
         _require_question(conn, q_id)
@@ -1456,7 +1605,7 @@ def remove_question(q_id: int):
 
 
 @app.patch("/intake/questions/{q_id}/mcq", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def update_question_mcq(q_id: int, body: McqUpdateIn,
                         identity: str = Depends(current_identity)):
     """Reassembles an edited stem and options back into this question's
@@ -1487,7 +1636,7 @@ def update_question_mcq(q_id: int, body: McqUpdateIn,
 
 
 @app.patch("/intake/questions/{q_id}/blanks", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def update_question_blanks(q_id: int, body: BlanksUpdateIn,
                            identity: str = Depends(current_identity)):
     """Reassembles a fill-in-the-blank question's edited per-blank
@@ -1514,7 +1663,7 @@ def update_question_blanks(q_id: int, body: BlanksUpdateIn,
 
 @app.get("/intake/documents/{doc_id}/comments",
         response_model=Dict[str, List[CommentOut]],
-        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def list_comments(doc_id: int):
     with store.connect() as conn:
         _require_document(conn, doc_id)
@@ -1529,7 +1678,7 @@ def list_comments(doc_id: int):
 
 
 @app.post("/intake/questions/{q_id}/comments", response_model=CommentOut,
-         dependencies=[Depends(require_api_key), Depends(TEACHER)])
+         dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
 def add_comment(q_id: int, body: CommentIn,
                 identity: str = Depends(current_identity)):
     with store.connect() as conn:
@@ -1546,7 +1695,7 @@ def add_comment(q_id: int, body: CommentIn,
 
 @app.get("/intake/documents/{doc_id}/images",
         response_model=Dict[str, List[ImageOut]],
-        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+        dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def list_document_images(doc_id: int):
     """Metadata only, grouped by question - never the image bytes
     themselves (see get_image below), so opening a paper with a dozen
@@ -1565,7 +1714,7 @@ def list_document_images(doc_id: int):
 
 
 @app.post("/intake/questions/{q_id}/images", response_model=ImageOut,
-         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def attach_image(q_id: int, slot: str = Form(...), file: UploadFile = File(...)):
     """`slot` is 'question', 'answer', or 'option:<label>' - a specific
     MCQ option's own printed label, from intake_extract.split_mcq_options
@@ -1582,7 +1731,7 @@ def attach_image(q_id: int, slot: str = Form(...), file: UploadFile = File(...))
                     content_type=img["content_type"], created_at=None)
 
 
-@app.get("/intake/images/{image_id}", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER)])
+@app.get("/intake/images/{image_id}", dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def get_image(image_id: int):
     """The image's own bytes, with the content type it was uploaded
     with - an <img src="/intake/images/{id}"> tag's whole job, kept
@@ -1596,7 +1745,7 @@ def get_image(image_id: int):
 
 
 @app.delete("/intake/images/{image_id}", status_code=204,
-           dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+           dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def remove_image(image_id: int):
     with store.connect() as conn:
         store.delete_question_image(conn, image_id)

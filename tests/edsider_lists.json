@@ -1,0 +1,478 @@
+[
+ {
+  "kind": "difficulty",
+  "id": 1,
+  "name": "Easy",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "difficulty",
+  "id": 2,
+  "name": "Medium",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "difficulty",
+  "id": 3,
+  "name": "Hard",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "exam_category",
+  "id": 1,
+  "name": "Model - Term",
+  "short_code": "MT",
+  "extra": null
+ },
+ {
+  "kind": "exam_category",
+  "id": 2,
+  "name": "Model Exam",
+  "short_code": "ME",
+  "extra": null
+ },
+ {
+  "kind": "exam_category",
+  "id": 3,
+  "name": "Past paper Term",
+  "short_code": "PPT",
+  "extra": null
+ },
+ {
+  "kind": "exam_category",
+  "id": 4,
+  "name": "GCE Past paper",
+  "short_code": "GPP",
+  "extra": null
+ },
+ {
+  "kind": "exam_category",
+  "id": 5,
+  "name": "Chapter Exam",
+  "short_code": "CE",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 1,
+  "name": "1",
+  "short_code": "G01",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 2,
+  "name": "2",
+  "short_code": "G02",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 3,
+  "name": "3",
+  "short_code": "G03",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 4,
+  "name": "4",
+  "short_code": "G04",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 5,
+  "name": "5",
+  "short_code": "G05",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 6,
+  "name": "6",
+  "short_code": "G06",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 7,
+  "name": "7",
+  "short_code": "G07",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 8,
+  "name": "8",
+  "short_code": "G08",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 9,
+  "name": "9",
+  "short_code": "G09",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 10,
+  "name": "10",
+  "short_code": "G10",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 11,
+  "name": "11",
+  "short_code": "G11",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 12,
+  "name": "12",
+  "short_code": "G12",
+  "extra": null
+ },
+ {
+  "kind": "grade",
+  "id": 13,
+  "name": "13",
+  "short_code": "G13",
+  "extra": null
+ },
+ {
+  "kind": "language",
+  "id": 1,
+  "name": "English",
+  "short_code": "EM",
+  "extra": null
+ },
+ {
+  "kind": "language",
+  "id": 2,
+  "name": "සිංහල",
+  "short_code": "SM",
+  "extra": null
+ },
+ {
+  "kind": "language",
+  "id": 3,
+  "name": "தமிழ்",
+  "short_code": "TM",
+  "extra": null
+ },
+ {
+  "kind": "source",
+  "id": 1,
+  "name": "Publication",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "source",
+  "id": 2,
+  "name": "Digital",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "source",
+  "id": 3,
+  "name": "Direct",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "source",
+  "id": 4,
+  "name": "AI Generated",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "source",
+  "id": 5,
+  "name": "Other",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 1,
+  "name": "Maths",
+  "short_code": "MATH",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 2,
+  "name": "Science",
+  "short_code": "SCI",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 3,
+  "name": "Religion",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 4,
+  "name": "General English",
+  "short_code": "GEN",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 5,
+  "name": "History",
+  "short_code": "HIS",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 6,
+  "name": "Geography",
+  "short_code": "GEO",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 7,
+  "name": "ICT",
+  "short_code": "ICT",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 9,
+  "name": "Sinhala Language",
+  "short_code": "SIN",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 10,
+  "name": "Tamil Language",
+  "short_code": "TAM",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 11,
+  "name": "Communication and Media",
+  "short_code": "Com & Medi",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 12,
+  "name": "Science for technology",
+  "short_code": "SFT",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 13,
+  "name": "Combined Maths",
+  "short_code": "Com.Math",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 14,
+  "name": "General Information Technology",
+  "short_code": "GIT",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 15,
+  "name": "Biology",
+  "short_code": "Bio",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 16,
+  "name": "Business Studies",
+  "short_code": "BS",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 17,
+  "name": "Islam",
+  "short_code": "ISL",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 18,
+  "name": "Chemistry",
+  "short_code": "Chemistry",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 19,
+  "name": "English Literature",
+  "short_code": "E.Lit",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 20,
+  "name": "Economics",
+  "short_code": "ECON",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 21,
+  "name": "Accounting",
+  "short_code": "ACC",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 22,
+  "name": "Bio System Technolgy",
+  "short_code": "BST",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 23,
+  "name": "Engineering Technology",
+  "short_code": "ET",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 24,
+  "name": "Physics",
+  "short_code": "Phy",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 25,
+  "name": "Home Economics",
+  "short_code": "HE",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 26,
+  "name": "Agriculture",
+  "short_code": "Agri",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 27,
+  "name": "Business Statistics",
+  "short_code": "BSTAT",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 28,
+  "name": "Political Science",
+  "short_code": "PS",
+  "extra": null
+ },
+ {
+  "kind": "subject",
+  "id": 29,
+  "name": "Logic and Scientific Method",
+  "short_code": "LOGIC",
+  "extra": null
+ },
+ {
+  "kind": "term",
+  "id": 1,
+  "name": "First Term Test",
+  "short_code": "T1",
+  "extra": null
+ },
+ {
+  "kind": "term",
+  "id": 2,
+  "name": "Second Term Test",
+  "short_code": "T2",
+  "extra": null
+ },
+ {
+  "kind": "term",
+  "id": 3,
+  "name": "Third Term Test",
+  "short_code": "T3",
+  "extra": null
+ },
+ {
+  "kind": "term",
+  "id": 4,
+  "name": "Fourth Term",
+  "short_code": "T4",
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 1,
+  "name": "2020",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 2,
+  "name": "2021",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 3,
+  "name": "2022",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 4,
+  "name": "2023",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 5,
+  "name": "2024",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 6,
+  "name": "2025",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "year",
+  "id": 7,
+  "name": "2026",
+  "short_code": null,
+  "extra": null
+ }
+]

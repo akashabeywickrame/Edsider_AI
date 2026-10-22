@@ -251,4 +251,16 @@ export const api = {
       method: 'POST',
       body: { teacher_identity: teacherIdentity },
     }),
+
+  // ---- data entry assignment (administrators) ----
+  // Everyone who can sign in as a Data Entry Operator.
+  listOperators: () => request('/operators'),
+  // Gives a paper to one operator (null takes it off whoever has it).
+  assignOperator: (docId, operatorIdentity) =>
+    request(`/intake/documents/${docId}/operator`, {
+      method: 'POST',
+      body: { operator_identity: operatorIdentity || null },
+    }),
+  // Everything that happened to a paper, oldest first.
+  documentHistory: (docId) => request(`/intake/documents/${docId}/history`),
 }

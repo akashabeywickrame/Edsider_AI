@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useFileUrl } from '../../lib/useFileUrl.jsx'
 import PaperIntakeQuestion, { paperOptionStyle } from './PaperIntakeQuestion.jsx'
@@ -9,7 +9,7 @@ import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
-import EdsiderLabels from './EdsiderLabels.jsx'
+import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
 
@@ -84,8 +84,15 @@ export default function PaperIntake() {
   const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('doc')
+  // Papers are uploaded by an administrator and assigned to a Data Entry
+  // Operator, who sees only their own (the API enforces both). me is null
+  // or role null on a local run, where everything is open.
+  const me = useOutletContext()
+  const canUpload = !me || !me.role || me.role === 'admin' || me.role === 'superadmin'
 
-  const [facets, setFacets] = useState({ grades: [], subjects: [] })
+  // EdSider's own grade and subject lists - a paper is labelled with
+  // EdSider's ids, so its grade and subject are always ones EdSider has.
+  const [lists, setLists] = useState({ grade: [], subject: [] })
 
   const [file, setFile] = useState(null)
   const [lang, setLang] = useState('eng')
@@ -120,7 +127,6 @@ export default function PaperIntake() {
   const [grade, setGrade] = useState('')
   const [subject, setSubject] = useState('')
   const [notes, setNotes] = useState('')
-  const [applyBusy, setApplyBusy] = useState(false)
 
   const [splitStyle, setSplitStyle] = useState('number')
   const [resplitOpen, setResplitOpen] = useState(false)
@@ -147,7 +153,9 @@ export default function PaperIntake() {
   const paperFile = useFileUrl(showsFile ? api.documentFilePath(selectedId) : null)
 
   useEffect(() => {
-    api.questionFacets().then(setFacets).catch(() => {})
+    loadLists()
+      .then((r) => setLists({ grade: r.lists?.grade || [], subject: r.lists?.subject || [] }))
+      .catch(() => {})
   }, [])
 
   // The paper finder reads its own page of papers; bumping this makes it
@@ -179,8 +187,8 @@ export default function PaperIntake() {
         setImages(imgs)
         setComments(cmts)
         setTitle(d.paper_title || '')
-        setGrade(d.paper_grade || '')
-        setSubject(d.paper_subject || '')
+        setGrade(d.grade_id ?? '')
+        setSubject(d.subject_id ?? '')
         setNotes(d.notes || '')
         setSplitStyle(d.split_style || 'number')
         setPreview(null)
@@ -251,21 +259,6 @@ export default function PaperIntake() {
     return (questions || [])
       .filter((q) => !q.depth && (q.section ?? null) === (section ?? null) && q.question_number)
       .map((q) => q.question_number)
-  }
-
-  async function handleApplyToAll() {
-    if (!questions?.length) return
-    setApplyBusy(true)
-    try {
-      const updated = await Promise.all(
-        questions.map((q) => api.updateIntakeQuestion(q.id, { grade, subject })),
-      )
-      setQuestions(updated)
-    } catch (err) {
-      setLoadError(err.message)
-    } finally {
-      setApplyBusy(false)
-    }
   }
 
   function handleQuestionChanged(updated) {
@@ -397,7 +390,7 @@ export default function PaperIntake() {
     <div className="pi-page">
       <nav className="pi-rail-col" aria-label="Paper intake sections">
         <ul className="es-rail">
-          {RAIL.map((r) => (
+          {RAIL.filter((r) => canUpload || r.id !== 'upload').map((r) => (
             <li key={r.id}>
               <a href={`#${r.id}`} aria-label={r.label} title={r.label}>
                 <Icon name={r.icon} />
@@ -411,9 +404,15 @@ export default function PaperIntake() {
         <PageHeader
           accent="Paper"
           title="intake"
-          subtitle="Upload a question paper - PDF, Word, or an image of a handwritten one. Its questions are pulled out, you correct them, then the batch is checked for repeats against itself before any of it joins the bank. Nothing here is trusted until you have confirmed it."
+          subtitle={
+            canUpload
+              ? 'Upload a question paper - PDF, Word, or an image of one - then give it to a Data Entry Operator on the Data entry page. Its questions are pulled out, corrected, and checked for repeats against themselves before any of it joins the bank.'
+              : 'The papers an administrator has given you. Correct each question the extractor read, tick it reviewed, then run the duplicate check to pass the paper on to a teacher.'
+          }
         />
 
+        {canUpload ? (
+        <>
         <div className="es-row" role="radiogroup" aria-label="How to add the paper" style={{ marginBottom: 8 }}>
           <label className="scr-radio">
             <input type="radio" name="src" checked={source === 'file'} onChange={() => setSource('file')} />
@@ -549,9 +548,11 @@ export default function PaperIntake() {
             ) : null}
           </form>
         </section>
+        </>
+        ) : null}
 
         <section id="paper" className="es-card" aria-label="Paper details" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <h2 className="scr-h2" style={{ margin: 0 }}>Uploaded papers</h2>
+          <h2 className="scr-h2" style={{ margin: 0 }}>{canUpload ? 'Uploaded papers' : 'Your papers'}</h2>
           <PaperFinder
             selectedId={selectedId}
             onSelect={(id, opts) => setSearchParams({ doc: id }, opts)}
@@ -583,7 +584,9 @@ export default function PaperIntake() {
 
           {!loading && !doc ? (
             <Notice tone="info">
-              No paper is open. Choose one from the list above to carry on reviewing it, or upload a new paper.
+              {canUpload
+                ? 'No paper is open. Choose one from the list above, or upload a new paper.'
+                : 'No paper is open. Choose one of the papers given to you from the list above.'}
             </Notice>
           ) : null}
 
@@ -592,7 +595,13 @@ export default function PaperIntake() {
               <p className="es-caption" style={{ marginTop: -8 }}>
                 Extractor: {doc.extractor || 'unknown'}
                 {doc.uploaded_at ? ` - uploaded ${doc.uploaded_at.slice(0, 10)}` : ''}
+                {` - data entry: ${doc.operator || 'not given to anyone yet'}`}
               </p>
+              {['teacher_review', 'review_done', 'published'].includes(doc.status) ? (
+                <Notice tone="info" title="This paper is with a teacher">
+                  It can be read here but not changed until the teacher sends it back.
+                </Notice>
+              ) : null}
 
               {/* A scanned paper is pictures, not text, and this server has no
                   OCR (Tesseract cannot be installed on its Azure hosting) - it
@@ -677,13 +686,13 @@ export default function PaperIntake() {
                     value={grade}
                     onChange={(e) => {
                       setGrade(e.target.value)
-                      saveMeta({ paper_grade: e.target.value })
+                      saveMeta({ grade_id: e.target.value ? Number(e.target.value) : null })
                     }}
                   >
                     <option value="">Not set</option>
-                    {facets.grades.map((g) => (
-                      <option key={g} value={g}>
-                        {gradeLabel(g)}
+                    {lists.grade.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {gradeLabel(g.short_code) || g.name}
                       </option>
                     ))}
                   </select>
@@ -698,13 +707,13 @@ export default function PaperIntake() {
                     value={subject}
                     onChange={(e) => {
                       setSubject(e.target.value)
-                      saveMeta({ paper_subject: e.target.value })
+                      saveMeta({ subject_id: e.target.value ? Number(e.target.value) : null })
                     }}
                   >
                     <option value="">Not set</option>
-                    {facets.subjects.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
+                    {lists.subject.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
                       </option>
                     ))}
                   </select>
@@ -721,9 +730,6 @@ export default function PaperIntake() {
                     onBlur={() => title !== (doc.paper_title || '') && saveMeta({ paper_title: title })}
                   />
                 </div>
-                <Button variant="secondary" size="sm" onClick={handleApplyToAll} disabled={applyBusy}>
-                  {applyBusy ? 'Applying...' : 'Apply to all'}
-                </Button>
               </div>
               <EdsiderLabels key={`edsider-${doc.id}`} doc={doc} onSaved={setDoc} />
 
@@ -776,9 +782,8 @@ export default function PaperIntake() {
               </Notice>
             ) : null}
             <p className="es-caption" style={{ marginTop: -12 }}>
-              Grade and subject come from Paper details above - use "Apply to all" there if the
-              extractor set them per question differently. Set the marks per question, fix the
-              text, and tick Reviewed once a question is correct.
+              Every question takes its grade and subject from Paper details above. Set the marks
+              per question, fix the text, and tick Reviewed once a question is correct.
             </p>
 
             <div className="pi-two-col">

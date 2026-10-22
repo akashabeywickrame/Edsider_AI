@@ -1933,7 +1933,8 @@ def test_document_and_draft_round_trip(local_db):
         drafts = store.intake_questions(conn, doc_id)
 
     assert [d["seq"] for d in drafts] == [1, 2]
-    assert drafts[0]["grade"] == "10" and drafts[0]["subject"] == "Science"
+    # Stored once, on the paper, as EdSider's grade - read back as its code.
+    assert drafts[0]["grade"] == "G10" and drafts[0]["subject"] == "Science"
     assert drafts[1]["extraction_confidence"] == "low"
 
 
@@ -2180,6 +2181,10 @@ def test_parts_and_answers_round_trip(local_db):
         store.add_extracted_questions(conn, doc_id, parsed["questions"])
         doc = store.get_intake_document(conn, doc_id)
         rows = store.intake_questions(conn, doc_id)
+        # A part is a row its questions point at: one still holding
+        # questions stays when a list leaves it out; an empty one goes.
+        store.update_intake_document(conn, doc_id,
+                                     sections=parsed["sections"] + [{"label": "Part III"}])
         store.update_intake_document(conn, doc_id,
                                      sections=parsed["sections"][:1])
         after = store.intake_sections(store.get_intake_document(conn, doc_id))
@@ -2195,7 +2200,7 @@ def test_parts_and_answers_round_trip(local_db):
     under = [r for r in rows if r["parent_seq"] == q01["seq"]]
     assert [r["question_number"] for r in under] == ["01(1)", "01(2)"]
     assert {r["depth"] for r in under} == {1}
-    assert [s["label"] for s in after] == ["Part I"]
+    assert [s["label"] for s in after] == ["Part I", "Part II"]
 
 
 def test_deleting_a_question_removes_its_parts(local_db):
@@ -2270,6 +2275,7 @@ def test_update_intake_document_sets_paper_level_fields(local_db):
         )
         doc = store.get_intake_document(conn, doc_id)
 
-    assert doc["paper_grade"] == "8"
+    # Stored as EdSider's grade id, read back as EdSider's code.
+    assert doc["paper_grade"] == "G08"
     assert doc["paper_subject"] == "History"
     assert doc["status"] == "checked"

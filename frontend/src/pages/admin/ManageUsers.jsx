@@ -15,7 +15,7 @@ const ROLES = [
   { value: 'superadmin', label: 'Super admin' },
   { value: 'admin', label: 'Admin' },
   { value: 'teacher', label: 'Teacher' },
-  { value: 'employee', label: 'Employee' },
+  { value: 'employee', label: 'Data Entry Operator' },
 ]
 
 function roleLabel(role) {

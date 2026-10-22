@@ -18,7 +18,7 @@ const FIELDS = [
 ]
 
 let listsPromise = null
-function loadLists() {
+export function loadLists() {
   // Once per page load - every paper uses the same lists.
   if (!listsPromise) listsPromise = api.edsiderLists().catch((err) => {
     listsPromise = null

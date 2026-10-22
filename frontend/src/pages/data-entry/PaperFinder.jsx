@@ -10,10 +10,12 @@ const PAGE = 25
 
 export const STATUS_LABEL = {
   extracted: 'Extracted',
+  in_review: 'In review',
   checked: 'Ready to assign',
   teacher_review: 'Awaiting teacher review',
   refer_back: 'Sent back for changes',
   review_done: 'Review done',
+  published: 'In the question bank',
 }
 
 function gradeLabel(code) {

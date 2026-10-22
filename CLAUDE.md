@@ -593,8 +593,10 @@ see the design study "Sending Papers to EdSider"). `sync_lookups()` copies
 exam_category, difficulty, source, author, part_notation, part,
 assessment_category, grading_method, privilege, attempt, time_unit,
 passage_type, question_type, answer_type, assessment_status, chapter; 325
-entries, every table and column read off the live schema - into
-`edsider_lookups` (kind, edsider_id, name, short_code, extra JSON). It runs
+entries, every table and column read off the live schema - into one
+table per list in the `common` schema (`common.grade`, `common.subject`...,
+keyed by EdSider's own id; see "Intake schema" below - it was one
+`edsider_lookups` table first). It runs
 in `run_sync()` after the teacher list. Names are trimmed (EdSider stores
 "Chemistry " with a space); an entry EdSider drops goes `active = false`,
 never deleted, since a paper already sent may name it; a kind missing from
@@ -603,8 +605,8 @@ a pull is left alone; an empty pull is refused. `GET /edsider/lists`
 
 **A paper's EdSider labels** (step 2). EdSider needs a medium, term, year,
 exam category, difficulty, source and author on every paper; we captured
-none of them. `intake_documents.edsider_labels` (JSON) holds them as
-EdSider ids, chosen on the data-entry page ("For EdSider", under Paper
+none of them. They are columns on `intake.document` (`medium_id`, `term_id`
+... - JSON on the old `intake_documents` first), EdSider ids, chosen on the data-entry page ("For EdSider", under Paper
 details) from the copied lists; `PATCH /intake/documents/{id}` refuses an
 id not on EdSider's list. Medium, term and year are read from the paper
 (`src/edsider/labels.py`) and offered as `suggested_edsider_labels`, saved
@@ -1662,6 +1664,92 @@ the uploaded file itself, not only `raw_text`, so an extractor fix (like
 OCR arriving) can be picked up without asking for the file again;
 move `intake_questions` toward the same shape as `questions` so
 promotion is a straight copy.
+
+## Intake schema - normalised, and papers assigned to Data Entry Operators
+
+Everything about an uploaded paper now lives in its own schema, `intake`,
+and EdSider's reference lists in `common` - asked for in one go: every
+intake table in the intake schema, normalised, grades and subjects from
+common tables with nothing repeated, and papers given to Data Entry
+Operators (EdSider's `DEOP` role) by an administrator, so only that person
+can work on one. EdSider has the same idea in
+`assessment.assessment_operation` (paper, employee, operation, completed,
+assigned by, plus a log), which is what `intake.review` mirrors.
+
+- **`common.<list>`**, one table per EdSider list (grade, subject,
+  language, term, year, exam_category, ... - `store.COMMON_LISTS`), keyed by
+  EdSider's own id, with `name`, `short_code`, the list's own extra columns
+  (an author's `type_id`, ...), `active`, `synced_at`. The sync fills them
+  in one statement. Nothing else stores a grade or subject name.
+- **`intake.document`** - the paper: title, `grade_id`/`subject_id` and
+  the EdSider labels (`medium_id`, `term_id`, `year_id`, `exam_category_id`,
+  `difficulty_id`, `source_id`, `author_id`), each a foreign key into
+  `common`; `status` a key into **`intake.status`** (extracted, in_review,
+  checked, teacher_review, refer_back, review_done, published).
+  **`intake.document_file`** holds the file, the read text and the
+  extractor, apart, so listing papers never touches them;
+  **`intake.document_settings`** the assessment form, one column per
+  setting, plus the marks plan's paper-wide figures.
+- **`intake.part`** (a paper's parts, with the marks plan per part),
+  **`intake.instruction_group`**, **`intake.question`** (its part by
+  `part_id`; no grade, subject or depth - those are the paper's, and depth
+  follows from `parent_seq`), **`intake.question_comment`**,
+  **`intake.question_image`** - all JSON on `intake_documents` before, or
+  repeated on every question.
+- **`intake.review`** - who has a paper: `stage` 'data_entry' (a Data Entry
+  Operator) or 'teacher', `assigned_to`, `assigned_by`, `finished_at`,
+  `active` (one active row per stage; reassigning closes the old one, so
+  who had it before is kept). **`intake.review_log`** - every upload,
+  assignment, hand-on, send-back and status change, with who did it.
+
+`store.py` assembles rows in the shape callers always read
+(`paper_grade` as EdSider's code "G12", `paper_subject` as its name,
+`sections`, `instruction_groups`, `assessment_settings`, `depth`), so
+`service.py`, `app.py` and the pages changed little. Queries name the
+schemas `intake.` and `common.`; on a test's own schema `store._qualify()`
+swaps in `t_<random>_intake` / `t_<random>_common`
+(`store.schema_names()`), and `conftest.py` seeds them with a copy of
+EdSider's real lists (`tests/edsider_lists.json`) and drops all three.
+
+**The workflow now.** An administrator uploads (upload and paste are
+`ADMIN` routes) and gives each paper to a Data Entry Operator on Admin ->
+Data entry (`AssignOperators.jsx`, `POST /intake/documents/{id}/operator`,
+`GET /operators` - everyone whose role is `employee`, labelled "Data
+Entry Operator" in Manage users). `service.paper_access`, on every route
+with a paper, question or picture in its path (a test fails if one is
+missing), lets an operator open only their papers and not change one
+while a teacher has it (409), and a teacher open only theirs and change
+it only while their review is open; admins and a local run reach
+everything. The paper finder lists an operator's own papers only. The
+operator's duplicate check finishes their stage ('checked'); the admin
+assigns a teacher; "Refer back" reopens the operator's stage; "Review
+done" copies the paper into our own question bank (`promote_document`,
+grade code, subject and medium names as the bank already holds them) and
+marks it 'published'. `GET /intake/documents/{id}/history` shows the log.
+
+**Moving the existing papers - not yet done, deliberately.** The live
+database is shared by a local run and the deployed dev and pre-prod apps,
+and the deployed version reads and writes `intake_documents` /
+`intake_questions` until it is replaced. So the new code creates the new
+schemas (empty) and never touches the old tables;
+`scripts/migrate_intake_schema.py` (`store.migrate_old_intake_tables()`)
+copies them across, keeping ids, at the moment the new version is
+deployed - without `--apply` it rolls back and only reports. A paper
+already copied is skipped, so it can run again after a late upload. On
+the live data (83 papers) the only value not on EdSider's lists is one
+paper's "Combined Mathematics" (EdSider: "Combined Maths"), left unset
+and reported. A paper goes to its uploader for data entry when the
+uploader is a Data Entry Operator - before, whoever uploaded a paper
+worked on it. After that, drop the old tables by hand:
+`DROP TABLE intake_question_images, intake_question_comments,
+intake_questions, intake_documents, edsider_lookups;`.
+`scripts/migrate_to_postgres.py` (the old SQLite move) still names the
+old tables and is not meant to run again.
+
+Not done yet: EdSider's own DEOP-role staff are not synced the way its
+teachers are - Data Entry Operators are added on Manage users. The
+question bank (`questions`) still stores grade and subject as text; it
+mirrors EdSider's question rows and was left as it is.
 
 ## Running on Azure App Service - what this repo does for it
 
