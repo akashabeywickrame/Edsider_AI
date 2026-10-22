@@ -46,13 +46,16 @@ class FakePgConn:
     of them per run - one for questions, one for assessment links - and
     they must not share rows or an executed_with record."""
 
-    def __init__(self, rows, link_rows=None, teacher_rows=None):
+    def __init__(self, rows, link_rows=None, teacher_rows=None, lookup_rows=None):
         self.rows = rows
         self.link_rows = link_rows if link_rows is not None else []
         # run_sync() also refreshes the teacher list, which refuses an
         # empty result - so a fake EdSider has at least one teacher.
         self.teacher_rows = (teacher_rows if teacher_rows is not None
                              else [{"email": "t@example.com", "name": "T"}])
+        # Likewise EdSider's reference lists, which also refuse an empty pull.
+        self.lookup_rows = (lookup_rows if lookup_rows is not None
+                            else [lookup("grade", 12, "12", "G12")])
         self.cursor_names = []
         self.session_calls = []
         self.rolled_back = False
@@ -61,6 +64,7 @@ class FakePgConn:
         self._cursor = FakeCursor(rows)
         self._links_cursor = FakeCursor(self.link_rows)
         self._teachers_cursor = FakeCursor(self.teacher_rows)
+        self._lookups_cursor = FakeCursor(self.lookup_rows)
 
     def cursor(self, name=None, cursor_factory=None):
         self.cursor_names.append(name)
@@ -68,6 +72,8 @@ class FakePgConn:
             return self._links_cursor
         if name == "edsider_sync_teachers":
             return self._teachers_cursor
+        if name == "edsider_sync_lookups":
+            return self._lookups_cursor
         return self._cursor
 
     def set_session(self, readonly=None, autocommit=None):
@@ -92,6 +98,11 @@ def row(question_id, content, title="", grade_name=None, subject_name=None,
         "sub_questions": sub_questions, "created_by": "1",
         "created_at": "2024-01-01",
     }
+
+
+def lookup(kind, id, name, short_code=None, extra=None):
+    """Shaped like a row of sync.LOOKUPS_QUERY."""
+    return {"kind": kind, "id": id, "name": name, "short_code": short_code, "extra": extra}
 
 
 def link_row(assessment_question_id, assessment_id, question_id,
@@ -176,12 +187,12 @@ def test_full_flag_ignores_the_stored_watermark(monkeypatch, local_db):
 def test_uses_a_named_server_side_cursor(monkeypatch, local_db):
     """A plain cursor buffers the whole result client-side. The first
     sync could be the full real bank (40,000+ rows, some 6.5MB) - this
-    must stream, not load it all into memory. Three cursors now, one per
-    query - questions, assessment links, then teachers."""
+    must stream, not load it all into memory. One cursor per query -
+    questions, assessment links, teachers, then EdSider's lists."""
     fake_pg = FakePgConn([])
     run_sync(monkeypatch, fake_pg)
     assert fake_pg.cursor_names == [
-        "edsider_sync", "edsider_sync_links", "edsider_sync_teachers"]
+        "edsider_sync", "edsider_sync_links", "edsider_sync_teachers", "edsider_sync_lookups"]
     assert fake_pg._cursor.itersize and fake_pg._cursor.itersize > 1
     assert fake_pg._links_cursor.itersize and fake_pg._links_cursor.itersize > 1
 
@@ -353,3 +364,45 @@ def test_a_question_can_have_more_than_one_assessment_link(monkeypatch, local_db
     with store.connect() as conn:
         linked = store.assessments_for_question(conn, "8")
     assert {r["assessment_id"] for r in linked} == {"5", "6"}
+
+
+# --------------------------------------------------- EdSider's own lists
+
+def test_edsiders_lists_are_copied_with_their_ids(monkeypatch, local_db):
+    fake_pg = FakePgConn([], lookup_rows=[
+        lookup("grade", 12, "12", "G12"),
+        lookup("subject", 14, "General Information Technology", "GIT"),
+        lookup("part", 7, "I", extra={"notation_id": 3}),
+    ])
+    run_sync(monkeypatch, fake_pg)
+    with store.connect() as conn:
+        lists = store.edsider_lookups(conn)
+    assert lists["grade"] == [{"id": 12, "name": "12", "short_code": "G12", "extra": None}]
+    assert lists["subject"][0]["id"] == 14
+    assert lists["part"][0]["extra"] == {"notation_id": 3}
+    # Read through its own cursor, in the same read-only session.
+    assert fake_pg.session_calls[0]["readonly"] is True
+    assert fake_pg.rolled_back and not fake_pg.committed
+
+
+def test_an_entry_edsider_drops_goes_inactive_and_other_lists_are_kept(local_db):
+    with store.connect() as conn:
+        store.sync_edsider_lookups(conn, [lookup("term", 1, "First Term Test", "T1"),
+                                          lookup("term", 4, "Fourth Term", "T4"),
+                                          lookup("year", 7, "2026")])
+    with store.connect() as conn:
+        # EdSider removed term 4; the year list was not part of this pull.
+        store.sync_edsider_lookups(conn, [lookup("term", 1, "First Term Test", "T1")])
+        lists = store.edsider_lookups(conn)
+        dropped = conn.execute("SELECT active FROM edsider_lookups WHERE kind='term' AND edsider_id=4").fetchone()
+    assert [t["id"] for t in lists["term"]] == [1]
+    assert dropped["active"] is False          # kept, not deleted - a sent paper may name it
+    assert [y["name"] for y in lists["year"]] == ["2026"]
+
+
+def test_names_are_trimmed_and_an_empty_pull_is_refused(local_db):
+    with store.connect() as conn:
+        store.sync_edsider_lookups(conn, [lookup("subject", 18, "Chemistry ", "Chemistry ")])
+        assert store.edsider_lookups(conn)["subject"][0]["name"] == "Chemistry"
+        with pytest.raises(ValueError):
+            store.sync_edsider_lookups(conn, [])

@@ -587,6 +587,20 @@ on a schedule, and that, plus whether the `question_id` gaps mean
 hard-delete and whether `updated_at` can be added, is still the open
 conversation with EdSider's backend team.
 
+**EdSider's own reference lists** (step 1 of sending papers to EdSider -
+see the design study "Sending Papers to EdSider"). `sync_lookups()` copies
+21 lists in one `UNION ALL` query - grade, subject, language, term, year,
+exam_category, difficulty, source, author, part_notation, part,
+assessment_category, grading_method, privilege, attempt, time_unit,
+passage_type, question_type, answer_type, assessment_status, chapter; 325
+entries, every table and column read off the live schema - into
+`edsider_lookups` (kind, edsider_id, name, short_code, extra JSON). It runs
+in `run_sync()` after the teacher list. Names are trimmed (EdSider stores
+"Chemistry " with a space); an entry EdSider drops goes `active = false`,
+never deleted, since a paper already sent may name it; a kind missing from
+a pull is left alone; an empty pull is refused. `GET /edsider/lists`
+(data entry) and `POST /edsider/lists/sync` (admin) read and refresh it.
+
 `tests/test_sync.py` fakes psycopg2's connection and cursor rather than
 requiring a real server - same reasoning as everywhere else in this
 suite - and proves the watermark, read-only, and crash-safety behavior

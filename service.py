@@ -1677,6 +1677,42 @@ def sync_teachers_from_edsider(user: dict = Depends(require_assigner)):
     return TeacherSyncOut(teachers=count, synced_at=at.isoformat() if at else None)
 
 
+class EdsiderListsOut(BaseModel):
+    synced_at: Optional[str] = None
+    # {kind: [{id, name, short_code, extra}]} - grade, subject, language,
+    # term, year, exam_category, difficulty, source, author, part_notation,
+    # part, assessment_category, grading_method, privilege, attempt,
+    # time_unit, passage_type, question_type, answer_type,
+    # assessment_status, chapter.
+    lists: Dict[str, List[Dict[str, Any]]]
+
+
+@app.get("/edsider/lists", response_model=EdsiderListsOut,
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
+def edsider_lists():
+    """EdSider's own reference lists as last copied - what a paper's
+    labels are chosen from, so it is sent to EdSider with EdSider's ids."""
+    with store.connect() as conn:
+        at = store.edsider_lookups_synced_at(conn)
+        return EdsiderListsOut(synced_at=at.isoformat() if at else None,
+                               lists=store.edsider_lookups(conn))
+
+
+@app.post("/edsider/lists/sync", response_model=EdsiderListsOut,
+         dependencies=[Depends(require_api_key), Depends(ADMIN)])
+def sync_edsider_lists():
+    """Re-read EdSider's reference lists now. A failure (EdSider
+    unreachable, PG_* unset) is a 502 naming the cause; the last copy
+    stays in place and keeps working."""
+    from scripts.sync import sync_lookups
+    try:
+        sync_lookups()
+    except (Exception, SystemExit) as e:
+        # SystemExit: _pg_connect() exits that way when PG_* is unset.
+        raise HTTPException(502, f"Could not refresh EdSider's lists: {e}")
+    return edsider_lists()
+
+
 @app.post("/teachers/me/touch", response_model=TeacherOut,
          dependencies=[Depends(require_api_key), Depends(TEACHER)])
 def touch_teacher(identity: str = Depends(current_identity)):

@@ -239,6 +239,23 @@ CREATE TABLE IF NOT EXISTS intake_documents (
 -- Who may sign in, and as what (see staff_role_sql / lookup_staff()):
 -- nobody inactive; otherwise the role a superadmin set, else 'teacher'
 -- for anyone EdSider lists as a teacher, else nobody.
+-- EdSider's own reference lists - grades, subjects, mediums, terms, years,
+-- exam categories, part notations, statuses and the rest - copied by
+-- scripts/sync.py, so a paper is labelled with EdSider's own ids before
+-- it is sent there (see sync_edsider_lookups()). `active` goes false when
+-- EdSider drops an entry; a row is never deleted, since a paper already
+-- sent may still name it.
+CREATE TABLE IF NOT EXISTS edsider_lookups (
+    kind        TEXT NOT NULL,
+    edsider_id  INTEGER NOT NULL,
+    name        TEXT NOT NULL,
+    short_code  TEXT,
+    extra       TEXT,              -- JSON: anything kind-specific
+    active      BOOLEAN NOT NULL DEFAULT TRUE,
+    synced_at   TIMESTAMPTZ,
+    PRIMARY KEY (kind, edsider_id)
+);
+
 CREATE TABLE IF NOT EXISTS staff (
     email         TEXT PRIMARY KEY,
     name          TEXT,
@@ -1982,6 +1999,61 @@ def sync_edsider_teachers(conn, teachers):
         "UPDATE staff SET in_edsider = FALSE WHERE in_edsider AND synced_at < now()")
     return conn.execute(
         "SELECT count(*) AS n FROM staff WHERE in_edsider").fetchone()["n"]
+
+
+def sync_edsider_lookups(conn, rows):
+    """Bring our copy of EdSider's reference lists in line with theirs -
+    rows of {kind, id, name, short_code, extra} - in one transaction.
+    Every kind present in `rows` is replaced: listed entries are stored
+    active, entries of that kind no longer listed go inactive (never
+    deleted - a paper already sent may name one). A kind missing from
+    `rows` entirely is left as it was. An empty pull is refused: EdSider
+    always has grades and subjects, so none at all means a broken query.
+    Returns {kind: active entries}."""
+    if not rows:
+        raise ValueError("refusing to replace EdSider's lists with nothing")
+    # One statement for all of them - each round trip to the Azure server
+    # costs ~0.35 s (see sync_edsider_teachers).
+    values = ", ".join(["(?, ?, ?, ?, ?, TRUE, now())"] * len(rows))
+    params = []
+    for r in rows:
+        extra = r.get("extra")
+        params += [r["kind"], int(r["id"]), str(r.get("name") or "").strip(),
+                   (str(r["short_code"]).strip() or None) if r.get("short_code") is not None else None,
+                   json.dumps(extra) if extra is not None else None]
+    conn.execute(
+        f"""INSERT INTO edsider_lookups (kind, edsider_id, name, short_code, extra, active, synced_at)
+            VALUES {values}
+            ON CONFLICT (kind, edsider_id) DO UPDATE SET
+                name = excluded.name, short_code = excluded.short_code,
+                extra = excluded.extra, active = TRUE, synced_at = excluded.synced_at""",
+        params,
+    )
+    kinds = sorted({r["kind"] for r in rows})
+    # now() is this transaction's start - every row above carries it, so a
+    # row of a refreshed kind with an older stamp is gone from EdSider.
+    conn.execute("UPDATE edsider_lookups SET active = FALSE "
+                 "WHERE kind = ANY(?) AND (synced_at IS NULL OR synced_at < now())", (kinds,))
+    return {r["kind"]: r["n"] for r in conn.execute(
+        "SELECT kind, count(*) AS n FROM edsider_lookups WHERE active GROUP BY kind").fetchall()}
+
+
+def edsider_lookups(conn):
+    """{kind: [{id, name, short_code, extra}]} - EdSider's active entries,
+    in EdSider's own id order."""
+    out = {}
+    for r in conn.execute(
+            "SELECT kind, edsider_id, name, short_code, extra FROM edsider_lookups "
+            "WHERE active ORDER BY kind, edsider_id").fetchall():
+        out.setdefault(r["kind"], []).append({
+            "id": r["edsider_id"], "name": r["name"], "short_code": r["short_code"],
+            "extra": json.loads(r["extra"]) if r["extra"] else None})
+    return out
+
+
+def edsider_lookups_synced_at(conn):
+    row = conn.execute("SELECT max(synced_at) AS at FROM edsider_lookups").fetchone()
+    return row["at"] if row else None
 
 
 def edsider_teachers_synced_at(conn):

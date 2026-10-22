@@ -149,6 +149,60 @@ TEACHERS_QUERY = """
 """
 
 
+# EdSider's reference lists, so a paper sent there carries EdSider's own
+# ids (grade_id, subject_id, term_id, exam_category_id ...). One query,
+# not one per list: each round trip to the Azure server costs ~0.35 s.
+# Every table and column here was read off the live schema; names are
+# trimmed because EdSider stores some with trailing spaces ("Chemistry ").
+LOOKUPS_QUERY = """
+SELECT 'grade' AS kind, grade_id AS id, grade::text AS name, short_code, NULL::json AS extra FROM settings.grade
+UNION ALL SELECT 'subject', subject_id, trim(subject), trim(short_code), NULL FROM settings.subject
+UNION ALL SELECT 'language', language_id, language, short_code, NULL FROM settings.language
+UNION ALL SELECT 'term', term_id, term, short_code, NULL FROM settings.term
+UNION ALL SELECT 'year', year_id, year, NULL, NULL FROM settings.year
+UNION ALL SELECT 'exam_category', exam_category_id, name, short_code, NULL
+          FROM assessment_subscription.exam_category
+UNION ALL SELECT 'difficulty', difficulty_id, difficulty_type, NULL, NULL FROM settings.difficulty
+UNION ALL SELECT 'source', source_id, trim(source), NULL, NULL FROM settings.source
+UNION ALL SELECT 'author', author_id, trim(author), NULL, json_build_object('type_id', type_id)
+          FROM settings.author
+UNION ALL SELECT 'part_notation', notation_id, notation_type, notation_value, NULL FROM assessment.notation
+UNION ALL SELECT 'part', part_id, name, NULL, json_build_object('notation_id', notation_id) FROM assessment.part
+UNION ALL SELECT 'assessment_category', category_id, name, NULL, NULL FROM assessment.category
+UNION ALL SELECT 'grading_method', grading_method_id, method_name, NULL, NULL FROM settings.grading_method
+UNION ALL SELECT 'privilege', privilege_id, privilege, NULL, NULL FROM settings.privilege
+UNION ALL SELECT 'attempt', attempt_no_id, no_of_attempts::text, NULL, NULL FROM assessment.attempt
+UNION ALL SELECT 'time_unit', unit_id, unit, NULL, NULL FROM assessment.unit
+UNION ALL SELECT 'passage_type', passage_type_id, name, NULL, NULL FROM question.passage_type
+UNION ALL SELECT 'question_type', type_id, qtype, NULL, NULL FROM question.type
+UNION ALL SELECT 'answer_type', answer_type_id, answer_type, NULL, NULL FROM question.answer_type
+UNION ALL SELECT 'assessment_status', status_id, status, NULL, json_build_object('display_order', display_order)
+          FROM assessment.status
+UNION ALL SELECT 'chapter', chapter_id, chapter, NULL, NULL FROM settings.chapter
+"""
+
+
+def sync_lookups(pg_conn=None):
+    """Replace our copy of EdSider's reference lists with the current ones
+    - a few hundred rows, re-read whole every time for the same reason as
+    the teacher list: only a full read notices an entry EdSider removed.
+    Returns {kind: active entries}."""
+    own = pg_conn is None
+    if own:
+        pg_conn = _pg_connect()
+    try:
+        cur = pg_conn.cursor(name="edsider_sync_lookups")
+        cur.execute(LOOKUPS_QUERY, {})
+        rows = [dict(r) for r in cur]
+        cur.close()
+    finally:
+        if own:
+            pg_conn.rollback()
+            pg_conn.close()
+    with store.connect() as local_conn:
+        return store.sync_edsider_lookups(local_conn, rows)
+
+
 def sync_teachers(pg_conn=None):
     """Replace our copy of EdSider's teacher list with the current one.
     Small enough (~135 rows) to re-read whole every time, which is also
@@ -337,6 +391,7 @@ def run_sync(full=False):
             store.set_watermark(local_conn, SOURCE_LINKS, highest_link_seen)
 
         teachers = sync_teachers(pg_conn)
+        lookups = sync_lookups(pg_conn)
     finally:
         pg_conn.rollback()  # nothing was written; close the read cleanly
         pg_conn.close()
@@ -347,6 +402,7 @@ def run_sync(full=False):
         "links_pulled": links_pulled, "links_saved": links_saved,
         "link_watermark": highest_link_seen,
         "teachers": teachers,
+        "lookups": lookups,
     }
 
 
@@ -367,6 +423,8 @@ def main():
     print(f"  assessment links    : {result['links_saved']:,} pulled "
           f"(watermark now at {result['link_watermark']:,})")
     print(f"  EdSider teachers    : {result['teachers']:,}")
+    print(f"  EdSider lists       : {sum(result['lookups'].values()):,} entries "
+          f"in {len(result['lookups'])} lists")
 
     if imported:
         print("\nNext: python scripts/embed.py   (only new text gets embedded)")
