@@ -105,6 +105,7 @@ function StaffRow({ s, me, onChanged, onRemoved }) {
       <td>
         {s.effective_role ? roleLabel(s.effective_role) : <span className="es-caption">Cannot sign in</span>}
         {!s.active ? <span className="es-caption"> (switched off)</span> : null}
+        {s.positions ? <div className="es-caption">In EdSider: {s.positions}</div> : null}
       </td>
       <td className="es-caption">{s.last_seen_at ? when(s.last_seen_at) : '-'}</td>
       <td style={{ whiteSpace: 'nowrap' }}>

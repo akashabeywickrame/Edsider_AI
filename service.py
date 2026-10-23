@@ -855,6 +855,8 @@ class TeacherOut(BaseModel):
 
 class TeacherSyncOut(BaseModel):
     teachers: int
+    # The same sync also brings EdSider's Data Entry Operators.
+    operators: int = 0
     synced_at: Optional[str] = None
 
 
@@ -896,6 +898,9 @@ class StaffOut(BaseModel):
     # What a superadmin set, if anything (None = "whatever EdSider says").
     role: Optional[str] = None
     in_edsider: bool = False
+    # A Data Entry Operator in EdSider, and every position EdSider gives them.
+    edsider_operator: bool = False
+    positions: Optional[str] = None
     active: bool = True
     subjects: List[str] = []
     added_by: Optional[str] = None
@@ -912,6 +917,11 @@ class AssignIn(BaseModel):
 class OperatorOut(BaseModel):
     identity: str
     display_name: Optional[str] = None
+    # Their EdSider positions ("Assessor, Data Entry Operator"), if synced.
+    positions: Optional[str] = None
+    # 'edsider' - a Data Entry Operator in EdSider; 'added_here' - made one
+    # by a superadmin on Manage users.
+    source: Optional[str] = None
 
 
 class OperatorAssignIn(BaseModel):
@@ -1866,7 +1876,9 @@ def sync_teachers_from_edsider(user: dict = Depends(require_assigner)):
         raise HTTPException(502, f"Could not refresh teachers from EdSider: {e}")
     with store.connect() as conn:
         at = store.edsider_teachers_synced_at(conn)
-    return TeacherSyncOut(teachers=count, synced_at=at.isoformat() if at else None)
+        operators = sum(1 for o in store.assignable_operators(conn) if o["source"] == "edsider")
+    return TeacherSyncOut(teachers=count, operators=operators,
+                          synced_at=at.isoformat() if at else None)
 
 
 class EdsiderListsOut(BaseModel):

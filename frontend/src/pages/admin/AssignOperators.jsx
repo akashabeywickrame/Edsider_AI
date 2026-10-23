@@ -62,12 +62,33 @@ export default function AssignOperators() {
   const [busy, setBusy] = useState({})
   const [openHistory, setOpenHistory] = useState(null)
   const [histories, setHistories] = useState({})
+  const [operatorsBusy, setOperatorsBusy] = useState(false)
+  const [operatorsNote, setOperatorsNote] = useState(null)
+
+  // EdSider's Data Entry Operators come in with the same sync as its
+  // teachers. The saved list shows at once; the refresh replaces it when
+  // it lands, or a note says EdSider could not be reached.
+  async function refreshOperators() {
+    setOperatorsBusy(true)
+    setOperatorsNote(null)
+    try {
+      setOperators(await api.listOperators())
+    } catch (err) {
+      setError(err.message)
+    }
+    try {
+      await api.syncTeachers()
+      setOperators(await api.listOperators())
+    } catch (err) {
+      setOperatorsNote(`Showing the last list copied from EdSider - ${err.message}`)
+    } finally {
+      setOperatorsBusy(false)
+    }
+  }
 
   useEffect(() => {
-    api
-      .listOperators()
-      .then(setOperators)
-      .catch((err) => setError(err.message))
+    refreshOperators()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -156,9 +177,15 @@ export default function AssignOperators() {
           Upload papers
         </Link>
         <span className="es-caption">
-          {operators.length} Data Entry Operator(s). Add more on Manage users, with the role Data Entry Operator.
+          {operatorsBusy
+            ? 'Loading Data Entry Operators from EdSider...'
+            : `${operators.length} Data Entry Operator(s) - everyone EdSider lists as one, and anyone given the role on Manage users.`}
         </span>
+        <Button variant="ghost" size="sm" onClick={refreshOperators} disabled={operatorsBusy}>
+          Refresh from EdSider
+        </Button>
       </div>
+      {operatorsNote ? <Notice tone="warning">{operatorsNote}</Notice> : null}
 
       {error ? (
         <Notice tone="error" title="Could not load the papers">
@@ -267,6 +294,7 @@ export default function AssignOperators() {
                                 {o.display_name && o.display_name !== o.identity
                                   ? `${o.display_name} (${o.identity})`
                                   : o.identity}
+                                {o.positions ? ` - ${o.positions}` : ''}
                               </option>
                             ))}
                             {d.operator && !operators.some((o) => o.identity === d.operator) ? (

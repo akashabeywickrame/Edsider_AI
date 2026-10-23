@@ -126,25 +126,34 @@ LINKS_QUERY = """
 """
 
 
-# EdSider's teachers, for the paper-assignment dropdown and sign-in. Every
-# table and column here was confirmed against the live schema, not
-# guessed: a staff member's role rows live in staff_user_role (role_code
-# 'TEACH' is "Teacher" in user_management.role); staff_user.staff_id points
-# at registration.teacher.user_id, which holds the name. Measured: all 135
-# TEACH rows have a teacher row and matching emails, 133 distinct emails
-# (DISTINCT ON keeps one per email), and names carry stray spaces.
-# user_status_id 1 is "Active" (settings.status); every current teacher is.
+# EdSider's teachers and Data Entry Operators, for the assignment dropdowns
+# and sign-in. Every table and column here was confirmed against the live
+# schema, not guessed: a staff member's role rows live in staff_user_role
+# (role_code 'TEACH' is "Teacher", 'DEOP' "Data Entry Operator" in
+# user_management.role); staff_user.staff_id points at
+# registration.teacher.user_id, which holds the name - operators' too.
+# Measured: 133 distinct teacher emails, 30 operators (29 of them also
+# Assessors), one person both; names carry stray spaces. One row per email
+# (two people are listed twice). user_status_id 1 is "Active".
 TEACHERS_QUERY = """
-    SELECT DISTINCT ON (lower(trim(su.user_email)))
-           lower(trim(su.user_email)) AS email,
-           NULLIF(trim(concat_ws(' ', trim(t.first_name), trim(t.last_name))), '') AS name
+    SELECT lower(trim(su.user_email)) AS email,
+           max(NULLIF(trim(concat_ws(' ', trim(t.first_name), trim(t.last_name))), '')) AS name,
+           array_agg(DISTINCT r.role_code) AS roles,
+           array_agg(DISTINCT r.role_code || '|' || trim(ro.role_name)) AS positions,
+           min(su.user_id) AS user_id,
+           min(su.staff_id) AS staff_id
     FROM user_management.staff_user su
     JOIN user_management.staff_user_role r ON r.user_id = su.user_id
+         AND (r.to_date IS NULL OR r.to_date >= now())
+    JOIN user_management.role ro ON ro.role_code = r.role_code
     LEFT JOIN registration.teacher t ON t.user_id = su.staff_id
-    WHERE r.role_code = 'TEACH'
-      AND (r.to_date IS NULL OR r.to_date >= now())
-      AND (t.user_status_id IS NULL OR t.user_status_id = 1)
+    WHERE (t.user_status_id IS NULL OR t.user_status_id = 1)
       AND coalesce(trim(su.user_email), '') <> ''
+    GROUP BY lower(trim(su.user_email))
+    -- Teachers and Data Entry Operators are the people this app has work
+    -- for; every other role they hold (most operators are also Assessors)
+    -- comes along as a position.
+    HAVING bool_or(r.role_code = 'TEACH' OR r.role_code = 'DEOP')
     ORDER BY lower(trim(su.user_email))
 """
 

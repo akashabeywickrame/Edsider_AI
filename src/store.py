@@ -221,6 +221,15 @@ CREATE TABLE IF NOT EXISTS staff (
     first_seen_at TIMESTAMPTZ,
     last_seen_at  TIMESTAMPTZ
 );
+
+-- Every EdSider position a synced person holds (EdSider role codes - DEOP,
+-- TEACH, ASSR ...), names in common.staff_role. For showing who someone
+-- is; access comes from staff (see STAFF_ROLE_SQL).
+CREATE TABLE IF NOT EXISTS staff_position (
+    email      TEXT NOT NULL REFERENCES staff(email) ON DELETE CASCADE,
+    role_code  TEXT NOT NULL,
+    PRIMARY KEY (email, role_code)
+);
 """
 
 
@@ -255,6 +264,12 @@ def _common_sql():
             "    active      BOOLEAN NOT NULL DEFAULT TRUE,\n"
             "    synced_at   TIMESTAMPTZ\n"
             ");\n")
+    # EdSider's staff roles are keyed by a code, not a number.
+    tables.append("CREATE TABLE IF NOT EXISTS common.staff_role (\n"
+                  "    code       TEXT PRIMARY KEY,\n"
+                  "    name       TEXT NOT NULL,\n"
+                  "    synced_at  TIMESTAMPTZ\n"
+                  ");\n")
     return "\n".join(tables)
 
 
@@ -835,7 +850,7 @@ def _schema_is_current(conn):
         r"CREATE TABLE IF NOT EXISTS (\w+)", SCHEMA_TEMPLATE)}
     wanted |= {(intake, t) for t in re.findall(
         r"CREATE TABLE IF NOT EXISTS intake\.(\w+)", INTAKE_TEMPLATE)}
-    wanted |= {(common, t) for t in COMMON_LISTS}
+    wanted |= {(common, t) for t in COMMON_LISTS} | {(common, "staff_role")}
     return wanted <= tables and all(
         (SCHEMA_NAME, table, column) in have for table, column, _ in MIGRATIONS)
 
@@ -875,6 +890,12 @@ MIGRATIONS = [
     # blob reference is the third case - is_answer_blob marks it, so a
     # reader never mistakes an opaque reference for literal answer text.
     ("questions", "is_answer_blob", "INTEGER DEFAULT 0"),
+    # EdSider's Data Entry Operators sign in as data entry the way its
+    # teachers sign in as teachers, and both carry their two EdSider ids
+    # (staff_user.user_id, registration.teacher's) for sending papers.
+    ("staff", "edsider_operator", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("staff", "edsider_user_id", "INTEGER"),
+    ("staff", "edsider_staff_id", "INTEGER"),
 ]
 
 # A question can only be compared on its text when the text IS the whole
@@ -2661,9 +2682,20 @@ def promote_document(conn, doc_id, actor=None):
 # sign-in, the Manage users list and the dropdown can never disagree.
 STAFF_ROLE_SQL = """CASE WHEN NOT active THEN NULL
                          WHEN role IS NOT NULL THEN role
-                         WHEN in_edsider THEN 'teacher' END"""
+                         WHEN in_edsider THEN 'teacher'
+                         WHEN edsider_operator THEN 'employee' END"""
 
-_STAFF_COLUMNS = f"*, {STAFF_ROLE_SQL} AS effective_role"
+# A person's EdSider positions ("Data Entry Operator, Assessor"), read off
+# staff_position and EdSider's own role names - for showing, never for
+# deciding access (that is STAFF_ROLE_SQL).
+_POSITIONS_SQL = """(SELECT string_agg(coalesce(r.name, p.role_code), ', '
+                                       ORDER BY coalesce(r.name, p.role_code))
+                       FROM staff_position p
+                       LEFT JOIN common.staff_role r ON r.code = p.role_code
+                      WHERE p.email = staff.email)"""
+
+_STAFF_COLUMNS = (f"*, {STAFF_ROLE_SQL} AS effective_role, "
+                  f"{_POSITIONS_SQL} AS positions")
 
 
 def lookup_staff(conn, email):
@@ -2739,28 +2771,47 @@ def remove_staff_access(conn, email):
 
 
 def sync_edsider_teachers(conn, teachers):
-    """Bring the staff table in line with EdSider's current teacher list
-    - [{email, name}] - in one transaction: everyone listed is marked
-    in_edsider (a new row if they are new here), everyone no longer
-    listed is unmarked, so a teacher EdSider removes stops being able to
-    sign in here as one. Rows are never deleted - their history and any
-    superadmin settings stay. EdSider's name is taken unless a superadmin
-    entered this person by hand (added_by set), whose name then wins.
+    """Bring the staff table in line with EdSider's current teachers and
+    Data Entry Operators - [{email, name, roles, positions, user_id,
+    staff_id}] - in one transaction. A person EdSider lists as a teacher
+    (TEACH) is marked in_edsider, one listed as a Data Entry Operator
+    (DEOP) edsider_operator; anyone no longer listed is unmarked, so
+    someone EdSider removes stops being able to sign in here through it.
+    Rows are never deleted - their history and any superadmin settings
+    stay. EdSider's name is taken unless a superadmin entered this person
+    by hand (added_by set), whose name then wins.
+
+    `roles` defaults to teacher, for a caller that only lists teachers.
+    `positions` ("DEOP|Data Entry Operator", ...) is every EdSider role the
+    person holds, Assessor included - kept for showing who someone is.
+    `user_id` / `staff_id` are their two EdSider ids (staff_user.user_id,
+    and registration.teacher's, which EdSider's operation and review
+    tables use) - needed to name them in EdSider when a paper is sent.
 
     An empty list is refused rather than applied: EdSider has 133
     teachers, and a query that suddenly returns none is far more likely
     broken than true. Returns how many EdSider teachers are now marked."""
     if not teachers:
         raise ValueError("refusing to replace the teacher list with an empty one")
-    # One statement, not one per teacher: each round trip to the Azure
+    # One statement, not one per person: each round trip to the Azure
     # server costs ~0.35 s, and row by row this took 44 s for 133
     # teachers - on every open of the assignment page.
-    values = ", ".join(["(?, ?, TRUE, now())"] * len(teachers))
-    params = [p for t in teachers for p in (t["email"], t.get("name"))]
+    values = ", ".join(["(?, ?, ?, ?, ?, ?, now())"] * len(teachers))
+    params = []
+    for t in teachers:
+        roles = set(t.get("roles") or ["TEACH"])
+        params += [t["email"], t.get("name"), "TEACH" in roles, "DEOP" in roles,
+                   t.get("user_id"), t.get("staff_id")]
     conn.execute(
-        f"""INSERT INTO staff (email, name, in_edsider, synced_at) VALUES {values}
+        f"""INSERT INTO staff (email, name, in_edsider, edsider_operator,
+                               edsider_user_id, edsider_staff_id, synced_at)
+            VALUES {values}
             ON CONFLICT(email) DO UPDATE SET
-                in_edsider = TRUE, synced_at = excluded.synced_at,
+                in_edsider = excluded.in_edsider,
+                edsider_operator = excluded.edsider_operator,
+                edsider_user_id = excluded.edsider_user_id,
+                edsider_staff_id = excluded.edsider_staff_id,
+                synced_at = excluded.synced_at,
                 name = CASE WHEN staff.added_by IS NULL THEN excluded.name
                             ELSE staff.name END""",
         params,
@@ -2769,7 +2820,28 @@ def sync_edsider_teachers(conn, teachers):
     # above was stamped with - so anything marked but not stamped in this
     # run is no longer on EdSider's list.
     conn.execute(
-        "UPDATE staff SET in_edsider = FALSE WHERE in_edsider AND synced_at < now()")
+        """UPDATE staff SET in_edsider = FALSE, edsider_operator = FALSE
+            WHERE (in_edsider OR edsider_operator) AND synced_at < now()""")
+    # Positions are re-read whole, like the list itself.
+    names = {}
+    pairs = []
+    for t in teachers:
+        for item in t.get("positions") or []:
+            code, _, name = str(item).partition("|")
+            names[code] = name or code
+            pairs.append((t["email"], code))
+    conn.execute("DELETE FROM staff_position")
+    if pairs:
+        conn.execute(
+            "INSERT INTO common.staff_role (code, name, synced_at) VALUES "
+            + ", ".join(["(?, ?, now())"] * len(names))
+            + " ON CONFLICT (code) DO UPDATE SET name = excluded.name, "
+              "synced_at = excluded.synced_at",
+            [v for code, name in names.items() for v in (code, name)])
+        conn.execute(
+            "INSERT INTO staff_position (email, role_code) VALUES "
+            + ", ".join(["(?, ?)"] * len(pairs)) + " ON CONFLICT DO NOTHING",
+            [v for pair in pairs for v in pair])
     return conn.execute(
         "SELECT count(*) AS n FROM staff WHERE in_edsider").fetchone()["n"]
 
@@ -2888,9 +2960,14 @@ def assignable_teachers(conn):
 
 def assignable_operators(conn):
     """Who a paper can be given to for data entry: everyone who may sign
-    in as a Data Entry Operator ('employee') right now."""
+    in as a Data Entry Operator ('employee') right now - EdSider's own
+    operators and anyone a superadmin made one - with their EdSider
+    positions, and where they come from."""
     return conn.execute(
-        f"""SELECT email AS identity, name AS display_name FROM staff
+        f"""SELECT email AS identity, name AS display_name,
+                   {_POSITIONS_SQL} AS positions,
+                   CASE WHEN edsider_operator THEN 'edsider' ELSE 'added_here' END AS source
+              FROM staff
              WHERE ({STAFF_ROLE_SQL}) = 'employee'
              ORDER BY lower(coalesce(name, email))"""
     ).fetchall()

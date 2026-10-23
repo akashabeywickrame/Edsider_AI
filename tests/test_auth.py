@@ -173,6 +173,35 @@ def test_a_resync_drops_a_teacher_edsider_removed_but_keeps_their_profile(local_
     assert b is not None and b.in_edsider is False
 
 
+def test_edsider_data_entry_operators_sign_in_and_fill_the_dropdown(local_db):
+    """EdSider's DEOP staff come in with the same sync as its teachers,
+    with every position they hold and their two EdSider ids."""
+    from scripts.sync import sync_teachers
+    pg = _FakePg([
+        {"email": "t1@gmail.com", "name": "Tea One", "roles": ["ASSR", "TEACH"],
+         "positions": ["ASSR|Assessor", "TEACH|Teacher"], "user_id": 292, "staff_id": 256},
+        {"email": "op@gmail.com", "name": "Op One", "roles": ["ASSR", "DEOP"],
+         "positions": ["ASSR|Assessor", "DEOP|Data Entry Operator"],
+         "user_id": 317, "staff_id": 281}])
+    assert sync_teachers(pg) == 1
+    assert "role_code = 'DEOP'" in pg.cur.sql
+    assert service.current_user("Op@Gmail.com")["role"] == "employee"
+    assert [(o.identity, o.positions, o.source) for o in service.list_operators()] == [
+        ("op@gmail.com", "Assessor, Data Entry Operator", "edsider")]
+    with store.connect() as conn:
+        row = store.lookup_staff(conn, "op@gmail.com")
+    assert (row["edsider_user_id"], row["edsider_staff_id"]) == (317, 281)
+
+    # No longer an operator in EdSider: out of the dropdown, cannot sign in.
+    sync_teachers(_FakePg([{"email": "t1@gmail.com", "name": "Tea One", "roles": ["TEACH"],
+                            "positions": ["TEACH|Teacher"]}]))
+    assert service.list_operators() == []
+    with pytest.raises(HTTPException):
+        current_identity("op@gmail.com")
+    assert _staff("op@gmail.com").positions is None
+    assert _staff("t1@gmail.com").positions == "Teacher"
+
+
 def test_an_empty_teacher_list_is_refused_not_applied(local_db):
     _sync(("a@gmail.com", "A"))
     with pytest.raises(ValueError):
