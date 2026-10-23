@@ -87,7 +87,8 @@ def test_data_entry_can_add_edit_and_remove_group_instructions(local_db):
     assert [(g.from_, g.to, g.title) for g in updated.instruction_groups] == [
         ("20", "25", None), ("17", "19", "Part 1")]
     # Stored under "from", the same name the extractor writes.
-    assert service.store.intake_instruction_groups(
-        service.store.get_intake_document(service.store.connect().__enter__(), doc.id))[1]["from"] == "17"
+    with service.store.connect() as conn:
+        stored = service.store.intake_instruction_groups(service.store.get_intake_document(conn, doc.id))
+    assert stored[1]["from"] == "17"
     emptied = update_document(doc.id, DocumentUpdate(instruction_groups=[]))
     assert emptied.instruction_groups == []

@@ -191,6 +191,10 @@ export const api = {
     request(`/intake/documents/${docId}/resplit/preview`, { method: 'POST', body: { style } }),
   resplitDocument: (docId, style) =>
     request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
+  // Data entry's last step: the paper's questions go into the question bank
+  // and the paper is archived.
+  finishDataEntry: (docId) =>
+    request(`/intake/documents/${docId}/finish-data-entry`, { method: 'POST' }),
   checkDocumentDuplicates: (docId) =>
     request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
   // Informational only - runs before anyone has reviewed a single
@@ -263,6 +267,4 @@ export const api = {
     }),
   // Everything that happened to a paper, oldest first.
   documentHistory: (docId) => request(`/intake/documents/${docId}/history`),
-  // What sending a paper to EdSider would write, and what stops it - nothing is sent.
-  edsiderPreview: (docId, params) => request(`/intake/documents/${docId}/edsider-preview${query(params)}`),
 }

@@ -2115,7 +2115,7 @@ def test_promote_document_refuses_before_review_is_done(local_db):
         store.add_intake_question(conn, doc_id, 1, "Q one")
         store.update_intake_document(conn, doc_id, status="teacher_review")
 
-        with pytest.raises(ValueError, match="review is done"):
+        with pytest.raises(ValueError, match="before data entry has finished it"):
             store.promote_document(conn, doc_id)
 
 
@@ -2157,18 +2157,18 @@ def test_raw_text_is_kept_so_a_paper_can_be_resplit(local_db):
 
 def test_replace_intake_questions_swaps_the_whole_set(local_db):
     with store.connect() as conn:
-        doc_id = store.create_intake_document(conn, "p.docx")
+        # A question shows its paper's grade - it does not keep one of its own.
+        doc_id = store.create_intake_document(conn, "p.docx", paper_grade="G13")
         store.add_intake_question(conn, doc_id, 1, "one big wrong blob")
         assert len(store.intake_questions(conn, doc_id)) == 1
 
         fresh = extract.segment("1. Alpha question.\n2. Beta question.\n")
-        store.replace_intake_questions(conn, doc_id, fresh,
-                                       fallback_grade="13")
+        store.replace_intake_questions(conn, doc_id, fresh)
         rows = store.intake_questions(conn, doc_id)
 
     assert [r["question_number"] for r in rows] == ["1", "2"]
     assert rows[0]["text"] == "Alpha question."
-    assert rows[0]["grade"] == "13"
+    assert rows[0]["grade"] == "G13"
 
 
 def test_parts_and_answers_round_trip(local_db):

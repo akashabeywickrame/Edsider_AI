@@ -11,7 +11,7 @@ const PAGE = 25
 export const STATUS_LABEL = {
   extracted: 'Extracted',
   in_review: 'In review',
-  checked: 'Ready to assign',
+  checked: 'Duplicate check done',
   teacher_review: 'Awaiting teacher review',
   refer_back: 'Sent back for changes',
   review_done: 'Review done',

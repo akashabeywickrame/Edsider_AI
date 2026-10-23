@@ -27,6 +27,9 @@ transformers==4.46.3
 streamlit==1.40.1
 pandas>=2.0
 fastapi>=0.100
+# Uploaded papers and pictures live in Azure Blob Storage (src/files.py).
+# 12.23 still runs on the laptop's Python 3.8 as well as the server's 3.11.
+azure-storage-blob==12.23.1
 uvicorn[standard]>=0.23
 psycopg2-binary>=2.9
 python-dotenv>=1.0

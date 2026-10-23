@@ -13,6 +13,8 @@ themselves with a clear message if no server is reachable at all.
 
 import json
 import os
+import shutil
+import tempfile
 import sys
 import uuid
 from pathlib import Path
@@ -21,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src import store  # noqa: E402
+from src import files, store  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -92,6 +94,10 @@ def local_db():
     # No disk cache in tests: a test's made-up 8-number fingerprints must
     # never land in the file the real app reads.
     store.CACHE_DIR = None
+    # Files in a folder of this test's own, never the real storage account.
+    previous_files = files.backend()
+    file_dir = tempfile.mkdtemp(prefix="edsiderai-files-")
+    files.use_folder(file_dir)
     store.use_database(dsn, schema=schema)
     # EdSider's own grades, subjects, mediums and the rest, as the sync
     # copies them - a paper's grade and subject are ids on these lists.
@@ -119,3 +125,5 @@ def local_db():
             raw.close()
         store.use_database(previous_dsn, schema=previous_schema)
         store.CACHE_DIR = previous_cache
+        files._backend = previous_files
+        shutil.rmtree(file_dir, ignore_errors=True)

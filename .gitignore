@@ -29,6 +29,8 @@ data/*.bak*
 # Local copy of the bank's fingerprints (store._cached_vectors) - derived
 # from the database, rebuilt on demand, and 50 MB of real data.
 data/cache/
+# Uploaded papers and pictures, when no storage account is set (src/files.py).
+data/files/
 
 # The local reader's own install (setup.bat) and in-flight uploads.
 local_reader/venv/

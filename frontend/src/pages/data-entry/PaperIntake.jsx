@@ -7,7 +7,6 @@ import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
-import EdsiderPreview from './EdsiderPreview.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
 import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
@@ -143,6 +142,8 @@ export default function PaperIntake() {
 
   const [addOpen, setAddOpen] = useState(false)
 
+  const [finishBusy, setFinishBusy] = useState(false)
+  const [finishError, setFinishError] = useState(null)
   const [checkBusy, setCheckBusy] = useState(false)
   const [checkError, setCheckError] = useState(null)
   const [checkResult, setCheckResult] = useState(null)
@@ -331,6 +332,28 @@ export default function PaperIntake() {
   async function handleQuestionAdded(number) {
     setQuestions(await api.listIntakeQuestions(selectedId))
     toast.success(`Question ${number} added.`)
+  }
+
+  // Data entry's last step: the questions go into the question bank and the
+  // paper is archived - it is shown from the bank from then on, read-only.
+  async function handleFinish() {
+    const ok = window.confirm(
+      `Add this paper's ${questions?.length ?? 0} question(s) to the question bank? The paper is then archived and can no longer be changed.`,
+    )
+    if (!ok) return
+    setFinishBusy(true)
+    setFinishError(null)
+    try {
+      await api.finishDataEntry(selectedId)
+      loadSelected(selectedId)
+      refreshList()
+      toast.success('Added to the question bank - the paper is archived.')
+    } catch (err) {
+      setFinishError(err.message)
+      toast.error(`Could not finish: ${err.message}`)
+    } finally {
+      setFinishBusy(false)
+    }
   }
 
   async function handleCheckDuplicates() {
@@ -598,7 +621,12 @@ export default function PaperIntake() {
                 {doc.uploaded_at ? ` - uploaded ${doc.uploaded_at.slice(0, 10)}` : ''}
                 {` - data entry: ${doc.operator || 'not given to anyone yet'}`}
               </p>
-              {['teacher_review', 'review_done', 'published'].includes(doc.status) ? (
+              {doc.archived_at ? (
+                <Notice tone="info" title="This paper is in the question bank">
+                  Its questions are shown from the question bank, where they now live. It was archived on{' '}
+                  {doc.archived_at.slice(0, 10)} and can no longer be changed.
+                </Notice>
+              ) : ['teacher_review', 'review_done'].includes(doc.status) ? (
                 <Notice tone="info" title="This paper is with a teacher">
                   It can be read here but not changed until the teacher sends it back.
                 </Notice>
@@ -754,7 +782,6 @@ export default function PaperIntake() {
           />
         ) : null}
 
-        {doc && questions && canUpload ? <EdsiderPreview key={`edsider-preview-${doc.id}`} doc={doc} /> : null}
 
         {doc && questions ? (
           <>
@@ -791,6 +818,8 @@ export default function PaperIntake() {
 
             <div className="pi-two-col">
               <section aria-label="Questions" className="pi-question-list">
+                {/* An archived paper is read from the question bank and cannot change. */}
+                <fieldset disabled={Boolean(doc.archived_at)} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
                 {/* Instructions, from the widest to the narrowest: the whole
                     paper here, each part under its heading, and groups of
                     questions above the first question they cover. */}
@@ -931,6 +960,7 @@ export default function PaperIntake() {
                 {addOpen ? (
                   <AddQuestion docId={selectedId} tree={tree} parts={parts} onAdded={handleQuestionAdded} />
                 ) : null}
+                </fieldset>
               </section>
 
               <aside className="es-card pi-original" aria-label="Original paper">
@@ -1006,7 +1036,11 @@ export default function PaperIntake() {
                 </Notice>
               ) : null}
               <div>
-                <Button variant="primary" onClick={handleCheckDuplicates} disabled={pending > 0 || checkBusy}>
+                <Button
+                  variant="primary"
+                  onClick={handleCheckDuplicates}
+                  disabled={pending > 0 || checkBusy || Boolean(doc.archived_at)}
+                >
                   {checkBusy ? 'Checking...' : 'Check for duplicates'}
                 </Button>
               </div>
@@ -1044,14 +1078,28 @@ export default function PaperIntake() {
               ) : null}
             </section>
 
-            <section id="status" className="es-card pi-status" aria-label="Review status">
-              <div>
-                <h2 className="scr-h2">Review status</h2>
-                <p className="es-caption pi-status__text" style={{ marginTop: 4 }}>
-                  Data entry's own job stops at the duplicate check above. Assigning a checked
-                  paper to a teacher is a separate person's job, in the paper-assignment app. Run
-                  the duplicate check above first.
+            <section id="status" className="es-card pi-status" aria-label="Finish">
+              <div style={{ display: 'grid', gap: 10 }}>
+                <h2 className="scr-h2">Finish and add to the question bank</h2>
+                <p className="es-caption pi-status__text" style={{ margin: 0 }}>
+                  {doc.archived_at
+                    ? `In the question bank since ${doc.archived_at.slice(0, 10)}. The paper is archived.`
+                    : doc.status === 'checked'
+                      ? 'The duplicate check has run on the corrected paper. Finishing adds every question to the question bank and archives this paper - it can no longer be changed after that.'
+                      : 'Mark every question reviewed and run the duplicate check above, then finish here.'}
                 </p>
+                {finishError ? (
+                  <Notice tone="error" title="Could not finish">
+                    {finishError}
+                  </Notice>
+                ) : null}
+                {!doc.archived_at ? (
+                  <div>
+                    <Button variant="primary" onClick={handleFinish} disabled={doc.status !== 'checked' || finishBusy}>
+                      {finishBusy ? 'Adding to the question bank...' : 'Finish - add to the question bank'}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
               <StatusPill status={doc.status} />
             </section>

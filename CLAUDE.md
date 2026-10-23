@@ -84,6 +84,8 @@ src/
                         infrastructure, not part of either feature
   store.py              ALL database access (PostgreSQL) - the only
                         module that knows what storage is underneath
+  files.py              uploaded papers and pictures (Azure Blob Storage,
+                        or a folder) - the only module touching file storage
   dedupe/               the matching engine (passes 1-3)
     embeddings.py       model wrapper (E5 prefix handling)
     guards.py           the five guards + contrast-term mining
@@ -1814,15 +1816,13 @@ only errors left were the labels data entry had not set.
 (`intake.document.grading_method_id`, a migration on the intake schema -
 MIGRATIONS entries may now name `intake.<table>`).
 
-**Preview for EdSider** (`EdsiderPreview.jsx` on Paper intake,
-administrators only; `GET /intake/documents/{id}/edsider-preview`, ADMIN +
-paper rule) takes the exam number and the state the paper arrives in
-(ReviewCompleted suggested: our operator and teacher have done their
-parts), lists what must be fixed and what to check, the parts and
-sections, every question as EdSider will number and mark it, and downloads
-the whole package as JSON. The paper is recorded as created by whoever
-sends it, so their EdSider ids are used (`as_email` names someone else on
-a local run only). Pictures are stand-ins in the preview.
+**No preview page.** A "Preview for EdSider" panel on Paper intake showed
+these rows, codes and links; it was taken off on request - how a paper is
+transferred is internal, not something data entry or admins need to see.
+The route stays (`GET /intake/documents/{id}/edsider-preview`, ADMIN +
+paper rule) for checking one paper's rows by hand, and the converter for
+the send itself; the paper is recorded as created by whoever sends it
+(`as_email` names someone else on a local run only).
 
 **EdSider's Data Entry Operators come from EdSider.** `sync_teachers()`
 now reads everyone holding a current TEACH or DEOP role (162 people: 133
@@ -1839,6 +1839,99 @@ Still to do: the record of what was sent (step 5) and the send itself
 (step 6), once EdSider chooses the route; who owns a sent paper; whether a
 question our duplicate check found in EdSider's bank is linked instead of
 copied.
+
+
+
+## A finished paper goes into the question bank, and is archived
+
+Decided: no teacher review inside EdsiderAI any more. The Data Entry
+Operator's last step - once every question is reviewed and the duplicate
+check has run on the corrected paper (status 'checked') - is "Finish - add
+to the question bank" (`POST /intake/documents/{id}/finish-data-entry`,
+`store.promote_document()`). It:
+- writes each question and part into `questions`, the bank that also holds
+  EdSider's synced questions ("intake-<doc>-<seq>" ids, parent/child as
+  EdSider keeps them, grade code, subject and medium names);
+- writes each one's place on the paper into `question_assessments`, the
+  bank's copy of EdSider's question-to-paper links, under the paper's own
+  assessment id "intake-<doc id>": EdSider's whole number per section,
+  the printed number ("01(1)(a)", new column `printed_number`), the part,
+  and the marks (0 on a question with parts, as EdSider does);
+- records the pictures against the bank rows (`question_files`, keeping
+  the picture's id, so its link still works), moving any still in the
+  database into file storage first;
+- removes the paper's own question rows (with their pictures' rows and any
+  teacher comments - the files stay, the bank points at them), so nothing
+  is stored twice, and archives the paper (`intake.document.archived_at`,
+  status 'published'): its record, file, parts, settings and history stay.
+
+Opening an archived paper reads its questions back from the bank
+(`store.intake_questions()` -> `bank_paper_questions()`), with the same ids,
+numbers, parts, depths and marks, and its pictures likewise
+(`question_images_for_document()`, `get_question_image()`). Every change to
+it is refused for every role (`service.paper_access`: 409, "in the question
+bank and archived"); the page shows it read-only. The `questions` table is
+close to EdSider's `question.question` - a row per question or part, parts
+linked to their question - but holds plain text, not Draft.js, and its MCQ
+answers are our labels ("(2)"), not EdSider's weights; the converter
+(`src/edsider/export.py`) does both when a paper is sent. A paper finished
+by a teacher before this change still goes the same way from "Review done".
+The admin's "Assign to teachers" link is gone; the teacher pages remain for
+the papers already with a teacher. New bank rows need `embed.py` before the
+duplicate checks see them.
+
+## Uploaded papers and pictures - in Azure Blob Storage, not the database
+
+Uploaded papers and the pictures data entry attaches were kept in
+PostgreSQL as `bytea`, so there was one thing to back up. Measured on the
+live data: a paper averages 1.1 MB (largest 6.3 MB), so 100,000 papers
+would be about 110 GB on EdSider's database server - its dearest storage,
+copied by every backup, each download holding one of its 50 connections.
+
+**`src/files.py`** is now the only module that touches file storage, as
+`store.py` is for the database (store calls it; nothing else does):
+- Azure Blob Storage when `EDSIDER_BLOB_CONNECTION_STRING` is set - one
+  private container, `EDSIDER_BLOB_CONTAINER` (default `intake-files`,
+  created on first use). Never public: files are served only through the
+  API, behind sign-in and the paper rule. Otherwise a folder,
+  `EDSIDER_FILES_DIR` (default `data/files`, gitignored); the tests use a
+  throwaway folder each (`conftest.py`), never the real account.
+- Names: `papers/<document id>/<sha256>.pdf`,
+  `images/<question id>/<image id>.png`.
+- `intake.document_file` keeps `file_path`, `file_size`, `file_sha256`;
+  `intake.question_image` keeps `image_path`, `image_size` (its
+  `image_blob` became optional - `store.MADE_OPTIONAL`, for the one
+  change ADD COLUMN cannot express). A file still in the database is read
+  from there until moved. Deleting a picture, a question, or re-splitting
+  a paper deletes the stored pictures too.
+- An upload stores the file before its row, so a failure rolls the whole
+  upload back instead of leaving a paper with no file.
+- An App Service without the storage settings keeps files in the database
+  (`files.available()` is False there), never on its own disk - zip deploy
+  replaces that disk, so a folder there would lose every upload since the
+  last deploy. So the code can deploy before the settings exist.
+- `/health` says where files go ("files": "Azure Blob Storage
+  esaidevstr/intake-files") - never the key - so a deployed app's setting
+  can be checked without signing in.
+
+**One storage for every app.** Dev, pre-prod and a local run share one
+database, so a path one of them records is read by all of them: every one
+needs the same `EDSIDER_BLOB_CONNECTION_STRING`. The account is
+`esaidevstr` (named for dev, used by all three for that reason).
+
+**Moving what is already there** - `scripts/move_files_to_storage.py`
+(`store.files_in_database()`, `store.move_file_to_storage()`) lists by
+default and moves with `--apply`: one file at a time, read back before its
+bytes are cleared, each committed on its own, safe to re-run. On the live
+data: 49 paper files and 22 pictures, 55 MB. Run it only once every
+deployed app has the storage settings. The old public-schema tables
+(`intake_documents`, `intake_question_images`) hold their own copies until
+they are dropped.
+
+Not done: signing in to the account with the App Services' managed
+identity instead of the account key (`azure-identity`, role "Storage Blob
+Data Contributor") - the key in an app setting works, but a managed
+identity has nothing to leak or rotate.
 
 ## Running on Azure App Service - what this repo does for it
 

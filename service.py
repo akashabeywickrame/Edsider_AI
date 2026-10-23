@@ -43,7 +43,7 @@ log = logging.getLogger("edsiderai")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import id_tokens, store, dedupe
+from src import files, id_tokens, store, dedupe
 from src.edsider import export as edsider_export
 from src.edsider import labels as edsider_labels
 from src.dedupe import guards
@@ -425,7 +425,8 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
     paper. Resolved from the path, so a paper cannot be reached by
     guessing its number."""
     role = user["role"]
-    if role in (None, "admin", "superadmin"):
+    writing = request.method not in ("GET", "HEAD")
+    if role in (None, "admin", "superadmin") and not writing:
         return user
     params = request.path_params
     key = next((k for k in ("doc_id", "q_id", "image_id") if k in params), None)
@@ -435,7 +436,12 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
         held = store.paper_holders(conn, **{key: int(params[key])})
     if held is None:
         return user                    # the route itself answers 404
-    writing = request.method not in ("GET", "HEAD")
+    if writing and held["archived_at"]:
+        # Its questions live in the question bank now - for everyone.
+        raise HTTPException(409, "This paper is in the question bank and archived - "
+                                 "it can no longer be changed.")
+    if role in (None, "admin", "superadmin"):
+        return user
     if role == "employee":
         if held["operator"] != user["identity"]:
             raise HTTPException(403, "This paper is not assigned to you.")
@@ -482,6 +488,9 @@ def health():
         "database": store.display_name(),
         "comparable_questions": len(state["rows"]) if state["rows"] is not None else 0,
         "model": state["model_name"],
+        # Where uploaded papers and pictures are kept - every app sharing
+        # the database must say the same here (see src/files.py).
+        "files": files.describe(),
     }
 
 
@@ -606,6 +615,9 @@ class IntakeDocumentOut(BaseModel):
     # teacher reviewing it (see intake.review).
     operator: Optional[str] = None
     assigned_to: Optional[str] = None
+    # Set once the paper's questions are in the question bank: they are read
+    # from there, and the paper can no longer change.
+    archived_at: Optional[str] = None
     sections: List[Dict[str, Any]] = []
     # The paper's own general instructions (the block printed above every
     # part, e.g. "Answer all questions") - filled from the paper's opening
@@ -956,6 +968,7 @@ def _document_out(doc, detail=False):
         paper_grade=doc["paper_grade"], paper_subject=doc["paper_subject"],
         paper_title=doc["paper_title"], split_style=doc["split_style"],
         status=doc["status"], operator=doc["operator"], assigned_to=doc["assigned_to"],
+        archived_at=doc["archived_at"].isoformat() if doc.get("archived_at") else None,
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
         instruction_groups=store.intake_instruction_groups(doc),
@@ -1414,6 +1427,28 @@ def check_document_duplicates(doc_id: int,
         store.set_document_status(conn, doc_id, "checked", actor=_actor(identity))
         store.finish_stage(conn, doc_id, "data_entry", actor=_actor(identity))
     return out
+
+
+@app.post("/intake/documents/{doc_id}/finish-data-entry", response_model=IntakeDocumentDetail,
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def finish_data_entry(doc_id: int, identity: str = Depends(current_identity)):
+    """The Data Entry Operator's last step: the paper's questions go into
+    the question bank and the paper is archived (store.promote_document).
+    Only once every question is reviewed and the duplicate check has run
+    on the corrected paper (status 'checked') - nothing goes into the bank
+    unchecked."""
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        if doc["status"] not in store.PROMOTABLE:
+            raise HTTPException(
+                409, "Run the duplicate check on the corrected paper first - every question "
+                     "reviewed - then finish it.")
+        try:
+            store.promote_document(conn, doc_id, actor=_actor(identity))
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
 
 
 @app.post("/intake/documents/{doc_id}/assign", response_model=IntakeDocumentDetail,

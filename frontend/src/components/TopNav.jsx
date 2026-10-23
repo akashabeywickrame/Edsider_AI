@@ -16,7 +16,6 @@ const LINKS = {
   teacher: [{ to: '/app/teacher', label: 'My papers' }],
   admin: [
     { to: '/app/admin/data-entry', label: 'Data entry' },
-    { to: '/app/admin', label: 'Assign to teachers', end: true },
     { to: '/app/admin/users', label: 'Manage users', superadminOnly: true },
   ],
 }
