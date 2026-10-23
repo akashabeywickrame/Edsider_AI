@@ -474,5 +474,54 @@
   "name": "2026",
   "short_code": null,
   "extra": null
+ },
+ {
+  "kind": "grading_method",
+  "id": 1,
+  "name": "Auto Grading",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "grading_method",
+  "id": 2,
+  "name": "Self Grading",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "grading_method",
+  "id": 3,
+  "name": "Auto and Self Grading",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "time_unit",
+  "id": 1,
+  "name": "minutes",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "time_unit",
+  "id": 2,
+  "name": "hours",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "time_unit",
+  "id": 3,
+  "name": "days",
+  "short_code": null,
+  "extra": null
+ },
+ {
+  "kind": "time_unit",
+  "id": 4,
+  "name": "months",
+  "short_code": null,
+  "extra": null
  }
 ]

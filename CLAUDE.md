@@ -1751,6 +1751,95 @@ teachers are - Data Entry Operators are added on Manage users. The
 question bank (`questions`) still stores grade and subject as text; it
 mirrors EdSider's question rows and was left as it is.
 
+
+## Sending a paper to EdSider - the converter and its preview
+
+Steps 3 and 4 of the plan ("Sending Papers to EdSider"): what a finished
+paper becomes in EdSider's own tables, and a page that shows it before
+anything is sent. Nothing writes to EdSider yet - that waits on EdSider's
+choice of route (an import endpoint, their API, or direct inserts).
+
+**EdSider's `assessment` schema, read end to end** (37 tables, 13 of them
+dated backups `*_bk2025...`; paper #2141, Grade 12 GIT, read row by row).
+A paper is, in write order: `assessment.assessment` (1 row),
+`assessment_schedule` (1), `assessment_assessor` (the chief assessor,
+`CASS`), `assessment_part` (per part, with `part_instruction`),
+`assessment_part_section` (per section - "answer N of M" lives here:
+`allow_optional_questions`, `no_of_questions_to_answer`),
+`question.passage` (a run of questions, titled "ASMNT<id> Q28 - Q31"),
+`question.question` (a question's parts before the question),
+`assessment_question` (one link per question row: `question_number` per
+section, `mark_allocation`), `assessment_operation` (+ its log) and
+`assessment_review_new`. Measured rules:
+- People are named two ways. The paper's `created_by` /
+  `assessment_admin`, the schedule's `scheduled_by`, the assessor row and
+  every link's `added_by` use `staff_user.user_id` as text ("314",
+  "CASS314"); `assessment_operation.employee_id` / `assign_by`,
+  `assessment_review_new.teacher_id` / `assign_by` and
+  `question.passage.created_by` use `registration.teacher.user_id`
+  (= `staff_user.staff_id`) - EdSider's own models join them that way.
+- `assessment_state` (an enum) and `status_id` are set together and
+  match. An "operation" is a status id: all 950 are 9, ProofReading;
+  EdSider assigns one only to a Ready or ReviewCompleted paper.
+- Marks are on the link: a parent's is 0, each part carries its own, all
+  sharing the question's number (#2141's question 5: 11 + 4, parent 0).
+- `start_time` cannot be empty; a title is at most 128 characters and
+  unique; EdSider keeps default terms per medium in
+  `assessment_term_condition`; recent papers use all three grading methods.
+- 309 old papers have no parts and 9,285 links no section; every paper
+  made in the current screens has both, so a sent paper always does.
+
+**`src/edsider/export.py`** - `build_package(doc, questions, lists,
+people, ...)` returns every row in EdSider's own columns, rows naming each
+other by local keys ("part1", "sec2_1", "q512") for the writer to replace
+with EdSider's ids, plus problems (`error` blocks sending, `warning` is for
+a person to check). Pure, so the preview and the send are the same rows.
+Text becomes compact Draft.js JSON as EdSider's editor saves it (a block
+per line, pictures as atomic IMAGE blocks with data: URLs); an MCQ's
+correct labels become weights ("0,100,0,0", an uneven split's remainder
+to the first); a question's own parts' parts become lines inside the part,
+their marks the part's (a part whose stored mark disagrees is reported);
+"Part II - A" / "- B" become two sections of one part; the paper's general
+instructions go on the first part. Marks per question and "answer N of M"
+come from the saved marks plan, else what the paper says
+(`extract.part_marks()` - "Each question carries 15 marks", "Answer FOUR
+questions only", and one mark each for an MCQ part with none printed,
+reported). The question code is EdSider's: G12-GIT-EM-T2-EX02-P2-Q05.
+Measured on our stored GIT Grade 12 paper (#34): Part I 40 MCQs at 1 mark,
+Part II 5 questions "answer any 4" at 15, 115 marks, question 1's parts at
+11 and 4 under a 0-mark parent - the same shape as EdSider's #2141; the
+only errors left were the labels data entry had not set.
+
+**Grading method** is now a required EdSider label beside exam category
+(`intake.document.grading_method_id`, a migration on the intake schema -
+MIGRATIONS entries may now name `intake.<table>`).
+
+**Preview for EdSider** (`EdsiderPreview.jsx` on Paper intake,
+administrators only; `GET /intake/documents/{id}/edsider-preview`, ADMIN +
+paper rule) takes the exam number and the state the paper arrives in
+(ReviewCompleted suggested: our operator and teacher have done their
+parts), lists what must be fixed and what to check, the parts and
+sections, every question as EdSider will number and mark it, and downloads
+the whole package as JSON. The paper is recorded as created by whoever
+sends it, so their EdSider ids are used (`as_email` names someone else on
+a local run only). Pictures are stand-ins in the preview.
+
+**EdSider's Data Entry Operators come from EdSider.** `sync_teachers()`
+now reads everyone holding a current TEACH or DEOP role (162 people: 133
+teachers, 30 operators, one both) with every position they hold
+(`staff_position`, names in `common.staff_role`) and both EdSider ids
+(`staff.edsider_user_id`, `staff.edsider_staff_id`) - the ids the rows
+above need. An EdSider operator signs in as data entry
+(`staff.edsider_operator`, after teacher in `STAFF_ROLE_SQL`) and fills
+Admin -> Data entry's dropdown with their positions ("Assessor, Data Entry
+Operator"); "Refresh from EdSider" there re-reads the list. Several of the
+30 are EdSider's own test accounts, active there, so they show here too.
+
+Still to do: the record of what was sent (step 5) and the send itself
+(step 6), once EdSider chooses the route; who owns a sent paper; whether a
+question our duplicate check found in EdSider's bank is linked instead of
+copied.
+
 ## Running on Azure App Service - what this repo does for it
 
 Deploying is someone else's job - an Azure DevOps pipeline zip-deploys

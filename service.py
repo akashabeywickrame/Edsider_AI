@@ -44,6 +44,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src import id_tokens, store, dedupe
+from src.edsider import export as edsider_export
 from src.edsider import labels as edsider_labels
 from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
@@ -1462,6 +1463,46 @@ def assign_operator(doc_id: int, body: OperatorAssignIn,
         store.assign_review(conn, doc_id, "data_entry", who, assigned_by=_actor(identity))
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
+
+
+class EdsiderPreviewOut(BaseModel):
+    summary: Dict[str, Any]
+    problems: List[Dict[str, Any]]
+    # Every row that would be written to EdSider - see src/edsider/export.py.
+    package: Dict[str, Any]
+
+
+@app.get("/intake/documents/{doc_id}/edsider-preview", response_model=EdsiderPreviewOut,
+         dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def edsider_preview(doc_id: int, arrival_state: str = edsider_export.DEFAULT_ARRIVAL,
+                    exam_number: Optional[int] = None, as_email: Optional[str] = None,
+                    user: dict = Depends(current_user)):
+    """Exactly what sending this paper to EdSider would write - its paper,
+    schedule, parts, sections, questions and links, in EdSider's own
+    columns - and every problem that would stop it, without writing
+    anything. Pictures appear as stand-ins ("image:<id>"), so the preview
+    stays small; the send embeds them.
+
+    The paper is recorded in EdSider as created by whoever sends it, so
+    the preview uses the caller's EdSider ids. `as_email` names someone
+    else - only on a local run, where nobody is signed in."""
+    if arrival_state not in edsider_export.ARRIVAL_STATES:
+        raise HTTPException(400, f"A paper can arrive in EdSider as one of: "
+                                 f"{', '.join(edsider_export.ARRIVAL_STATES)}.")
+    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    sender_email = as_email if (as_email and caller.get("role") is None) else caller.get("identity")
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        questions = store.intake_questions(conn, doc_id)
+        images = store.question_images_for_document(conn, doc_id)
+        people = store.document_people(conn, doc_id)
+        sender = store.lookup_staff(conn, sender_email.strip().lower()) if sender_email else None
+    people["sender"] = dict(sender) if sender else {}
+    package = edsider_export.build_package(
+        doc, questions, _edsider_lists(), people, images=images,
+        arrival_state=arrival_state, exam_number=exam_number)
+    return EdsiderPreviewOut(summary=package["summary"], problems=package["problems"],
+                             package=package)
 
 
 @app.get("/intake/documents/{doc_id}/history", response_model=List[HistoryOut],

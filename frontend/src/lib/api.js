@@ -263,4 +263,6 @@ export const api = {
     }),
   // Everything that happened to a paper, oldest first.
   documentHistory: (docId) => request(`/intake/documents/${docId}/history`),
+  // What sending a paper to EdSider would write, and what stops it - nothing is sent.
+  edsiderPreview: (docId, params) => request(`/intake/documents/${docId}/edsider-preview${query(params)}`),
 }

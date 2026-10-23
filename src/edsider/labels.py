@@ -22,12 +22,13 @@ import re
 
 # KEYS in the stored JSON - EdSider ids, each nullable.
 KEYS = ("medium_id", "term_id", "year_id", "exam_category_id", "difficulty_id",
-        "source_id", "author_id")
+        "source_id", "author_id", "grading_method_id")
 
 # Which EdSider list each key is chosen from (store.edsider_lookups kinds).
 LIST_FOR = {"medium_id": "language", "term_id": "term", "year_id": "year",
             "exam_category_id": "exam_category", "difficulty_id": "difficulty",
-            "source_id": "source", "author_id": "author"}
+            "source_id": "source", "author_id": "author",
+            "grading_method_id": "grading_method"}
 
 _SINHALA = re.compile(r"[඀-෿]")
 _TAMIL = re.compile(r"[஀-௿]")

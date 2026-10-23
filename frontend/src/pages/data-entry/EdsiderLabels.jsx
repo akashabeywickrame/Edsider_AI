@@ -12,6 +12,7 @@ const FIELDS = [
   { key: 'term_id', list: 'term', label: 'Term' },
   { key: 'year_id', list: 'year', label: 'Year' },
   { key: 'exam_category_id', list: 'exam_category', label: 'Exam category', required: true },
+  { key: 'grading_method_id', list: 'grading_method', label: 'Grading method', required: true },
   { key: 'difficulty_id', list: 'difficulty', label: 'Difficulty' },
   { key: 'source_id', list: 'source', label: 'Source' },
   { key: 'author_id', list: 'author', label: 'Author', search: true },

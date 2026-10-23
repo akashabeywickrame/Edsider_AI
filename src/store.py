@@ -278,7 +278,8 @@ def _common_sql():
 # equal), stored as columns on intake.document.
 DOCUMENT_LABELS = {"medium_id": "language", "term_id": "term", "year_id": "year",
                    "exam_category_id": "exam_category", "difficulty_id": "difficulty",
-                   "source_id": "source", "author_id": "author"}
+                   "source_id": "source", "author_id": "author",
+                   "grading_method_id": "grading_method"}
 
 # Where an uploaded paper is in its review - one row per status, so a
 # paper's status is a key into this table rather than free text.
@@ -323,6 +324,7 @@ CREATE TABLE IF NOT EXISTS intake.document (
     difficulty_id     INTEGER REFERENCES common.difficulty(id),
     source_id         INTEGER REFERENCES common.source(id),
     author_id         INTEGER REFERENCES common.author(id),
+    grading_method_id INTEGER REFERENCES common.grading_method(id),
     -- The paper's own general instructions ("Answer all questions").
     notes             TEXT,
     split_style       TEXT,
@@ -852,7 +854,16 @@ def _schema_is_current(conn):
         r"CREATE TABLE IF NOT EXISTS intake\.(\w+)", INTAKE_TEMPLATE)}
     wanted |= {(common, t) for t in COMMON_LISTS} | {(common, "staff_role")}
     return wanted <= tables and all(
-        (SCHEMA_NAME, table, column) in have for table, column, _ in MIGRATIONS)
+        _migration_key(table, column) in have for table, column, _ in MIGRATIONS)
+
+
+def _migration_key(table, column):
+    """(schema, table, column) for a MIGRATIONS entry - "intake.document"
+    names a table in the intake schema, a bare name one in the main one."""
+    if "." in table:
+        schema, name = table.split(".", 1)
+        return dict(zip(("intake", "common"), schema_names()))[schema], name, column
+    return SCHEMA_NAME, table, column
 
 
 # Columns added after a database already existed. CREATE TABLE IF NOT
@@ -894,6 +905,9 @@ MIGRATIONS = [
     # teachers sign in as teachers, and both carry their two EdSider ids
     # (staff_user.user_id, registration.teacher's) for sending papers.
     ("staff", "edsider_operator", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    # EdSider requires a grading method (Auto, Self, or both) on a paper.
+    ("intake.document", "grading_method_id",
+     "INTEGER REFERENCES common.grading_method(id)"),
     ("staff", "edsider_user_id", "INTEGER"),
     ("staff", "edsider_staff_id", "INTEGER"),
 ]
@@ -1816,7 +1830,7 @@ SELECT d.id, d.filename, d.file_type, d.title AS paper_title,
        d.grade_id, d.subject_id, coalesce(g.short_code, g.name) AS paper_grade,
        s.name AS paper_subject, m.name AS medium_name,
        d.medium_id, d.term_id, d.year_id, d.exam_category_id, d.difficulty_id,
-       d.source_id, d.author_id,
+       d.source_id, d.author_id, d.grading_method_id,
        d.notes, d.split_style, d.status, d.uploaded_by, d.uploaded_at,
        f.extractor, {raw_text} AS raw_text,
        t.assigned_to AS assigned_to, o.assigned_to AS operator
@@ -2386,6 +2400,21 @@ def document_history(conn, doc_id):
     return conn.execute(
         "SELECT * FROM intake.review_log WHERE document_id = ? ORDER BY at, id",
         (doc_id,)).fetchall()
+
+
+def document_people(conn, doc_id):
+    """{stage: {...}} - who has each stage of a paper now and who gave it
+    to them, with both people's EdSider ids (None for someone EdSider does
+    not list) - what EdSider's operation and review rows name."""
+    rows = conn.execute(
+        """SELECT r.stage, r.assigned_to, r.assigned_by, r.finished_at,
+                  a.edsider_user_id AS to_user_id, a.edsider_staff_id AS to_staff_id,
+                  b.edsider_user_id AS by_user_id, b.edsider_staff_id AS by_staff_id
+             FROM intake.review r
+             LEFT JOIN staff a ON a.email = r.assigned_to
+             LEFT JOIN staff b ON b.email = r.assigned_by
+            WHERE r.document_id = ? AND r.active""", (doc_id,)).fetchall()
+    return {r["stage"]: dict(r) for r in rows}
 
 
 def add_question_comment(conn, question_id, author, comment):

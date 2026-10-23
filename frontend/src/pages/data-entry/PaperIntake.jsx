@@ -7,6 +7,7 @@ import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import MarksSection from './MarksSection.jsx'
+import EdsiderPreview from './EdsiderPreview.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
 import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
@@ -752,6 +753,8 @@ export default function PaperIntake() {
             onSaved={setDoc}
           />
         ) : null}
+
+        {doc && questions && canUpload ? <EdsiderPreview key={`edsider-preview-${doc.id}`} doc={doc} /> : null}
 
         {doc && questions ? (
           <>
