@@ -8,7 +8,7 @@ import './PaperAssignment.css'
 // design-system/screens/project/AssignPapers.dc.html. Nothing here edits a
 // question; it only decides who reviews a paper.
 
-const WITH_TEACHER = ['teacher_review', 'refer_back', 'review_done', 'published']
+const WITH_TEACHER = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
 
 function gradeText(code) {
   return code ? code.replace(/^G0*/, 'Grade ') : ''
@@ -116,7 +116,8 @@ export default function PaperAssignment() {
 
   if (docs === null && !error) return <Notice tone="info">Loading...</Notice>
 
-  const ready = (docs || []).filter((d) => d.status === 'checked')
+  // Data entry has finished it (and copied it to the question bank).
+  const ready = (docs || []).filter((d) => d.status === 'data_entry_done')
   const assigned = (docs || []).filter((d) => WITH_TEACHER.includes(d.status))
   const nameOf = (identity) => teachers.find((t) => t.identity === identity)?.display_name || identity
 

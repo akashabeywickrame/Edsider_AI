@@ -411,9 +411,10 @@ def require_assigner(user: dict = Depends(current_user)):
     return user
 
 
-# Statuses in which a teacher has the paper: data entry cannot change it
-# until the teacher sends it back.
-_WITH_TEACHER = {"teacher_review", "review_done", "published"}
+# Statuses in which data entry has passed the paper on: a Data Entry
+# Operator cannot change it unless a teacher sends it back.
+_PASSED_ON = {"data_entry_done", "teacher_review", "review_done", "ready_to_publish",
+              "published", "archived"}
 
 
 def paper_access(request: Request, user: dict = Depends(current_user)):
@@ -445,9 +446,9 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
     if role == "employee":
         if held["operator"] != user["identity"]:
             raise HTTPException(403, "This paper is not assigned to you.")
-        if writing and held["status"] in _WITH_TEACHER:
-            raise HTTPException(409, "This paper is with a teacher - it can be changed "
-                                     "again once it is sent back.")
+        if writing and held["status"] in _PASSED_ON:
+            raise HTTPException(409, "This paper has been passed on from data entry - it can "
+                                     "be changed again if a teacher sends it back.")
     elif role == "teacher":
         if held["teacher"] != user["identity"]:
             raise HTTPException(403, "This paper is not assigned to you.")
@@ -955,8 +956,9 @@ class HistoryOut(BaseModel):
 class FinishIn(BaseModel):
     status: Literal["refer_back", "review_done"] = Field(
         ..., description="Refer Back - issues need correction, goes back "
-                         "to data-entry. Review Done - no issues; "
-                         "promotes the paper into the real bank.")
+                         "to data-entry. Review Done - no issues; the "
+                         "question bank copy is refreshed and the paper "
+                         "is ready to publish.")
 
 
 def _document_out(doc, detail=False):
@@ -1423,28 +1425,48 @@ def check_document_duplicates(doc_id: int,
             if d["seq"] not in stems and (d["text"] or "").strip()]
     out = intake_review.check_batch(fresh, state["embedder"])
     with store.connect() as conn:
-        # Data entry's part is done - the paper waits for a teacher.
+        # Checked - data entry can now finish it (finish_data_entry).
         store.set_document_status(conn, doc_id, "checked", actor=_actor(identity))
-        store.finish_stage(conn, doc_id, "data_entry", actor=_actor(identity))
     return out
 
 
 @app.post("/intake/documents/{doc_id}/finish-data-entry", response_model=IntakeDocumentDetail,
           dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def finish_data_entry(doc_id: int, identity: str = Depends(current_identity)):
-    """The Data Entry Operator's last step: the paper's questions go into
-    the question bank and the paper is archived (store.promote_document).
-    Only once every question is reviewed and the duplicate check has run
-    on the corrected paper (status 'checked') - nothing goes into the bank
-    unchecked."""
+    """The Data Entry Operator's last step: the paper's questions are copied
+    into the question bank (store.sync_paper_to_bank) and the paper goes on
+    for a teacher's review - it stays in intake, where the teacher can still
+    correct it. Only once every question is reviewed and the duplicate check
+    has run on the corrected paper (status 'checked')."""
+    who = _actor(identity)
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
-        if doc["status"] not in store.PROMOTABLE:
+        if doc["status"] != "checked":
             raise HTTPException(
                 409, "Run the duplicate check on the corrected paper first - every question "
                      "reviewed - then finish it.")
         try:
-            store.promote_document(conn, doc_id, actor=_actor(identity))
+            store.sync_paper_to_bank(conn, doc_id, actor=who)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        store.finish_stage(conn, doc_id, "data_entry", actor=who)
+        store.set_document_status(conn, doc_id, "data_entry_done", actor=who)
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
+@app.post("/intake/documents/{doc_id}/archive", response_model=IntakeDocumentDetail,
+          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def archive_document(doc_id: int, identity: str = Depends(current_identity)):
+    """The administrator's last step, once the teacher's review is done and
+    the paper is ready to publish: its bank copy is refreshed one final
+    time and it is archived from intake - read from the question bank from
+    then on (store.archive_document). Sending it to EdSider joins this step
+    once EdSider's route exists."""
+    with store.connect() as conn:
+        _require_document(conn, doc_id)
+        try:
+            store.archive_document(conn, doc_id, actor=_actor(identity))
         except ValueError as e:
             raise HTTPException(409, str(e))
         doc = store.get_intake_document(conn, doc_id)
@@ -1556,12 +1578,10 @@ def document_history(doc_id: int):
          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
 def finish_review(doc_id: int, body: FinishIn,
                   identity: str = Depends(current_identity)):
-    """The teacher's "Finish Review" action. Review Done and promotion
-    happen together, same as teacher_app.py: three people (data-entry,
-    the assigning administrator, and the teacher) have all signed off
-    by this point, so nothing is left for a later manual step to do.
-    See store.promote_document for what "promoted" means.
-    """
+    """The teacher's "Finish Review" action. Review Done refreshes the
+    paper's copy in the question bank with the teacher's corrections and
+    makes it ready to publish (an administrator then archives it); Refer
+    Back returns it to the Data Entry Operator who worked on it."""
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
         if doc["status"] != "teacher_review":
@@ -1569,11 +1589,12 @@ def finish_review(doc_id: int, body: FinishIn,
                 409, f"Cannot finish review from status {doc['status']!r} "
                     "- this paper is not currently with a teacher.")
         who = _actor(identity)
-        store.set_document_status(conn, doc_id, body.status, actor=who)
         store.finish_stage(conn, doc_id, "teacher", actor=who)
         if body.status == "review_done":
-            store.promote_document(conn, doc_id, actor=who)
+            store.sync_paper_to_bank(conn, doc_id, actor=who)
+            store.set_document_status(conn, doc_id, "ready_to_publish", actor=who)
         else:
+            store.set_document_status(conn, doc_id, body.status, actor=who)
             # Back to the Data Entry Operator who worked on it.
             store.reopen_stage(conn, doc_id, "data_entry", actor=who)
         doc = store.get_intake_document(conn, doc_id)

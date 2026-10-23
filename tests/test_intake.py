@@ -2077,28 +2077,30 @@ def test_promote_document_copies_questions_into_the_real_bank(local_db):
     with store.connect() as conn:
         doc_id = store.create_intake_document(
             conn, "grade10-git.pdf", uploaded_by="data.entry@edsider.lk")
-        store.add_intake_question(
+        first = store.add_intake_question(
             conn, doc_id, 1, "A coastal town installs a flood warning system.",
             grade="G12", subject="General Information Technology",
         )
-        store.add_intake_question(
+        second = store.add_intake_question(
             conn, doc_id, 2, "Identify the components.", marks=3,
             answer="Rainfall sensors, timestamps.",
             parent_seq=1, depth=1,
         )
-        store.update_intake_document(conn, doc_id, status="review_done")
+        store.update_intake_document(conn, doc_id, status="checked")
 
-        promoted = store.promote_document(conn, doc_id)
+        promoted = store.sync_paper_to_bank(conn, doc_id)
         doc = store.get_intake_document(conn, doc_id)
-        parent_id = f"intake-{doc_id}-1"
-        child_id = f"intake-{doc_id}-2"
+        still_here = len(store.intake_questions(conn, doc_id))
+        parent_id = f"intake-{doc_id}-{first}"
+        child_id = f"intake-{doc_id}-{second}"
         parent = conn.execute(
             "SELECT * FROM questions WHERE id = ?", (parent_id,)).fetchone()
         child = conn.execute(
             "SELECT * FROM questions WHERE id = ?", (child_id,)).fetchone()
 
     assert promoted == 2
-    assert doc["status"] == "published"
+    # Copied, not moved: the paper stays in intake, unchanged, for the teacher.
+    assert doc["status"] == "checked" and not doc["archived_at"] and still_here == 2
     assert parent["shape"] == "parent"
     assert parent["children_raw"] == child_id
     assert child["shape"] == "sub-question"
@@ -2109,14 +2111,22 @@ def test_promote_document_copies_questions_into_the_real_bank(local_db):
     assert child["is_answer_blob"] == 0
 
 
-def test_promote_document_refuses_before_review_is_done(local_db):
+def test_the_bank_copy_follows_the_paper_until_it_is_archived(local_db):
     with store.connect() as conn:
         doc_id = store.create_intake_document(conn, "p.pdf")
-        store.add_intake_question(conn, doc_id, 1, "Q one")
-        store.update_intake_document(conn, doc_id, status="teacher_review")
+        one = store.add_intake_question(conn, doc_id, 1, "Q one")
+        two = store.add_intake_question(conn, doc_id, 2, "Q two")
+        store.sync_paper_to_bank(conn, doc_id)
+        # The teacher corrects one question and drops the other.
+        store.update_intake_question(conn, one, text="Q one, corrected")
+        store.delete_intake_question(conn, two)
+        store.sync_paper_to_bank(conn, doc_id)
+        bank = {r["id"]: r["text"] for r in conn.execute(
+            "SELECT id, text FROM questions WHERE id LIKE ?", (f"intake-{doc_id}-%",))}
+        with pytest.raises(ValueError, match="ready to publish"):
+            store.archive_document(conn, doc_id)
 
-        with pytest.raises(ValueError, match="before data entry has finished it"):
-            store.promote_document(conn, doc_id)
+    assert bank == {f"intake-{doc_id}-{one}": "Q one, corrected"}
 
 
 def test_update_intake_question_rejects_unknown_columns(local_db):

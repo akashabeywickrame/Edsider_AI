@@ -334,20 +334,23 @@ export default function PaperIntake() {
     toast.success(`Question ${number} added.`)
   }
 
-  // Data entry's last step: the questions go into the question bank and the
-  // paper is archived - it is shown from the bank from then on, read-only.
-  async function handleFinish() {
+  // Data entry's last step: the questions are copied to the question bank and
+  // the paper goes on for a teacher's review. An administrator archives it
+  // once the teacher has finished and it is ready to publish.
+  async function handleFinish(archive) {
     const ok = window.confirm(
-      `Add this paper's ${questions?.length ?? 0} question(s) to the question bank? The paper is then archived and can no longer be changed.`,
+      archive
+        ? 'Archive this paper? Its questions stay in the question bank, it leaves intake and can no longer be changed.'
+        : `Finish data entry? This paper's ${questions?.length ?? 0} question(s) are copied to the question bank and it goes on for a teacher's review.`,
     )
     if (!ok) return
     setFinishBusy(true)
     setFinishError(null)
     try {
-      await api.finishDataEntry(selectedId)
+      await (archive ? api.archiveDocument(selectedId) : api.finishDataEntry(selectedId))
       loadSelected(selectedId)
       refreshList()
-      toast.success('Added to the question bank - the paper is archived.')
+      toast.success(archive ? 'Archived - the paper is kept in the question bank.' : 'Copied to the question bank - the paper is ready for a teacher.')
     } catch (err) {
       setFinishError(err.message)
       toast.error(`Could not finish: ${err.message}`)
@@ -383,7 +386,7 @@ export default function PaperIntake() {
   // The student view is only offered once the paper has been through both
   // checks the workflow requires: every question reviewed, and the
   // duplicate check run (which sets the status to 'checked' or later).
-  const DUPLICATES_CHECKED = ['checked', 'teacher_review', 'refer_back', 'review_done', 'published']
+  const DUPLICATES_CHECKED = ['checked', 'data_entry_done', 'teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
   const duplicatesChecked = !!doc && DUPLICATES_CHECKED.includes(doc.status)
   const previewReady = !!doc && !!questions && pending === 0 && duplicatesChecked
   const previewBlocker = !questions
@@ -626,9 +629,10 @@ export default function PaperIntake() {
                   Its questions are shown from the question bank, where they now live. It was archived on{' '}
                   {doc.archived_at.slice(0, 10)} and can no longer be changed.
                 </Notice>
-              ) : ['teacher_review', 'review_done'].includes(doc.status) ? (
-                <Notice tone="info" title="This paper is with a teacher">
-                  It can be read here but not changed until the teacher sends it back.
+              ) : ['data_entry_done', 'teacher_review', 'review_done', 'ready_to_publish'].includes(doc.status) ? (
+                <Notice tone="info" title="Data entry is finished for this paper">
+                  Its questions are in the question bank. A Data Entry Operator can read it here but
+                  change it only if the teacher sends it back.
                 </Notice>
               ) : null}
 
@@ -1080,23 +1084,35 @@ export default function PaperIntake() {
 
             <section id="status" className="es-card pi-status" aria-label="Finish">
               <div style={{ display: 'grid', gap: 10 }}>
-                <h2 className="scr-h2">Finish and add to the question bank</h2>
+                <h2 className="scr-h2">{doc.status === 'ready_to_publish' || doc.archived_at ? 'Archive' : 'Finish data entry'}</h2>
                 <p className="es-caption pi-status__text" style={{ margin: 0 }}>
                   {doc.archived_at
-                    ? `In the question bank since ${doc.archived_at.slice(0, 10)}. The paper is archived.`
-                    : doc.status === 'checked'
-                      ? 'The duplicate check has run on the corrected paper. Finishing adds every question to the question bank and archives this paper - it can no longer be changed after that.'
-                      : 'Mark every question reviewed and run the duplicate check above, then finish here.'}
+                    ? `Archived on ${doc.archived_at.slice(0, 10)}. Its questions are kept in the question bank.`
+                    : doc.status === 'ready_to_publish'
+                      ? canUpload
+                        ? "The teacher's review is done and the question bank has every correction. Archiving removes the paper from intake - it is read from the question bank after that and cannot change."
+                        : 'The teacher has finished. An administrator archives the paper from here.'
+                      : doc.status === 'checked'
+                        ? "The duplicate check has run on the corrected paper. Finishing copies every question to the question bank and passes the paper on for a teacher's review."
+                        : DUPLICATES_CHECKED.includes(doc.status) && doc.status !== 'refer_back'
+                          ? "Data entry is finished - the questions are in the question bank. The paper is with a teacher's review now."
+                          : 'Mark every question reviewed and run the duplicate check above, then finish here.'}
                 </p>
                 {finishError ? (
                   <Notice tone="error" title="Could not finish">
                     {finishError}
                   </Notice>
                 ) : null}
-                {!doc.archived_at ? (
+                {doc.status === 'ready_to_publish' && canUpload ? (
                   <div>
-                    <Button variant="primary" onClick={handleFinish} disabled={doc.status !== 'checked' || finishBusy}>
-                      {finishBusy ? 'Adding to the question bank...' : 'Finish - add to the question bank'}
+                    <Button variant="primary" onClick={() => handleFinish(true)} disabled={finishBusy}>
+                      {finishBusy ? 'Archiving...' : 'Archive the paper'}
+                    </Button>
+                  </div>
+                ) : !doc.archived_at && ['extracted', 'in_review', 'checked', 'refer_back'].includes(doc.status) ? (
+                  <div>
+                    <Button variant="primary" onClick={() => handleFinish(false)} disabled={doc.status !== 'checked' || finishBusy}>
+                      {finishBusy ? 'Copying to the question bank...' : 'Finish data entry - copy to the question bank'}
                     </Button>
                   </div>
                 ) : null}

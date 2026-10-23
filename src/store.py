@@ -304,18 +304,22 @@ DOCUMENT_LABELS = {"medium_id": "language", "term_id": "term", "year_id": "year"
 INTAKE_STATUSES = [
     ("extracted", "Extracted"),
     ("in_review", "In review"),
-    ("checked", "Ready to assign"),
+    ("checked", "Duplicate check done"),
+    ("data_entry_done", "Ready for a teacher"),
     ("teacher_review", "Awaiting teacher review"),
     ("refer_back", "Sent back for changes"),
     ("review_done", "Review done"),
+    ("ready_to_publish", "Ready to publish"),
     ("published", "In the question bank"),
+    ("archived", "Archived"),
 ]
 
 # Paper intake (src/intake/), all in the `intake` schema. A paper is
 # uploaded by an administrator, assigned to a Data Entry Operator who
-# corrects what was extracted, checked for repeats, assigned to a teacher,
-# and on the teacher's sign-off copied into the question bank
-# (promote_document()). Nothing here is in `questions` until then.
+# corrects what was extracted and checks it for repeats, copied into the
+# question bank when they finish (sync_paper_to_bank()), reviewed by a
+# teacher (the bank copy refreshed when they are done), and archived once
+# ready to publish (archive_document()).
 #
 # Normalised: a paper's grade, subject and EdSider labels are ids on the
 # common lists, never their names; a question does not repeat its paper's
@@ -886,9 +890,12 @@ def _schema_is_current(conn):
     optional = {(r["table_schema"], r["table_name"], r["column_name"]) for r in conn.execute(
         """SELECT table_schema, table_name, column_name FROM information_schema.columns
             WHERE table_schema = ANY(?) AND is_nullable = 'YES'""", ([intake],))}
+    statuses = ({r["code"] for r in conn.execute("SELECT code FROM intake.status")}
+                if (intake, "status") in tables else set())
     return wanted <= tables and all(
         _migration_key(table, column) in have for table, column, _ in MIGRATIONS) and all(
-        _migration_key(table, column) in optional for table, column in MADE_OPTIONAL)
+        _migration_key(table, column) in optional for table, column in MADE_OPTIONAL) and (
+        {code for code, _ in INTAKE_STATUSES} <= statuses)
 
 
 # Columns that once had to be filled and no longer do - ALTER ... DROP NOT
@@ -947,11 +954,13 @@ MIGRATIONS = [
     # teachers sign in as teachers, and both carry their two EdSider ids
     # (staff_user.user_id, registration.teacher's) for sending papers.
     ("staff", "edsider_operator", "BOOLEAN NOT NULL DEFAULT FALSE"),
-    # A paper in the question bank is archived (promote_document()).
+    # A paper is archived once it is ready to publish (archive_document()).
     ("intake.document", "archived_at", "TIMESTAMPTZ"),
     # The number as the paper prints it ("01(1)(a)") on a paper's link -
     # question_number is EdSider's whole number per section.
     ("question_assessments", "printed_number", "TEXT"),
+    # Its place on the paper, in order - questions added mid-paper move it.
+    ("question_assessments", "position", "INTEGER"),
     # Files live in file storage (src/files.py); the database keeps where.
     ("intake.document_file", "file_path", "TEXT"),
     ("intake.document_file", "file_size", "BIGINT"),
@@ -2380,38 +2389,32 @@ def _paper_key(doc_id):
     return f"intake-{doc_id}"
 
 
-def _bank_seq(question_id):
-    """"intake-83-12" -> 12, the question's place on its paper."""
-    return int(question_id.rsplit("-", 1)[1])
-
-
 def bank_paper_questions(conn, doc_id):
     """An archived paper's questions, read back from the question bank in
-    the shape intake_questions() has always returned - the same ids, numbers,
-    parts and marks the paper had, read-only."""
+    the shape intake_questions() has always returned - the same ids,
+    places, numbers, parts and marks the paper had."""
     rows = conn.execute(
-        """SELECT qa.link_id, qa.printed_number, qa.question_number, qa.section_id,
-                  q.id AS bank_id, q.parent_id, q.text, q.marks, q.topic, q.answer,
-                  q.grade, q.subject
+        """SELECT qa.link_id, qa.position, qa.printed_number, qa.question_number,
+                  qa.section_id, q.id AS bank_id, q.parent_id, q.text, q.marks, q.topic,
+                  q.answer, q.grade, q.subject
              FROM question_assessments qa
              JOIN questions q ON q.id = qa.question_id
             WHERE qa.assessment_id = ?""", (_paper_key(doc_id),)).fetchall()
+    position = {r["bank_id"]: r["position"] for r in rows}
     out = []
     for r in rows:
-        seq = _bank_seq(r["bank_id"])
         out.append({
-            "id": -r["link_id"], "document_id": doc_id, "seq": seq,
-            "parent_seq": _bank_seq(r["parent_id"]) if r["parent_id"] else None,
+            "id": -r["link_id"], "document_id": doc_id, "seq": r["position"],
+            "parent_seq": position.get(r["parent_id"]),
             "question_number": r["printed_number"] or (
                 str(r["question_number"]) if r["question_number"] is not None else None),
             "text": r["text"], "marks": r["marks"], "topic": r["topic"],
             "answer": r["answer"], "question_type": None, "extraction_confidence": "ok",
-            "reviewed": True, "teacher_reviewed": False, "last_edited_by": None,
+            "reviewed": True, "teacher_reviewed": True, "last_edited_by": None,
             "last_edited_at": None, "created_at": None, "section": r["section_id"],
             "grade": r["grade"], "subject": r["subject"]})
     out.sort(key=lambda q: q["seq"])
     return _with_depth(out)
-
 
 def stamp_question_editor(conn, q_id, identity):
     """Who last touched this question's own fields - called alongside
@@ -2794,58 +2797,43 @@ def update_intake_document(conn, doc_id, actor=None, **fields):
         set_document_status(conn, doc_id, fields.pop("status"), actor=actor)
 
 
-# A paper may go into the question bank once data entry has finished it
-# (its duplicate check run: 'checked') - or, for a paper that went to a
-# teacher before the teacher step was dropped, once the teacher finished.
-PROMOTABLE = ("checked", "review_done")
+def _bank_id(doc_id, question_id):
+    """A paper's question in the bank: "intake-<paper>-<question id>" -
+    beside EdSider's numeric ids, never equal to one, and the same however
+    often the copy is refreshed, wherever the question moves on the paper."""
+    return f"intake-{doc_id}-{question_id}"
 
 
-def promote_document(conn, doc_id, actor=None):
-    """Move a finished paper into the question bank (`questions`) and
-    archive it - data entry's last step.
+def sync_paper_to_bank(conn, doc_id, actor=None):
+    """Copy a paper's questions into the question bank (`questions`), or
+    refresh a copy made before - when data entry finishes, and again when
+    the teacher's review is done, so the bank holds the corrected paper.
+    The paper itself stays in intake, where it can still be edited.
 
-    Each question and part becomes a bank row; its place on the paper (its
-    number as EdSider counts it and as the paper prints it, its part, its
-    marks) becomes a row in `question_assessments`, the bank's copy of
-    EdSider's question-to-paper links, under the paper's own assessment id
-    "intake-<id>"; its pictures, in file storage, are recorded against the
-    bank row (`question_files`). The paper's own question rows are then
-    removed - from here on its questions live in the bank and are read back
-    from there (bank_paper_questions()) - and the paper is archived: its
-    record, file, parts, settings and history stay, and it cannot change.
-
-    Promoted rows get their own id namespace ("intake-{doc}-{seq}"), so
-    they can never collide with a real EdSider id, and keep their
-    parent/child shape - link_children_to_parents() does the actual
-    linking afterwards, the same as a real sync would. A stem with no
-    text of its own is still promoted if it has children (its parent_id
-    link would otherwise point nowhere); a genuinely empty leaf is
-    skipped, the same as COMPARABLE already excludes text-free rows
-    elsewhere in this codebase. Grade, subject and language are the
-    paper's, written as the bank already holds them (grade code, subject
-    and language names).
-
-    Marks the document 'published' when done, so this cannot silently
-    run twice, and returns how many rows were promoted.
-    """
+    Each question and part is a bank row, parts linked to their question as
+    EdSider keeps them; its place on the paper - EdSider's whole number per
+    section, the printed number ("01(1)(a)"), its position, its part and its
+    marks (0 on a question with parts, as in EdSider) - is a row in
+    `question_assessments` under the paper's own assessment id "intake-<id>";
+    its pictures in file storage are recorded against the bank row
+    (`question_files`, keeping the picture's id). A question removed from
+    the paper since the last copy leaves the bank too. A genuinely empty
+    question is skipped, as COMPARABLE skips text-free rows. Returns how
+    many questions the bank holds for the paper."""
     doc = get_intake_document(conn, doc_id)
     if doc is None:
         raise ValueError(f"no such intake document: {doc_id}")
     if doc.get("archived_at"):
-        raise ValueError("this paper is already in the question bank")
-    if doc["status"] not in PROMOTABLE:
-        raise ValueError(
-            f"cannot add a paper to the question bank before data entry has finished it "
-            f"(status is {doc['status']!r})")
+        raise ValueError("this paper is archived; its questions are already in the bank")
 
     drafts = intake_questions(conn, doc_id)
-    ids = {d["seq"]: f"intake-{doc_id}-{d['seq']}" for d in drafts}
+    ids = {d["seq"]: _bank_id(doc_id, d["id"]) for d in drafts}
     children_of = {}
     for d in drafts:
         if d["parent_seq"] is not None:
             children_of.setdefault(d["parent_seq"], []).append(d["seq"])
 
-    promoted = 0
+    key = _paper_key(doc_id)
     kept = {}
     for d in drafts:
         text = (d["text"] or "").strip()
@@ -2875,16 +2863,23 @@ def promote_document(conn, doc_id, actor=None):
         save(conn, row)
         number = re.search(r"\d+", d["question_number"] or "")
         save_assessment_link(
-            conn, -d["id"], _paper_key(doc_id), ids[d["seq"]],
+            conn, -d["id"], key, ids[d["seq"]],
             question_number=int(number.group()) if number else None,
-            # A question with parts carries none itself, as in EdSider.
             mark_allocation=0 if kids else d["marks"],
             section_id=d["section"], added_by=actor)
-        conn.execute("UPDATE question_assessments SET printed_number = ? WHERE link_id = ?",
-                     (d["question_number"], -d["id"]))
+        conn.execute("UPDATE question_assessments SET printed_number = ?, position = ? "
+                     "WHERE link_id = ?", (d["question_number"], d["seq"], -d["id"]))
         kept[d["id"]] = ids[d["seq"]]
-        promoted += 1
 
+    # Whatever left the paper since the last copy leaves the bank too
+    # (its pictures' rows go with it - ON DELETE CASCADE).
+    gone = [r["question_id"] for r in conn.execute(
+        "DELETE FROM question_assessments WHERE assessment_id = ? AND NOT (link_id = ANY(?)) "
+        "RETURNING question_id", (key, [-i for i in kept])).fetchall()]
+    if gone:
+        conn.execute("DELETE FROM questions WHERE id = ANY(?)", (gone,))
+
+    pictures = []
     for image in conn.execute(
             """SELECT i.id, i.question_id, i.slot, i.content_type, i.image_path,
                       i.image_size, i.image_blob IS NOT NULL AS in_db
@@ -2898,22 +2893,57 @@ def promote_document(conn, doc_id, actor=None):
             path = conn.execute("SELECT image_path FROM intake.question_image WHERE id = ?",
                                 (image["id"],)).fetchone()["image_path"]
         if path is None:
-            raise ValueError("a picture on this paper is still in the database and no file "
-                             "storage is set, so it cannot go with its question")
+            continue           # stays with the paper in intake until it is in storage
         conn.execute(
             """INSERT INTO question_files (id, question_id, slot, path, content_type, size)
-               VALUES (?,?,?,?,?,?) ON CONFLICT (id) DO NOTHING""",
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT (id) DO UPDATE SET question_id = excluded.question_id,
+                   slot = excluded.slot, path = excluded.path,
+                   content_type = excluded.content_type, size = excluded.size""",
             (image["id"], kept[image["question_id"]], image["slot"], path,
              image["content_type"], image["image_size"]))
+        pictures.append(image["id"])
+    conn.execute("DELETE FROM question_files WHERE question_id = ANY(?) AND NOT (id = ANY(?))",
+                 (list(kept.values()), pictures))
 
-    if promoted:
+    if kept:
         link_children_to_parents(conn)
-    # The questions now live in the bank. Removing them takes their picture
-    # rows (the files stay - the bank points at them) and comments with them.
+    _log(conn, doc_id, "copied to the question bank", actor=actor)
+    return len(kept)
+
+
+def unfinished_pictures(conn, doc_id):
+    """Pictures on a paper still held in the database rather than in file
+    storage - they cannot go with an archived paper."""
+    return conn.execute(
+        """SELECT count(*) AS n FROM intake.question_image i
+             JOIN intake.question q ON q.id = i.question_id
+            WHERE q.document_id = ? AND i.image_path IS NULL""", (doc_id,)).fetchone()["n"]
+
+
+def archive_document(conn, doc_id, actor=None):
+    """The last step, once the teacher's review is done ('ready_to_publish'):
+    refresh the paper's bank copy one final time, then remove its questions
+    from intake - from here on they are read from the bank
+    (bank_paper_questions()) - and archive the paper. Its record, file,
+    parts, settings and history stay; it can no longer change. Sending the
+    paper to EdSider belongs to this step once EdSider's route exists."""
+    doc = get_intake_document(conn, doc_id)
+    if doc is None:
+        raise ValueError(f"no such intake document: {doc_id}")
+    if doc.get("archived_at"):
+        raise ValueError("this paper is already archived")
+    if doc["status"] != "ready_to_publish":
+        raise ValueError(f"a paper is archived once it is ready to publish "
+                         f"(status is {doc['status']!r})")
+    sync_paper_to_bank(conn, doc_id, actor=actor)
+    if unfinished_pictures(conn, doc_id):
+        raise ValueError("some pictures on this paper are still in the database and no file "
+                         "storage is set here, so they cannot go with it")
+    # The files stay - the bank points at them; the rows here go, comments too.
     conn.execute("DELETE FROM intake.question WHERE document_id = ?", (doc_id,))
     conn.execute("UPDATE intake.document SET archived_at = now() WHERE id = ?", (doc_id,))
-    set_document_status(conn, doc_id, "published", actor=actor, action="published")
-    return promoted
+    set_document_status(conn, doc_id, "archived", actor=actor, action="archived")
 
 
 # What a row may sign in as - one rule, used by every reader below so

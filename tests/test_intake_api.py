@@ -445,9 +445,9 @@ def test_finish_review_done_promotes_every_question(document):
     assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
 
     finished = finish_review(document.id, FinishIn(status="review_done"))
-    assert finished.status == "published"
+    assert finished.status == "ready_to_publish" and not finished.archived_at
 
     with store.connect() as conn:
         promoted = {r["id"] for r in store.all_questions(conn)
                    if r["id"].startswith(f"intake-{document.id}-")}
-    assert promoted == {f"intake-{document.id}-{q.seq}" for q in qs}
+    assert promoted == {f"intake-{document.id}-{q.id}" for q in qs}

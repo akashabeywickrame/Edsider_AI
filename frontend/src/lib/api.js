@@ -191,10 +191,12 @@ export const api = {
     request(`/intake/documents/${docId}/resplit/preview`, { method: 'POST', body: { style } }),
   resplitDocument: (docId, style) =>
     request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
-  // Data entry's last step: the paper's questions go into the question bank
-  // and the paper is archived.
+  // Data entry's last step: the paper's questions are copied to the question
+  // bank and the paper goes on for a teacher's review.
   finishDataEntry: (docId) =>
     request(`/intake/documents/${docId}/finish-data-entry`, { method: 'POST' }),
+  // An administrator's last step once a paper is ready to publish.
+  archiveDocument: (docId) => request(`/intake/documents/${docId}/archive`, { method: 'POST' }),
   checkDocumentDuplicates: (docId) =>
     request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
   // Informational only - runs before anyone has reviewed a single

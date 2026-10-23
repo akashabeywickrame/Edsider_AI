@@ -39,8 +39,10 @@ function describe(h, nameOf) {
       return `${STAGE[h.stage] === 'data entry' ? 'Data entry' : 'Teacher review'} finished${by}`
     case 'reopened':
       return `Back with data entry${by}`
-    case 'published':
-      return `Added to the question bank${by}`
+    case 'copied to the question bank':
+      return `Copied to the question bank${by}`
+    case 'archived':
+      return `Archived - kept in the question bank${by}`
     default:
       return `${STATUS_LABEL[h.from_status] || h.from_status || '-'} -> ${STATUS_LABEL[h.to_status] || h.to_status}${by}`
   }

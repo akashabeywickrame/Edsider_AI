@@ -216,6 +216,9 @@ def test_a_paper_goes_operator_teacher_and_back(client):
     finally:
         service.state["embedder"] = None
     assert call(client, OP1, "GET", path).json()["status"] == "checked"
+    # Finishing copies it to the question bank and passes it on.
+    done = call(client, OP1, "POST", f"{path}/finish-data-entry")
+    assert done.status_code == 200 and done.json()["status"] == "data_entry_done"
 
     # With the teacher: the teacher may open and tick it, the operator may
     # only look.
@@ -235,8 +238,9 @@ def test_a_paper_goes_operator_teacher_and_back(client):
     history = call(client, ADMIN, "GET", f"{path}/history").json()
     assert [(h["action"], h.get("stage")) for h in history] == [
         ("uploaded", None), ("assigned", "data_entry"), ("status", None),
-        ("finished", "data_entry"), ("assigned", "teacher"), ("status", None),
-        ("status", None), ("finished", "teacher"), ("reopened", "data_entry")]
+        ("copied to the question bank", None), ("finished", "data_entry"), ("status", None),
+        ("assigned", "teacher"), ("status", None),
+        ("finished", "teacher"), ("status", None), ("reopened", "data_entry")]
     assert history[0]["actor"] == ADMIN and history[1]["assigned_to"] == OP1
 
 

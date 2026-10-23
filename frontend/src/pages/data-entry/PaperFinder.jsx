@@ -12,10 +12,13 @@ export const STATUS_LABEL = {
   extracted: 'Extracted',
   in_review: 'In review',
   checked: 'Duplicate check done',
+  data_entry_done: 'Ready for a teacher',
   teacher_review: 'Awaiting teacher review',
   refer_back: 'Sent back for changes',
   review_done: 'Review done',
+  ready_to_publish: 'Ready to publish',
   published: 'In the question bank',
+  archived: 'Archived',
 }
 
 function gradeLabel(code) {

@@ -1842,43 +1842,51 @@ copied.
 
 
 
-## A finished paper goes into the question bank, and is archived
+## A paper's way into the question bank - copied, reviewed, then archived
 
-Decided: no teacher review inside EdsiderAI any more. The Data Entry
-Operator's last step - once every question is reviewed and the duplicate
-check has run on the corrected paper (status 'checked') - is "Finish - add
-to the question bank" (`POST /intake/documents/{id}/finish-data-entry`,
-`store.promote_document()`). It:
-- writes each question and part into `questions`, the bank that also holds
-  EdSider's synced questions ("intake-<doc>-<seq>" ids, parent/child as
-  EdSider keeps them, grade code, subject and medium names);
-- writes each one's place on the paper into `question_assessments`, the
-  bank's copy of EdSider's question-to-paper links, under the paper's own
-  assessment id "intake-<doc id>": EdSider's whole number per section,
-  the printed number ("01(1)(a)", new column `printed_number`), the part,
-  and the marks (0 on a question with parts, as EdSider does);
-- records the pictures against the bank rows (`question_files`, keeping
-  the picture's id, so its link still works), moving any still in the
-  database into file storage first;
-- removes the paper's own question rows (with their pictures' rows and any
-  teacher comments - the files stay, the bank points at them), so nothing
-  is stored twice, and archives the paper (`intake.document.archived_at`,
-  status 'published'): its record, file, parts, settings and history stay.
+The flow, as decided:
+1. **Data entry finishes** - every question reviewed, the duplicate check
+   run on the corrected paper ('checked') - with "Finish data entry - copy
+   to the question bank" (`POST /intake/documents/{id}/finish-data-entry`):
+   the questions are copied into the bank (`store.sync_paper_to_bank()`) and
+   the paper, still in intake, becomes 'data_entry_done' ("Ready for a
+   teacher"). A Data Entry Operator cannot change it from here unless a
+   teacher sends it back (`service._PASSED_ON`).
+2. **An administrator assigns a teacher** (Assign to teachers, as before).
+   The teacher reviews and edits it in intake. Refer Back returns it to the
+   operator, whose next finish refreshes the bank copy. Review Done
+   refreshes the bank copy with the teacher's corrections and makes the
+   paper 'ready_to_publish'.
+3. **An administrator archives it** (`POST /intake/documents/{id}/archive`,
+   `store.archive_document()`): the bank copy is refreshed once more, the
+   paper's own question rows are removed (their pictures' rows and comments
+   with them; the files stay, the bank points at them) and the paper is
+   'archived' (`intake.document.archived_at`). Its record, file, parts,
+   settings and history stay. Sending it to EdSider belongs to this step
+   once EdSider's route exists.
 
-Opening an archived paper reads its questions back from the bank
-(`store.intake_questions()` -> `bank_paper_questions()`), with the same ids,
-numbers, parts, depths and marks, and its pictures likewise
-(`question_images_for_document()`, `get_question_image()`). Every change to
-it is refused for every role (`service.paper_access`: 409, "in the question
-bank and archived"); the page shows it read-only. The `questions` table is
-close to EdSider's `question.question` - a row per question or part, parts
-linked to their question - but holds plain text, not Draft.js, and its MCQ
-answers are our labels ("(2)"), not EdSider's weights; the converter
-(`src/edsider/export.py`) does both when a paper is sent. A paper finished
-by a teacher before this change still goes the same way from "Review done".
-The admin's "Assign to teachers" link is gone; the teacher pages remain for
-the papers already with a teacher. New bank rows need `embed.py` before the
-duplicate checks see them.
+**The bank copy.** Each question and part is a row in `questions` - the
+bank that also holds EdSider's synced questions - with id
+"intake-<paper>-<question id>", stable however often the copy is refreshed
+and wherever the question moves on the paper; parts are linked to their
+question as EdSider does. Its place on the paper is a row in
+`question_assessments` (the bank's copy of EdSider's question-to-paper
+links) under the paper's own assessment id "intake-<paper id>": EdSider's
+whole number per section, `printed_number` ("01(1)(a)"), `position`, the
+part, and the marks (0 on a question with parts, as EdSider does). Its
+pictures are rows in `question_files`, keeping the picture's id. A refresh
+updates all of these and removes whatever left the paper since.
+
+**An archived paper reads back from the bank** (`store.intake_questions()`
+-> `bank_paper_questions()`, and its pictures through
+`question_images_for_document()` / `get_question_image()`), with the same
+ids, places, numbers, parts and marks. Every change to it is refused for
+every role (`service.paper_access`, 409). The `questions` table is close
+to EdSider's `question.question` - a row per question or part, parts linked
+to their question - but holds plain text, not Draft.js, and our MCQ
+answers are labels ("(2)"), not EdSider's weights; the converter
+(`src/edsider/export.py`) does both when a paper is sent. New bank rows
+need `embed.py` before the duplicate checks see them.
 
 ## Uploaded papers and pictures - in Azure Blob Storage, not the database
 

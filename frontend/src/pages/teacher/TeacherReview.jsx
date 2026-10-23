@@ -19,7 +19,9 @@ const STATUS_TEXT = {
   teacher_review: 'Awaiting your review',
   refer_back: 'Referred back to data entry',
   review_done: 'Review done',
+  ready_to_publish: 'Ready to publish',
   published: 'Published',
+  archived: 'Archived',
 }
 
 function gradeText(code) {
@@ -153,11 +155,11 @@ export default function TeacherReview() {
       setDoc(updated)
       setMessage(
         decision === 'review_done'
-          ? 'Review done - the paper has been added to the question bank.'
+          ? 'Review done - the question bank has your corrections and the paper is ready to publish.'
           : 'Referred back to data entry with your comments.',
       )
       setDecision(null)
-      toast.success(decision === 'review_done' ? 'Review finished - the paper is in the question bank.' : 'Paper referred back to data entry.')
+      toast.success(decision === 'review_done' ? 'Review finished - the paper is ready to publish.' : 'Paper referred back to data entry.')
     } catch (err) {
       setError(err.message)
       toast.error(`Could not finish the review: ${err.message}`)
