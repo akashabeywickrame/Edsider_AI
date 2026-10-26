@@ -17,7 +17,7 @@ export const STATUS_LABEL = {
   refer_back: 'Sent back for changes',
   review_done: 'Review done',
   ready_to_publish: 'Ready to publish',
-  published: 'In the question bank',
+  published: 'Sent to EdSider',
   archived: 'Archived',
 }
 

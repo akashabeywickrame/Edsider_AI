@@ -1620,9 +1620,11 @@ def test_a_diagrams_garbled_ocr_is_dropped_not_spliced_in(tmp_path):
     assert len(ocr.calls) == 1  # the picture was still OCR'd, just not kept
     raw = result["raw_text"]
     # Nothing wedged itself between the two real lines - the gap holds
-    # only the next line's own printed number, never the dropped picture.
+    # only the next line's own printed number and the picture itself, kept
+    # as a picture ("[Picture 1]"), never its OCR noise.
     gap = raw[raw.index("rest at t=0.") + len("rest at t=0."):raw.index("The next question.")]
-    assert gap.strip() in ("", "22.")
+    assert gap.replace("[Picture 1]", "").strip() in ("", "22.")
+    assert result["questions"][0]["tables"] == [{"n": 1, "slot": "question"}]
 
 
 def test_picture_halves_are_joined_into_one_picture():
@@ -1825,8 +1827,13 @@ def test_docx_picture_without_tesseract_is_marked_not_dropped(tmp_path):
     d.save(str(path))
 
     result = extract.extract(path, ocr=unavailable_ocr)
-    assert "[image - not read]" in result["questions"][0]["text"]
+    # Not read, but not lost: the picture itself is on the question, and the
+    # note says pictures were not read.
+    assert result["questions"][0]["tables"] == [{"n": 1, "slot": "question"}]
     assert extract.was_incomplete(result["extractor"])
+    # Without the tables list (older callers), the text still says so.
+    text, _note, _bold = extract.read_docx(path, unavailable_ocr)
+    assert "[image - not read]" in text
 
 
 def test_prepare_for_ocr_flattens_transparency_onto_white():

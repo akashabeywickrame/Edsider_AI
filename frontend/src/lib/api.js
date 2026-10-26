@@ -76,10 +76,14 @@ async function authHeaders() {
 }
 
 function failure(res, detail) {
-  const error = new Error(detail || `${res.status} ${res.statusText}`)
+  // A detail may be {message, problems} - what stops a paper being sent to
+  // EdSider, one problem per question - kept on the error for the page.
+  const text = typeof detail === 'string' ? detail : detail?.message
+  const error = new Error(text || `${res.status} ${res.statusText}`)
   // Lets a caller tell "refused" (403) apart from "service down" or a
   // bug - RequireUser needs exactly that distinction.
   error.status = res.status
+  if (detail && Array.isArray(detail.problems)) error.problems = detail.problems
   return error
 }
 
@@ -191,12 +195,19 @@ export const api = {
     request(`/intake/documents/${docId}/resplit/preview`, { method: 'POST', body: { style } }),
   resplitDocument: (docId, style) =>
     request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
+  // Reads the paper's own file again - its tables as pictures, and any
+  // reader fix since the upload - and replaces its questions.
+  rereadDocument: (docId, style) =>
+    request(`/intake/documents/${docId}/reread`, { method: 'POST', body: { style } }),
   // Data entry's last step: the paper's questions are copied to the question
   // bank and the paper goes on for a teacher's review.
   finishDataEntry: (docId) =>
     request(`/intake/documents/${docId}/finish-data-entry`, { method: 'POST' }),
   // An administrator's last step once a paper is ready to publish.
   archiveDocument: (docId) => request(`/intake/documents/${docId}/archive`, { method: 'POST' }),
+  // Writes the paper into EdSider (ready to publish there) and archives it here.
+  sendToEdsider: (docId) =>
+    request(`/intake/documents/${docId}/send-to-edsider`, { method: 'POST', body: {} }),
   checkDocumentDuplicates: (docId) =>
     request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
   // Informational only - runs before anyone has reviewed a single
@@ -252,10 +263,11 @@ export const api = {
   // Re-reads EdSider's teacher list into our copy - fails with a clear
   // message (e.g. EdSider unreachable) while the last copy stays usable.
   syncTeachers: () => request('/teachers/sync', { method: 'POST' }),
-  assignDocument: (docId, teacherIdentity) =>
+  // A paper is reviewed by two teachers.
+  assignDocument: (docId, teacherIdentities) =>
     request(`/intake/documents/${docId}/assign`, {
       method: 'POST',
-      body: { teacher_identity: teacherIdentity },
+      body: { teacher_identities: teacherIdentities },
     }),
 
   // ---- data entry assignment (administrators) ----

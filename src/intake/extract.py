@@ -342,8 +342,11 @@ _QUESTION_WORD_START = re.compile(
     # General English paper: "...two sentences /\nquestion in each
     # blank.", where "in each blank" on the same line is what gives it
     # away as prose, not a heading).
+    #
+    # "Question: Vectors" (the older Combined Maths .docx) is a heading
+    # too: a colon, then a capital letter - prose never puts one there.
     r"^[ \t]*(?:\d{1,3}[ \t]*[.)])?[ \t]*question\b[ \t.:\-]*"
-    r"(?:(?P<qn>\d{1,3})|(?=[ \t]*$))",
+    r"(?:(?P<qn>\d{1,3})|(?=[ \t]*$)|(?<=:)(?=[ \t]*(?-i:[A-Z])))",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -382,7 +385,11 @@ def _number_starts(text, start=0, end=None):
                 if k != kind:
                     continue
                 # "10" onwards is the same in both, so it counts for both.
-                if n < 10 and (len(raw) > 1 and raw[0] == "0") != padded:
+                # A line saying "Question" is a question however it is
+                # padded: the Combined Maths "Full Solutions Guide" prints
+                # "Question 01", "Question 02", then "Question 3" to "10".
+                if (kind != "word" and n < 10
+                        and (len(raw) > 1 and raw[0] == "0") != padded):
                     continue
                 # A genuine question number only ever goes up. A "(20)"
                 # that is really a mark total is handled in the regex.
@@ -1487,10 +1494,21 @@ def _attach_answers(answers, drafts, sections):
             # the question's printed number plus that same suffix.
             d["answer"] = _strip_marks_annotation(head) or None
             printed = d["question_number"] or ""
+            matched = set()
             for kid in kids:
                 suffix = (kid["question_number"] or "")[len(printed):]
                 if per_part.get(suffix):
                     kid["answer"] = _strip_marks_annotation(per_part[suffix])
+                    matched.add(suffix)
+            # A label that matches no part stays on the question, under its
+            # own label, rather than being dropped: the GIT A/L model
+            # paper's scheme labels question (02)'s parts "(a)", "(b)"
+            # where the paper prints "(1)(a)" - its whole worked answer,
+            # and the tables in it, were lost.
+            left = [f"{tags} {_strip_marks_annotation(text)}"
+                    for tags, text in per_part.items() if tags not in matched and text]
+            if left:
+                d["answer"] = "\n\n".join(([d["answer"]] if d["answer"] else []) + left)
 
     # A fill-in-the-blank question's answer key is a flat numbered list -
     # "1. for\n2. across\n..." or "(1) documentation\n(2) ..." - never
@@ -1656,6 +1674,217 @@ def _looks_like_marking_scheme(text, start):
     return bool(_BLANK_ANSWER_LINE.match(lines[1]))
 
 
+# ------------------------------------------------------ worked solutions
+#
+# A worked-solutions paper (the Grade 13 Combined Maths "Full Solutions
+# Guide", intake uploads #84/#85) prints each question, then "Solution"
+# and the working: numbered steps "1. Base Case (n=1):", "2. Assumption",
+# "3. Inductive Step". Left in the text those steps were split off as
+# questions 1-3 (the real questions 1 and 2 were lost), and on eight of
+# twelve questions they were read as MCQ options. A maths paper like this
+# has no options at all; everything after "Solution" is the answer.
+#
+# So solutions are taken out before the paper is split, and put back as
+# the answer of the question or part they follow.
+
+# "Solution", "Solution:", "Solution Sketch", "Solution: 0 <= x <= 6";
+# "Answer" alone on its line is the same thing on the older Combined
+# Maths .docx, which labels every worked solution "Answer". Not "Answer
+# any 5 questions." and not "Answers" (the answer-key heading). Not
+# "Solutions" either: that is the PDF's header grid, "Full Solutions
+# Guide" broken over three lines, which the stored text of upload #85
+# has inside question 3.
+_SOLUTION_LINE = re.compile(
+    r"^[ \t]*(?:solution(?:[ \t]+sketch)?[ \t]*(?::.*)?"
+    r"|answer[ \t]*:?)[ \t]*$",
+    re.IGNORECASE,
+)
+# What ends a solution: the next question, a part heading, or the next
+# lettered / roman part - "(b) Integration using ...", "ii) Implicit
+# Differentiation". Never a numbered line: those are the working's own
+# steps. A letter needs a bracket - "e.g." / "i.e." open lines of working.
+# And only the NEXT part, after one the question itself printed: working
+# broken over lines by the PDF reader starts a line with "a) = -a" (from
+# "(1 + k)(-1/a) = -a", inside part (a) of question 06).
+_SOLUTION_END_PART = re.compile(
+    r"^[ \t]*(?:\((?P<b>[a-zA-Z]|[ivxIVX]{1,4})\)|(?P<c>[a-zA-Z]|[ivxIVX]{1,4})\))[ \t]*(?:\S|$)")
+_ROMAN_ORDER = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
+# "Problem:" labels the question on the same paper - a label, like
+# "Solution", not part of what is asked.
+_PROBLEM_LABEL = re.compile(r"^[ \t]*problem[ \t]*:[ \t]*", re.IGNORECASE)
+# "Part B - Question 01": a part heading and a question on one line.
+_PART_AND_QUESTION = re.compile(
+    r"^(?P<part>[ \t]*(?:part|section)[ \t]+[A-Za-z0-9]{1,4})[ \t]*[-–—:][ \t]*"
+    r"(?P<question>question[ \t]*\d{1,3}\b.*)$",
+    re.IGNORECASE,
+)
+# "Question 02 (b)": part (b) of question 2, printed as a heading of its
+# own. "Question (b)" (the older Combined Maths .docx): part (b) of the
+# question it is under.
+_QUESTION_AND_PART = re.compile(
+    r"^[ \t]*question[ \t.:\-]*(?P<n>\d{1,3})?[ \t]*"
+    r"(?P<tag>\((?:[a-zA-Z]|[ivxIVX]{1,4})\))(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_BARE_STEP = re.compile(r"^\s*\d{1,2}\s*[.)]?\s*$")
+# Private-use characters, which no paper holds - see _take_out_solutions.
+_MARK_OPEN, _MARK_CLOSE = chr(0xE000), chr(0xE001)
+_ANSWER_MARK = re.compile(_MARK_OPEN + r"(\d+)" + _MARK_CLOSE)
+
+
+def _roman_level(tag, levels):
+    """"i" is roman unless it follows a part "h" - and "v", "x" likewise."""
+    return tag in _ROMAN_ORDER and not (
+        len(tag) == 1 and levels["letter"] and ord(tag) == ord(levels["letter"]) + 1)
+
+
+def _next_part(tag, levels):
+    """Whether part `tag` comes straight after the latest part the question
+    printed at its level - "b" after "a", "ii" after "i". Letters and roman
+    numerals are two levels, and only the latest of each counts: an answer
+    that labels its own working "(i)", "(ii)" again under a question whose
+    parts are (i) and (ii) does not end at its "(ii)"."""
+    if _roman_level(tag, levels):
+        last = levels["roman"]
+        return last is not None and _ROMAN_ORDER.index(tag) == _ROMAN_ORDER.index(last) + 1
+    last = levels["letter"]
+    return len(tag) == 1 and last is not None and ord(tag) == ord(last) + 1
+
+
+def _print_part(tag, levels):
+    if _roman_level(tag, levels):
+        levels["roman"] = tag
+    else:
+        levels["letter"], levels["roman"] = tag, None  # (b)'s romans start again
+
+
+def _unfold_heading(line, seen):
+    """One line -> [(line, kind)], the lines it really is, `kind` being
+    "question" for a line starting a question, "part" for a part the paper
+    printed as a "Question" heading, else None.
+
+    "Part B - Question 01" is a part heading and then a question; the
+    first "Question 02 (a)" starts question 2 and then its part (a), and a
+    later "Question 02 (b)" - or "Question (b)" - is only part (b). `seen`
+    holds the question numbers met so far in this part of the paper."""
+    m = _PART_AND_QUESTION.match(line)
+    pieces = [m.group("part"), m.group("question")] if m else [line]
+    if m:
+        seen.clear()  # a new part numbers its questions from 1 again
+    out = []
+    for piece in pieces:
+        q = _QUESTION_AND_PART.match(piece)
+        if q:
+            n = (q.group("n") or "").lstrip("0")
+            if n and n not in seen:
+                seen.add(n)
+                out.append((f"Question {q.group('n')}", "question"))
+            out.append((q.group("tag") + q.group("rest"), "part"))
+            continue
+        w = _QUESTION_WORD_START.match(piece)
+        if w and w.group("qn"):
+            seen.add(w.group("qn").lstrip("0"))
+        out.append((piece, "question" if w else None))
+    return out
+
+
+def _take_out_solutions(text):
+    """text -> (text with each solution replaced by a marker, [solutions]).
+
+    The marker (_MARK_OPEN, the solution's index, _MARK_CLOSE) is put at
+    the end of the line before the solution, so it ends up in whichever
+    question or part that line belongs to however the paper is split;
+    _put_back_solutions() turns it into that draft's answer. A text with
+    no solution line comes back unchanged."""
+    lines = text.split("\n")
+    if not any(_SOLUTION_LINE.match(l) for l in lines):
+        return text, []
+
+    out, solutions, current, seen = [], [], None, set()
+    # The latest part the question itself has printed at each level, and
+    # whether any question has started: nothing before the first one is a
+    # solution - the Combined Maths PDF's header grid breaks "Full
+    # Solutions Guide" over three lines, leaving "Solutions" alone on one.
+    # A second "Solution" inside a solution stays in it: question 06(b) of
+    # the same paper repeats its problem and "Solution Sketch:" inside its
+    # own working.
+    levels, started = {"letter": None, "roman": None}, False
+
+    def close():
+        nonlocal current
+        if current is not None:
+            body = "\n".join(current).strip()
+            if body:
+                solutions.append(body)
+                # The line before, skipping blank ones.
+                at = len(out) - 1
+                while at > 0 and not out[at].strip():
+                    at -= 1
+                mark = f"{_MARK_OPEN}{len(solutions) - 1}{_MARK_CLOSE}"
+                if out:
+                    out[at] = out[at].rstrip() + " " + mark
+                else:
+                    out.append(mark)
+            current = None
+
+    for line in lines:
+        for piece, kind in _unfold_heading(line, seen):
+            heading = _heading(piece)
+            part = _SOLUTION_END_PART.match(piece)
+            tag = part and (part.group("b") or part.group("c")).lower()
+            if current is not None and (heading or kind or (part and _next_part(tag, levels))):
+                close()
+            if current is not None:
+                current.append(piece)
+                continue
+            if heading and heading["label"]:
+                seen.clear()  # each part of the paper numbers from 1 again
+            if heading or kind == "question":
+                levels = {"letter": None, "roman": None}
+            if kind or _Q_START.match(piece):
+                started = True
+            if part:
+                _print_part(tag, levels)
+            if started and _SOLUTION_LINE.match(piece):
+                after = piece.split(":", 1)[1].strip() if ":" in piece else ""
+                current = [after] if after else []
+            else:
+                out.append(_PROBLEM_LABEL.sub("", piece))
+    close()
+    return "\n".join(out), solutions
+
+
+def _put_back_solutions(result, solutions):
+    """Each marker left by _take_out_solutions() becomes the answer of the
+    draft holding it. A marker anywhere else (a part's instructions, the
+    paper's own) is dropped there, its solution going nowhere - nothing
+    in this paper has been seen to do that."""
+    def strip(s):
+        return _ANSWER_MARK.sub("", s).strip() if s else s
+
+    parents = {q["parent_seq"] for q in result["questions"] if q.get("parent_seq")}
+    for q in result["questions"]:
+        found = [int(n) for n in _ANSWER_MARK.findall(q["text"] or "")]
+        if found:
+            q["text"] = strip(q["text"])
+            mine = "\n\n".join(solutions[n] for n in found)
+            q["answer"] = (q["answer"] + "\n\n" + mine) if q.get("answer") else mine
+        # On a worked-solutions paper "1." "2." "3." under a question are
+        # working steps (question 05(c) of the Combined Maths paper has
+        # four, and no "Solution" line), never options - a maths paper
+        # like this has none. A bracketed "(1)"-"(4)" list still is one.
+        if q["seq"] not in parents:
+            _stem, options = split_mcq_options(q["text"] or "")
+            if options and all(_BARE_STEP.match(o["marker"]) for o in options):
+                q["question_type"] = "descriptive"
+    for p in result["sections"]:
+        p["instructions"] = strip(p.get("instructions"))
+    for g in result.get("instruction_groups") or []:
+        g["text"] = strip(g.get("text"))
+    result["paper_instructions"] = strip(result.get("paper_instructions"))
+    return result
+
+
 def structure(text, style=DEFAULT_SPLIT_STYLE):
     """A paper's full text -> {"sections": [...], "questions": [...]}.
 
@@ -1672,10 +1901,109 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
     Each section: label ("Part I"), heading (as printed), kind ("mcq",
     "structured" or None), instructions, marks_each, questions (a count).
 
+    A worked solution ("Solution" and the working after it) is the
+    answer of the question or part it follows - see _take_out_solutions.
+
     If nothing splits, returns a single draft holding the whole text at
     low confidence - so the reviewer always has something to split by
     hand rather than an empty screen.
     """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text, solutions = _take_out_solutions(text)
+    result = _structure(text, style)
+    if solutions:
+        result = _put_back_solutions(result, solutions)
+    return _place_tables(result)
+
+
+def _options_from_pictures(text):
+    """A question whose option pictures carry their labels ("[Picture 4
+    option IV]", see _pdf_option_pictures / _docx_option_pictures) ->
+    (its text, {picture n: "option:<label>"}). With option lines of its own
+    under those labels, each picture is that option's; with none - only the
+    labels, printed beside the pictures - the bare label lines go and the
+    options are written in ("I." ... "V."), empty, each its picture. Any
+    other shape leaves the pictures on the question."""
+    labelled = {int(n): label for n, label in _PICTURE_OPTION.findall(text)}
+    plain = _PICTURE_OPTION.sub(lambda m: _picture_mark(m.group(1)), text)
+    _stem, options = split_mcq_options(_TABLE_LINE.sub("", plain))
+    if options:
+        have = {o["label"] for o in options}
+        if set(labelled.values()) <= have:
+            return plain, {n: f"option:{label}" for n, label in labelled.items()}
+        return plain, {}
+    order = _label_order(list(labelled.values()))
+    if not order:
+        return plain, {}
+    # The label lines go, and the blank and tab-only lines they sat among.
+    keep = [line for line in plain.split("\n")
+            if line.split() and not set(line.split()) <= set(order)]
+    rebuilt = "\n".join(keep).rstrip() + "\n" + "\n".join(f"{label}." for label in order)
+    _stem, options = split_mcq_options(_TABLE_LINE.sub("", rebuilt))
+    if [o["label"] for o in options] != order:
+        return plain, {}
+    return rebuilt, {n: f"option:{label}" for n, label in labelled.items()}
+
+
+def _place_tables(result):
+    """Each "[Table N]" line (see "tables as pictures") -> an entry in its
+    draft's `tables`, {"n", "slot"}: "question" where it sits in the
+    question's text, "answer" in its answer (a worked solution, a marking
+    scheme). A table in a part's or a group's instructions, or the paper's
+    own, goes to the first question they introduce. The line is taken out
+    of the text."""
+    questions = result["questions"]
+
+    def take(value):
+        if not value or not _TABLE_MARK.search(value):
+            return value, []
+        found = [int(n) for n in _TABLE_MARK.findall(value)]
+        return _TABLE_LINE.sub("", value).strip() or None, found
+
+    def option_slots(value):
+        """{n: "option:<label>"} for a picture inside an MCQ option - the
+        option's own picture, as data entry would attach it by hand."""
+        _stem, options = split_mcq_options(value)
+        return {int(n): f"option:{o['label']}" for o in options
+                for n in _PICTURE_MARK.findall(o.get("text") or "")}
+
+    def give(question, found, slot):
+        if question is not None and found:
+            question.setdefault("tables", []).extend({"n": n, "slot": slot} for n in found)
+
+    for q in questions:
+        labelled = {}
+        if q.get("text") and _PICTURE_OPTION.search(q["text"]):
+            q["text"], labelled = _options_from_pictures(q["text"])
+        for field, slot in (("text", "question"), ("answer", "answer")):
+            raw = q.get(field)
+            in_option = option_slots(raw) if field == "text" and raw and _PICTURE_MARK.search(raw) else {}
+            if field == "text":
+                in_option.update(labelled)
+            value, found = take(raw)
+            if found:
+                q[field] = value if value is not None or field == "answer" else ""
+                for n in found:
+                    give(q, [n], in_option.get(n, slot))
+    first = questions[0] if questions else None
+    for part in result["sections"]:
+        part["instructions"], found = take(part.get("instructions"))
+        give(next((q for q in questions if q["section"] == part["label"]), first),
+             found, "question")
+    for group in result.get("instruction_groups") or []:
+        group["text"], found = take(group.get("text"))
+        give(next((q for q in questions if q["section"] == group.get("section")
+                   and q["question_number"] == group.get("from")), first), found, "question")
+    # Before the first question, a table is the first question's; a
+    # picture there is the paper's own crest or logo, and is dropped.
+    paper = result.get("paper_instructions")
+    pictures_here = {int(n) for n in _PICTURE_MARK.findall(paper or "")}
+    result["paper_instructions"], found = take(paper)
+    give(first, [n for n in found if n not in pictures_here], "question")
+    return result
+
+
+def _structure(text, style=DEFAULT_SPLIT_STYLE):
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     heads, answers_at, pos = [], None, 0
@@ -2102,7 +2430,7 @@ def _mupdf_text_lines(mu_page):
     return lines
 
 
-def _text_with_pictures_read(page, mu_page, boxes, ocr):
+def _text_with_pictures_read(page, mu_page, boxes, ocr, marks=()):
     """The text layer, with each picture's text slotted in at the height
     it sits on the page - so a question pasted in as a screenshot lands
     between the question above it and the one below, not at the end
@@ -2129,6 +2457,8 @@ def _text_with_pictures_read(page, mu_page, boxes, ocr):
         text = ocr(page.crop(box).to_image(resolution=_OCR_DPI).original).strip()
         if len(text) >= _SPARSE_PAGE:
             blocks.append((box[1], text))
+    # A table's marker goes in at the table's own height, like a picture.
+    blocks.extend(marks)
     blocks.sort(key=lambda b: b[0])
     return "\n".join(t for _, t in blocks)
 
@@ -2242,13 +2572,26 @@ _HEADER_ZONE = 0.3  # top share of page 1 a header table sits within
 # ocr_html.py, shared with pasted OCR output and the local reader.
 
 
-def _data_tables(page, page_index):
+# An MCQ answer key printed as a grid - "Q1: (2) | Q2: (3) | ..." (the GIT
+# Grade 12 marking scheme, 40 cells). It is the paper's answers, read by
+# _attach_answers(), not a table to show: left out as a table, 37 of its 40
+# MCQs lost their answers.
+_KEY_CELL = re.compile(r"^\s*Q?\s*\d{1,3}\s*[:.)\-]\s*\(?\s*(?:[1-5]|[A-Ea-e]|i{1,3}|iv|v)\s*\)?\s*$")
+
+
+def _is_answer_key(cells):
+    filled = [c for c in cells if c and c.strip()]
+    return len(filled) >= 4 and sum(bool(_KEY_CELL.match(c)) for c in filled) >= 0.8 * len(filled)
+
+
+def _data_tables(page, page_index, header=False):
     """Where this pdfplumber page's real data tables are, as (x0, top,
     x1, bottom) boxes - see the rules above. Detection works from the
     lines a table is drawn with, so it also finds a table on a page whose
     text is only in the picture (a scan with ruled lines, or a legacy-font
     page OCR reads); a table scanned with no drawn lines at all is not
-    found here."""
+    found here. `header=True` returns the paper's header grid instead -
+    the tables at the top of page 1 that are kept."""
     try:
         tables = page.find_tables()
     except Exception:
@@ -2257,6 +2600,14 @@ def _data_tables(page, page_index):
     top_of_page = float(page.bbox[1])
     found = []
     for table in tables:
+        if header:
+            x0, top, x1, bottom = table.bbox
+            rows = table.extract()
+            if (page_index == 0 and bottom - top_of_page <= _HEADER_ZONE * height
+                    and len(rows) >= _TABLE_MIN_ROWS
+                    and max((len(r) for r in rows), default=0) >= _TABLE_MIN_COLS):
+                found.append((x0, top, x1, bottom))
+            continue
         x0, top, x1, bottom = table.bbox
         rows = table.extract()
         columns = max((len(r) for r in rows), default=0)
@@ -2267,6 +2618,8 @@ def _data_tables(page, page_index):
         if page_index == 0 and bottom - top_of_page <= _HEADER_ZONE * height:
             continue
         if _rows_are_questions([next((c for c in r if c and c.strip()), "") for r in rows]):
+            continue
+        if _is_answer_key([c for r in rows for c in r]):
             continue
         found.append((x0, top, x1, bottom))
     return found
@@ -2304,7 +2657,179 @@ def _blank_tables(image, page, tables):
     return image
 
 
-def read_pdf(path, ocr, force_ocr=False):
+# ------------------------------------------------- tables as pictures
+#
+# A data table is not left out any more: it becomes a picture of itself,
+# attached to the question (or the answer) it sits in. The reader puts a
+# "[Table N]" line in the text where the table was and hands the picture
+# back in `tables`; structure() turns each marker into its draft's
+# `tables` ({"n", "slot"}), and the store attaches the picture once the
+# questions exist. The line stays in the stored text, so a re-split finds
+# the same places again.
+
+# "[Table 3]" and "[Picture 4]" share one numbering per paper. A picture
+# that is an MCQ option's whole content - question 7 of the Biosystem paper
+# (paper 6): five bags of fish labelled I to V, the labels printed beside
+# them and no option text at all - is "[Picture 4 option IV]".
+_TABLE_MARK = re.compile(r"^[ \t]*\[(?:Table|Picture) (\d+)(?: option [^\]\s]+)?\][ \t]*$",
+                         re.MULTILINE)
+_TABLE_LINE = re.compile(r"^[ \t]*\[(?:Table|Picture) \d+(?: option [^\]\s]+)?\][ \t]*(?:\n|$)",
+                         re.MULTILINE)
+_PICTURE_MARK = re.compile(r"^[ \t]*\[Picture (\d+)(?: option [^\]\s]+)?\][ \t]*$", re.MULTILINE)
+_PICTURE_OPTION = re.compile(r"^[ \t]*\[Picture (\d+) option ([^\]\s]+)\][ \t]*$", re.MULTILINE)
+# A picture smaller than this is a bullet, a rule or a stray mark, not a
+# figure; one covering most of a page is the page's own background.
+_MIN_FIGURE_PX = 24
+_MAX_FIGURE_COVER = 0.8
+_TABLE_DPI = 200       # print quality, without a page-sized picture
+_TABLE_PAD = 3         # points around a cut-out table, so its border is not clipped
+
+
+def _table_mark(n):
+    return f"[Table {n}]"
+
+
+def _picture_mark(n, option=None):
+    return f"[Picture {n} option {option}]" if option else f"[Picture {n}]"
+
+
+# The labels an MCQ's options are printed with, each list in order.
+_OPTION_SEQUENCES = [
+    ["I", "II", "III", "IV", "V", "VI"], ["i", "ii", "iii", "iv", "v", "vi"],
+    ["A", "B", "C", "D", "E", "F"], ["a", "b", "c", "d", "e", "f"],
+    ["1", "2", "3", "4", "5", "6"],
+]
+_OPTION_LABEL = re.compile(r"^\(?([IVXivx]{1,3}|[A-Fa-f]|[1-6])[.)]?$")
+
+
+def _label_order(labels):
+    """The labels in their own order, when they are the first k of one
+    option sequence (I, II, III / A, B / 1, 2, 3...) - else None."""
+    for seq in _OPTION_SEQUENCES:
+        if all(label in seq for label in labels):
+            ordered = sorted(set(labels), key=seq.index)
+            if len(ordered) == len(labels) >= 2 and ordered == seq[:len(ordered)]:
+                return ordered
+    return None
+
+
+def _pdf_option_pictures(page, numbered):
+    """{n: label} for pictures on a PDF page whose option label is printed
+    beside them rather than as an option line - the label nearest each
+    picture's top-left corner, where a label sits (paper 6 question 7: "I"
+    left of the first bag, "II" above the second, and "V" - which falls
+    inside picture IV's box, the bag drawn with white space around it - far
+    nearer V's own corner). Only when every picture gets its own label and
+    the labels are an option sequence from the start."""
+    if len(numbered) < 2:
+        return {}
+    words = [w for w in page.extract_words() if _OPTION_LABEL.match(w["text"])]
+    pairs = []
+    for w in words:
+        label = _OPTION_LABEL.match(w["text"]).group(1)
+        cx, cy = (w["x0"] + w["x1"]) / 2, (w["top"] + w["bottom"]) / 2
+        for n, box in numbered:
+            cost = ((cx - box[0]) ** 2 + (cy - box[1]) ** 2) ** 0.5
+            if cost <= _OPTION_LABEL_REACH:
+                pairs.append((cost, n, id(w), label))
+    taken, used, found = set(), set(), {}
+    for _cost, n, word, label in sorted(pairs):
+        if n in taken or word in used:
+            continue
+        taken.add(n)
+        used.add(word)
+        found[n] = label
+    if len(found) != len(numbered) or not _label_order(list(found.values())):
+        return {}
+    return found
+
+
+# How far (points) from a picture's top-left corner its label may be - the
+# farthest in paper 6 is 65 (V); a caption printed under a picture (the
+# same paper's question 42, "A" 146 below its plough) is not a label.
+_OPTION_LABEL_REACH = 120
+
+
+def _figure_png(data):
+    """A picture from a Word file as (bytes, content type) to keep - its
+    own bytes when a browser can show them (a photo stays a JPEG), else
+    converted to PNG. None for a tiny one, or a format Pillow cannot open
+    (EMF/WMF vector drawings)."""
+    try:
+        from PIL import Image
+        image = Image.open(BytesIO(data))
+        if min(image.size) < _MIN_FIGURE_PX:
+            return None
+        kind = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif"}.get(image.format)
+        if kind:
+            return data, kind
+        return _png(image.convert("RGBA") if image.mode in ("P", "LA") else image.convert("RGB")), "image/png"
+    except Exception:
+        return None
+
+
+def _png(image):
+    buffer = BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
+def _cut_out_table(page, box):
+    """A PDF table exactly as printed, as PNG bytes - drawn from the page
+    itself, so a scanned table and pictures inside a table come too."""
+    x0, top, x1, bottom = box
+    px0, ptop, px1, pbottom = (float(v) for v in page.bbox)
+    padded = (max(px0, x0 - _TABLE_PAD), max(ptop, top - _TABLE_PAD),
+              min(px1, x1 + _TABLE_PAD), min(pbottom, bottom + _TABLE_PAD))
+    return _png(page.crop(padded).to_image(resolution=_TABLE_DPI).original)
+
+
+def _insert_table_marks(text, mu_page, marks, top_of_page=0.0):
+    """Each (table bottom, marker) into a page's text, just before the
+    first line printed below that table. The text keeps the order it was
+    read in - only the markers are placed by height. A table with nothing
+    below it on the page ends the page's text."""
+    starts, cursor = [], 0
+    for line in _mupdf_text_lines(mu_page):
+        wanted = _fix_ligatures(line["text"])
+        found = text.find(wanted, cursor)
+        if found < 0:
+            continue
+        starts.append((line["top"], text.rfind("\n", 0, found) + 1))
+        cursor = found + len(wanted)
+    inserts = []
+    for i, (bottom, mark) in enumerate(marks):
+        at = next((start for top, start in starts if top >= bottom - top_of_page - 1),
+                  len(text))
+        inserts.append((at, i, mark))
+    for at, _i, mark in sorted(inserts, reverse=True):
+        lead = "" if at == 0 or text[at - 1] == "\n" else "\n"
+        text = text[:at] + lead + mark + "\n" + text[at:]
+    return text
+
+
+def _ocr_around_tables(image, page, numbered, ocr):
+    """A page read by OCR, in bands - above each table, the table's own
+    band with the table painted white (text beside it is kept), then its
+    marker - so each marker lands where its table is. `numbered` is
+    [(n, box)] in order down the page."""
+    sy = image.height / float(page.height)
+    oy = float(page.bbox[1])
+    blank = _blank_tables(image.copy(), page, [box for _n, box in numbered])
+    parts, y = [], 0
+    for n, (_x0, top, _x1, bottom) in numbered:
+        start, end = int((top - oy) * sy), int((bottom - oy) * sy)
+        for a, b in ((y, start), (max(y, start), end)):
+            if b - a > 20:
+                parts.append(ocr(blank.crop((0, a, blank.width, b))))
+        parts.append(_table_mark(n))
+        y = max(y, end)
+    if blank.height - y > 20:
+        parts.append(ocr(blank.crop((0, y, blank.width, blank.height))))
+    return "\n".join(part.strip("\n") for part in parts)
+
+
+def read_pdf(path, ocr, force_ocr=False, tables=None):
     """(text, note, bold_runs). Each page is read the cheapest way that
     actually captures it - see _pdf_page_route. `ocr` is image -> text.
 
@@ -2317,6 +2842,12 @@ def read_pdf(path, ocr, force_ocr=False):
     If OCR is unavailable, the pages that needed it keep whatever text
     layer they had and the note says how many were not read - one
     missing program should not throw away the pages that did have text.
+
+    `tables`, when given a list, collects each data table as a picture,
+    and each picture on a page that has text as itself, {"n", "page",
+    "png", "kind", "content_type"}, with a "[Table N]" / "[Picture N]"
+    line in the text where it was (see "tables as pictures" above).
+    Without it, tables are left out and pictures are only OCR'd.
 
     `force_ocr` reads every page as a picture, whatever its text layer says.
     Needed for Sinhala papers whose PDF was typed in a legacy font: the text
@@ -2338,6 +2869,7 @@ def read_pdf(path, ocr, force_ocr=False):
             "pymupdf is not installed - `pip install pymupdf`"
         ) from e
 
+    collect = tables  # the caller's list; `tables` below is one page's
     parts, bold_runs = [], []
     read_by_ocr = not_read = came_back_empty = tables_skipped = 0
     reason = None
@@ -2358,36 +2890,85 @@ def read_pdf(path, ocr, force_ocr=False):
             # text at all is the question here, and a table's cells are as
             # real as the rest. Only then is the table taken out of it.
             route = "page" if force_ocr else _pdf_page_route(text, boxes)
-            if tables:
+            # The paper's header grid is kept, but Word writes it into the
+            # PDF after the page's text, so it was read at the foot of page
+            # 1 - on the Combined Maths "Full Solutions Guide", inside
+            # question 3. It is moved to the front, where it is printed.
+            header = _data_tables(page, i, header=True) if i == 0 and route == "text" else []
+            header_text = "\n".join(
+                _fix_ligatures(mu_page.get_text(clip=fitz.Rect(*box)) or "").strip()
+                for box in header)
+            # Numbered down the page, across the whole paper - tables and
+            # pictures in one numbering. A page read whole by OCR is itself
+            # a picture, so its "pictures" are not figures.
+            numbered, pictured = [], []
+            if collect is not None:
+                for box in sorted(tables, key=lambda b: b[1]):
+                    numbered.append((len(collect) + len(numbered) + 1, box))
+                if route == "pictures":
+                    area = float(page.width) * float(page.height)
+                    for box in boxes:
+                        if (box[2] - box[0]) * (box[3] - box[1]) <= _MAX_FIGURE_COVER * area:
+                            pictured.append((len(collect) + len(numbered) + len(pictured) + 1, box))
+            # Pictures that are MCQ options, their labels printed beside them.
+            options = _pdf_option_pictures(page, pictured) if pictured else {}
+            if tables or header:
                 tables_skipped += len(tables)
-                _drop_tables_from_text(mu_page, tables)
+                _drop_tables_from_text(mu_page, tables + header)
                 text = _fix_ligatures(_mupdf_page_text(mu_page) or "")
+            from_layer = True
             if route != "text" and reason is None:
                 try:
                     if route == "page":
                         image = page.to_image(resolution=_OCR_DPI).original
-                        text = ocr(_blank_tables(image, page, tables) if tables else image)
+                        if numbered:
+                            text = _ocr_around_tables(image, page, numbered, ocr)
+                        else:
+                            text = ocr(_blank_tables(image, page, tables) if tables else image)
                         # OCR "succeeding" with nothing is its own failure.
                         # Measured on the real Grade 12 term paper - phone
                         # photos of handwritten answer sheets - Tesseract
                         # returned 0 characters, and without this the page
                         # just looked like a short paper with no warning.
-                        if len(re.sub(r"\s", "", text)) < _SPARSE_PAGE:
+                        if len(re.sub(r"\s", "", _TABLE_MARK.sub("", text))) < _SPARSE_PAGE:
                             came_back_empty += 1
                     else:
-                        text = _text_with_pictures_read(page, mu_page, boxes, ocr)
+                        oy = float(page.bbox[1])
+                        text = _text_with_pictures_read(
+                            page, mu_page, boxes, ocr,
+                            marks=[(box[1] - oy, _table_mark(n)) for n, box in numbered]
+                            + [(box[1] - oy, _picture_mark(n, options.get(n))) for n, box in pictured])
+                    from_layer = False
                     read_by_ocr += 1
                 except ExtractionUnavailable as e:
                     reason = str(e)
             if route != "text" and reason is not None:
                 not_read += 1
+            if numbered or pictured:
+                # Read from the text layer, the markers are placed here; OCR
+                # and the picture route placed their own.
+                if from_layer:
+                    text = _insert_table_marks(
+                        text, mu_page,
+                        [(box[3], _table_mark(n)) for n, box in numbered]
+                        + [(box[3], _picture_mark(n, options.get(n))) for n, box in pictured],
+                        float(page.bbox[1]))
+                collect.extend({"n": n, "page": i + 1, "png": _cut_out_table(page, box),
+                                "kind": "table", "content_type": "image/png"}
+                               for n, box in numbered)
+                collect.extend({"n": n, "page": i + 1, "png": _cut_out_table(page, box),
+                                "kind": "picture", "content_type": "image/png"}
+                               for n, box in pictured)
+            if header_text:
+                text = header_text + "\n" + text
             parts.append(text)
 
     note = "pdf-text"
     if read_by_ocr:
         note += f" + ocr ({read_by_ocr} of {total} pages)"
     if tables_skipped:
-        note += f" - {tables_skipped} table(s) left out (add them as pictures)"
+        note += (f" - {tables_skipped} table(s) kept as pictures" if collect is not None
+                 else f" - {tables_skipped} table(s) left out (add them as pictures)")
     if came_back_empty:
         note += (f" - {came_back_empty} of {total} pages not read: OCR found "
                  f"no text (handwriting or a poor photo, which Tesseract "
@@ -2405,6 +2986,7 @@ _A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 _V = "{urn:schemas-microsoft-com:vml}"
 _MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+_WP = "{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}"
 
 _ATOM = re.compile(r"\u221a?[\w.]+")
 
@@ -2682,16 +3264,134 @@ def _is_docx_data_table(tbl, text_so_far):
     columns = max((len(r.findall(_W + "tc")) for r in rows), default=0)
     if len(rows) < _TABLE_MIN_ROWS or columns < _TABLE_MIN_COLS:
         return False
-    first_cells = []
+    first_cells, every_cell = [], []
     for row in rows:
         cells = ["".join(t.text or "" for t in tc.iter(_W + "t")) for tc in row.findall(_W + "tc")]
         first_cells.append(next((c for c in cells if c.strip()), ""))
-    if _rows_are_questions(first_cells):
+        every_cell += cells
+    if _rows_are_questions(first_cells) or _is_answer_key(every_cell):
         return False
     return bool(_FIRST_QUESTION.search(text_so_far))
 
 
-def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
+# A Word table is drawn, since nothing on the server can print a Word
+# page: its grid from the file's own column widths, merged cells (gridSpan
+# across, vMerge down), cell shading, and each cell's text laid out by
+# PyMuPDF's HTML engine - which shapes Sinhala and Tamil properly and
+# carries its own Noto fonts for both and for maths, so the server needs
+# no fonts installed. Pillow could not: built without raqm, it draws
+# Sinhala's conjuncts as loose letters.
+_CELL_PAD = 4          # points inside a cell's border
+_CELL_CSS = "* {font-family: sans-serif; font-size: 10.5pt; margin: 0;} p {margin: 0 0 2pt 0;}"
+
+
+def _docx_cell_html(tc, numbering, picture_bytes, archive):
+    """One cell's paragraphs as HTML: its text (equations as their linear
+    form, Word's list labels), bold where the whole paragraph is, its
+    alignment, and its pictures."""
+    import html as html_lib
+    paragraphs = []
+    for para in tc.iter(_W + "p"):
+        pictures = []
+
+        def picture(rel_id, _el=None):
+            data = picture_bytes(rel_id)
+            if not data:
+                return ""
+            name = f"cell{id(archive)}-{len(pictures)}-{rel_id}.png"
+            archive.add(data, name)
+            pictures.append(name)
+            return f"\ue010{len(pictures) - 1}\ue011"
+
+        out = []
+        _docx_walk(para, out, picture, numbering=numbering)
+        text = html_lib.escape("".join(out).strip("\n"))
+        text = re.sub("\ue010(\\d+)\ue011",
+                      lambda m: f'<img src="{pictures[int(m.group(1))]}" style="max-width:100%">',
+                      text).replace("\n", "<br>")
+        runs = [r for r in para.iter(_W + "r") if "".join(t.text or "" for t in r.iter(_W + "t")).strip()]
+        if runs and all(_run_is_bold(r) for r in runs):
+            text = f"<b>{text}</b>"
+        jc = para.find(f"{_W}pPr/{_W}jc")
+        align = {"center": "center", "right": "right", "end": "right", "both": "justify"}.get(
+            jc.get(_W + "val") if jc is not None else "", "left")
+        paragraphs.append(f'<p style="text-align:{align}">{text or "&#160;"}</p>')
+    return "".join(paragraphs)
+
+
+def _draw_docx_table(tbl, numbering, picture_bytes):
+    """A Word table as PNG bytes - see the note above."""
+    import fitz
+    widths = [int(c.get(_W + "w") or 0) / 20 for c in tbl.findall(f"{_W}tblGrid/{_W}gridCol")]
+    rows = tbl.findall(_W + "tr")
+    archive = fitz.Archive()
+    cells, columns = [], 0
+    for r, row in enumerate(rows):
+        before = row.find(f"{_W}trPr/{_W}gridBefore")
+        col = int(before.get(_W + "val")) if before is not None else 0
+        for tc in row.findall(_W + "tc"):
+            pr = tc.find(_W + "tcPr")
+            span = pr.find(_W + "gridSpan") if pr is not None else None
+            span = int(span.get(_W + "val")) if span is not None else 1
+            merge = pr.find(_W + "vMerge") if pr is not None else None
+            if merge is not None and merge.get(_W + "val") != "restart":
+                above = next((c for c in reversed(cells)
+                              if c["col"] == col and c["row"] + c["rows"] == r), None)
+                if above is not None:
+                    above["rows"] += 1
+                    col += span
+                    continue
+            shade = pr.find(_W + "shd") if pr is not None else None
+            fill = shade.get(_W + "fill") if shade is not None else None
+            cells.append({"row": r, "col": col, "span": span, "rows": 1,
+                          "fill": fill if fill and re.fullmatch(r"[0-9A-Fa-f]{6}", fill) else None,
+                          "html": _docx_cell_html(tc, numbering, picture_bytes, archive)})
+            col += span
+        columns = max(columns, col)
+    if not cells:
+        return None
+    if len(widths) < columns or not all(widths):
+        widths = [480 / columns] * columns
+    total = sum(widths)
+    if total > 540:   # wider than a page's text - keep the proportions
+        widths = [w * 540 / total for w in widths]
+
+    def x(col):
+        return sum(widths[:col])
+
+    scratch = fitz.open().new_page(width=1000, height=3000)
+
+    def needed(cell):
+        inner = x(cell["col"] + cell["span"]) - x(cell["col"]) - 2 * _CELL_PAD
+        spare, _scale = scratch.insert_htmlbox(fitz.Rect(0, 0, max(inner, 10), 3000),
+                                               cell["html"], css=_CELL_CSS, archive=archive)
+        return 3000 - spare + 2 * _CELL_PAD
+
+    heights = [16.0] * len(rows)
+    for cell in sorted(cells, key=lambda c: c["rows"]):
+        want = needed(cell)
+        spanned = range(cell["row"], cell["row"] + cell["rows"])
+        have = sum(heights[i] for i in spanned)
+        if have < want:
+            heights[spanned[-1]] += want - have
+
+    margin = 2
+    doc = fitz.open()
+    page = doc.new_page(width=sum(widths) + 2 * margin, height=sum(heights) + 2 * margin)
+    for cell in cells:
+        rect = fitz.Rect(margin + x(cell["col"]), margin + sum(heights[:cell["row"]]),
+                         margin + x(cell["col"] + cell["span"]),
+                         margin + sum(heights[:cell["row"] + cell["rows"]]))
+        if cell["fill"]:
+            rgb = tuple(int(cell["fill"][i:i + 2], 16) / 255 for i in (0, 2, 4))
+            page.draw_rect(rect, color=None, fill=rgb)
+        page.insert_htmlbox(rect + (_CELL_PAD, _CELL_PAD, -_CELL_PAD, -_CELL_PAD),
+                            cell["html"], css=_CELL_CSS, archive=archive)
+        page.draw_rect(rect, color=(0, 0, 0), width=0.75)
+    return page.get_pixmap(dpi=_TABLE_DPI).tobytes("png")
+
+
+def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None, table=None):
     """Body XML -> text, in document order. python-docx's own
     `document.paragraphs` skips tables, equations and pictures - on a
     maths paper, that is most of the content.
@@ -2707,10 +3407,13 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
     """
     tag = el.tag if isinstance(el.tag, str) else ""
     if tag == _W + "tbl" and _is_docx_data_table(el, "".join(out)):
-        # Left out - see _data_tables() for the rule and why. `skipped`
-        # counts them for read_docx's note.
+        # Left out of the text - see _data_tables() for the rule and why.
+        # `skipped` counts them for read_docx's note; `table`, when given,
+        # draws the table and returns its "[Table N]" line.
         if skipped is not None:
             skipped.append(1)
+        if table is not None:
+            out.append(table(el))
         return
     if tag == _M + "oMath":
         out.append(_omml(el))
@@ -2718,7 +3421,7 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
     if tag == _W + "r" and _run_is_bold(el):
         local = []
         for child in el:
-            _docx_walk(child, local, picture, bold_runs, skipped, numbering)
+            _docx_walk(child, local, picture, bold_runs, skipped, numbering, table)
         text = "".join(local)
         out.append(text)
         if bold_runs is not None and len(text.strip()) >= _MIN_BOLD_ANSWER_CHARS:
@@ -2734,17 +3437,17 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
         out.append("\n")
         return
     if tag == _A + "blip":
-        out.append(picture(el.get(_R + "embed")))
+        out.append(picture(el.get(_R + "embed"), el))
         return
     if tag == _V + "imagedata":
-        out.append(picture(el.get(_R + "id")))
+        out.append(picture(el.get(_R + "id"), el))
         return
     if tag == _MC + "AlternateContent":
         # Word writes a modern and a legacy copy of the same drawing or
         # text box side by side; reading both would double it.
         choice = el.find(_MC + "Choice")
         if choice is not None:
-            _docx_walk(choice, out, picture, bold_runs, skipped, numbering)
+            _docx_walk(choice, out, picture, bold_runs, skipped, numbering, table)
         return
     if tag == _W + "tr":
         # One line per row: an MCQ options grid becomes
@@ -2756,9 +3459,11 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
         cells = []
         for tc in el.findall(_W + "tc"):
             sub = []
-            _docx_walk(tc, sub, picture, skipped=skipped, numbering=numbering)
+            _docx_walk(tc, sub, picture, skipped=skipped, numbering=numbering, table=table)
             cells.append(" ".join("".join(sub).split()))
-        out.append(" | ".join(c for c in cells if c) + "\n")
+        row = " | ".join(c for c in cells if c)
+        # A picture's or table's marker keeps a line of its own.
+        out.append(re.sub(r"\s*(\[(?:Table|Picture) \d+\])\s*", r"\n\1\n", row) + "\n")
         return
     if tag == _W + "p" and numbering is not None:
         # Word's own list label ("I.", "(a)", "1.") - not in the text; see
@@ -2767,9 +3472,78 @@ def _docx_walk(el, out, picture, bold_runs=None, skipped=None, numbering=None):
         if label:
             out.append(label + " ")
     for child in el:
-        _docx_walk(child, out, picture, bold_runs, skipped, numbering)
+        _docx_walk(child, out, picture, bold_runs, skipped, numbering, table)
     if tag == _W + "p":
         out.append("\n")
+
+
+def _docx_picture_place(el):
+    """(its paragraph, its offset across in EMU or None) for a picture's
+    element - a floating picture's horizontal position, None for one in
+    line with the text (whose order in the text is its order)."""
+    anchor = para = None
+    node = el
+    while node is not None:
+        tag = node.tag if isinstance(node.tag, str) else ""
+        if anchor is None and tag in (_WP + "anchor", _WP + "inline"):
+            anchor = node
+        if tag == _W + "p":
+            para = node
+            break
+        node = node.getparent()
+    x = None
+    if anchor is not None and anchor.tag == _WP + "anchor":
+        offset = anchor.find(f"{_WP}positionH/{_WP}posOffset")
+        if offset is not None and (offset.text or "").lstrip("-").isdigit():
+            x = int(offset.text)
+    return (id(para) if para is not None else None), x
+
+
+def _docx_option_pictures(text, places):
+    """Pictures that are MCQ options in a Word file, labelled by lines of
+    bare labels beside them - paper 6.docx's question 7: five floating
+    pictures, then "I  II  III" and "IV  V". Word keeps a floating picture
+    where it is anchored, not where it shows: the first of the row in the
+    file is the middle one on the page. So pictures go in the order they
+    show - by the paragraph each is anchored to, then across - and take the
+    labels in reading order, when the counts match and the labels are an
+    option sequence from the start. Returns the text, those pictures'
+    markers saying their option."""
+    lines = text.split("\n")
+
+    def label_tokens(line):
+        tokens = line.split()
+        return tokens if tokens and all(_OPTION_LABEL.fullmatch(t) for t in tokens) else None
+
+    def filler(line):
+        bare = line.strip()
+        return not bare or _PICTURE_MARK.match(line) or len(bare) <= 2
+
+    i = 0
+    while i < len(lines):
+        if not (label_tokens(lines[i]) or _PICTURE_MARK.match(lines[i])):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and (label_tokens(lines[j]) or filler(lines[j])):
+            j += 1
+        run = range(i, j)
+        labels = [_OPTION_LABEL.match(t).group(1)
+                  for k in run if label_tokens(lines[k]) for t in label_tokens(lines[k])]
+        pictures = [(k, int(_PICTURE_MARK.match(lines[k]).group(1)))
+                    for k in run if _PICTURE_MARK.match(lines[k])]
+        if (labels and len(pictures) == len(labels) and _label_order(labels) == labels
+                and all(n in places for _k, n in pictures)):
+            rows = {}
+            for _k, n in pictures:
+                rows.setdefault(places[n][0], len(rows))
+            shown = sorted(pictures, key=lambda kn: (rows[places[kn[1]][0]],
+                                                      places[kn[1]][1] if places[kn[1]][1] is not None
+                                                      else kn[0], kn[0]))
+            for (k, n), label in zip(shown, labels):
+                lines[k] = _picture_mark(n, label)
+        i = max(j, i + 1)
+    return "\n".join(lines)
 
 
 def _docx_numbering(path):
@@ -2791,7 +3565,7 @@ def _docx_numbering(path):
         return None
 
 
-def read_docx(path, ocr):
+def read_docx(path, ocr, tables=None):
     """(text, note, bold_runs). Paragraphs, tables and equations in
     document order, with each embedded picture OCR'd in place - a
     question pasted into Word as a screenshot is otherwise invisible.
@@ -2801,6 +3575,10 @@ def read_docx(path, ocr):
     snippets rather than positions, and extract() for how it becomes a
     fallback correct-MCQ-answer when a paper marks its answer by
     bolding the right option instead of printing a separate answer key.
+
+    `tables`, when given a list, collects each data table drawn as a
+    picture, {"n", "page": None, "png"}, with a "[Table N]" line where it
+    was - see _draw_docx_table(). Without it, tables are left out.
     """
     try:
         import docx
@@ -2813,11 +3591,31 @@ def read_docx(path, ocr):
     read_by_ocr = not_read = 0
     reason = None
 
-    def picture(rel_id):
-        nonlocal read_by_ocr, not_read, reason
+    def picture(rel_id, el=None):
         part = document.part.related_parts.get(rel_id)
         if part is None:
             return ""
+        read = read_picture(part)
+        # Kept as itself too, where it sits - a diagram, or a question
+        # pasted in as a screenshot (whose OCR'd words stay as well, to
+        # be corrected and checked for repeats; the picture shows the
+        # maths the OCR damaged).
+        kept = _figure_png(part.blob) if tables is not None else None
+        if kept is None:
+            return read
+        n = len(tables) + 1
+        tables.append({"n": n, "page": None, "png": kept[0], "kind": "picture",
+                       "content_type": kept[1]})
+        places[n] = _docx_picture_place(el)
+        # OCR off a diagram is a few stray letters - the same floor the PDF
+        # picture route keeps a picture's words above.
+        words = read.strip()
+        keep = (words and not words.startswith("[image")
+                and len(re.sub(r"\s", "", words)) >= _SPARSE_PAGE)
+        return f"\n{_picture_mark(n)}\n" + (f"{words}\n" if keep else "")
+
+    def read_picture(part):
+        nonlocal read_by_ocr, not_read, reason
         if reason is None:
             try:
                 text = ocr(BytesIO(part.blob)).strip()
@@ -2834,9 +3632,31 @@ def read_docx(path, ocr):
         not_read += 1
         return "\n[image - not read]\n"
 
+    numbering = _docx_numbering(path)
+    places = {}   # picture n -> (its paragraph, its offset across), see below
+
+    def picture_bytes(rel_id):
+        part = document.part.related_parts.get(rel_id)
+        return part.blob if part is not None else None
+
+    def table(tbl):
+        n = len(tables) + 1
+        try:
+            png = _draw_docx_table(tbl, numbering, picture_bytes)
+        except Exception:
+            png = None   # never lose the paper over one table
+        if png is None:
+            return ""
+        tables.append({"n": n, "page": None, "png": png, "kind": "table",
+                       "content_type": "image/png"})
+        return f"\n{_table_mark(n)}\n"
+
     out, bold_runs, skipped = [], [], []
-    _docx_walk(document.element.body, out, picture, bold_runs, skipped, _docx_numbering(path))
+    _docx_walk(document.element.body, out, picture, bold_runs, skipped, numbering,
+               table if tables is not None else None)
     text = re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
+    if places:
+        text = _docx_option_pictures(text, places)
 
     note = "docx-text"
     if read_by_ocr:
@@ -2844,7 +3664,8 @@ def read_docx(path, ocr):
     if not_read:
         note += f" - {not_read} image(s) not read: {reason}"
     if skipped:
-        note += f" - {len(skipped)} table(s) left out (add them as pictures)"
+        note += (f" - {len(skipped)} table(s) kept as pictures" if tables is not None
+                 else f" - {len(skipped)} table(s) left out (add them as pictures)")
     return text, note, bold_runs
 
 
@@ -2896,7 +3717,8 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
             filename=None, force_ocr=False):
     """Uploaded file -> {file_type, extractor, raw_text,
     paper: {grade, subject, title}, sections: [part, ...],
-    questions: [draft, ...]} - see structure() for parts and drafts.
+    questions: [draft, ...], tables: [picture, ...]} - see structure() for
+    parts and drafts, and "tables as pictures" for tables.
 
     `filename` is the name the file was uploaded under, for whatever the
     header does not say - the app reads a temporary copy whose own name
@@ -2932,11 +3754,12 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
     text = ""
     extractor = "none"
     bold_runs = []
+    tables = []
     try:
         if suffix == ".pdf":
-            text, extractor, bold_runs = read_pdf(path, ocr, force_ocr=force_ocr)
+            text, extractor, bold_runs = read_pdf(path, ocr, force_ocr=force_ocr, tables=tables)
         elif suffix == ".docx":
-            text, extractor, bold_runs = read_docx(path, ocr)
+            text, extractor, bold_runs = read_docx(path, ocr, tables=tables)
         elif suffix == ".doc":
             # The pre-2007 binary format; python-docx cannot open it.
             extractor = "unsupported:.doc (open it in Word and save as .docx)"
@@ -2987,4 +3810,7 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
         "instruction_groups": parsed["instruction_groups"],
         "paper_instructions": parsed["paper_instructions"],
         "questions": parsed["questions"],
+        # {"n", "page", "png"} - each table as a picture; the drafts name
+        # theirs in `tables` (see "tables as pictures").
+        "tables": tables,
     }

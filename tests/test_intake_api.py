@@ -398,27 +398,35 @@ def test_precheck_finds_a_match_against_the_whole_bank(document):
 
 # ------------------------------------------- assign, teacher, promote
 
-def test_assign_requires_a_teacher_who_has_opened_the_app(document):
+TWO = AssignIn(teacher_identities=["N. Perera", "s. kumar"])
+
+
+def test_assign_requires_two_teachers_who_have_opened_the_app(document):
+    touch_teacher(identity="S. Kumar")
     with pytest.raises(HTTPException) as err:
-        assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
+        assign_document(document.id, TWO)
     assert err.value.status_code == 404
 
     teacher = touch_teacher(identity="N. Perera")
     assert teacher.identity == "N. Perera"
     assert any(t.identity == "N. Perera" for t in list_teachers())
+    with pytest.raises(HTTPException) as err:
+        assign_document(document.id, AssignIn(teacher_identities=["N. Perera", "n. perera"]))
+    assert err.value.status_code == 400
 
-    assigned = assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
+    assigned = assign_document(document.id, TWO)
     assert assigned.status == "teacher_review"
-    assert assigned.assigned_to == "N. Perera"
+    assert assigned.teachers == ["N. Perera", "S. Kumar"]
+    assert assigned.assigned_to == "N. Perera, S. Kumar"
     assert document.id in {d.id for d in my_documents(identity="N. Perera")}
 
 
 def test_my_documents_only_shows_the_calling_identity(document):
-    touch_teacher(identity="N. Perera")
-    touch_teacher(identity="S. Kumar")
-    assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
-    assert document.id in {d.id for d in my_documents(identity="N. Perera")}
-    assert document.id not in {d.id for d in my_documents(identity="S. Kumar")}
+    for name in ("N. Perera", "S. Kumar", "A. Silva"):
+        touch_teacher(identity=name)
+    assign_document(document.id, TWO)
+    assert document.id in {d.id for d in my_documents(identity="S. Kumar")}
+    assert document.id not in {d.id for d in my_documents(identity="A. Silva")}
 
 
 def test_finish_review_rejects_a_paper_not_with_a_teacher(document):
@@ -429,7 +437,8 @@ def test_finish_review_rejects_a_paper_not_with_a_teacher(document):
 
 def test_finish_review_refer_back_does_not_promote(document):
     touch_teacher(identity="N. Perera")
-    assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
+    touch_teacher(identity="S. Kumar")
+    assign_document(document.id, TWO)
 
     finished = finish_review(document.id, FinishIn(status="refer_back"))
     assert finished.status == "refer_back"
@@ -442,7 +451,8 @@ def test_finish_review_refer_back_does_not_promote(document):
 def test_finish_review_done_promotes_every_question(document):
     qs = list_questions(document.id)
     touch_teacher(identity="N. Perera")
-    assign_document(document.id, AssignIn(teacher_identity="N. Perera"))
+    touch_teacher(identity="S. Kumar")
+    assign_document(document.id, TWO)
 
     finished = finish_review(document.id, FinishIn(status="review_done"))
     assert finished.status == "ready_to_publish" and not finished.archived_at

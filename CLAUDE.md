@@ -1521,6 +1521,118 @@ entry has the original paper beside the questions. Not caught: a table
 scanned with no drawn lines at all on a page Tesseract reads (the local
 reader's Surya does find those).
 
+**Then every table became a picture of itself, on its question.** Asked
+for: tables "in the exact way they are", shown with their questions and
+answers when the questions load and in the preview. EdSider's editor does
+have a table block (`TABLE` atomic entity, `{tableData: [[cell]]}`, drawn
+by the exam page's `ViewEditor`), but a plain grid of text cells - and of
+the 51 tables left out of the stored papers, 38 (both GIT papers) have
+merged cells, 7 are scans, 6 are clean grids. So each table is a picture,
+exact for all of them; an editable EdSider table for the clean ones is a
+possible next step. How (`extract.py`, "tables as pictures"):
+- *Readers take `tables=[]`* (an upload passes it; without it, as before,
+  tables are left out). Each data table is collected as `{"n", "page",
+  "png"}` and a line `[Table N]` goes into the text where it stood:
+  - PDF, text page: cut from the page itself at 200 dpi (pdfplumber's
+    renderer - pictures inside the table come too); the marker goes just
+    before the first line printed below the table, the text otherwise in
+    the order it was read. Picture route: at the table's height, like a
+    picture's OCR. Scanned page: OCR'd in bands - above the table, the
+    table's own band with the table painted white (text beside it kept),
+    below - with the marker between.
+  - Word: drawn, since nothing on the server prints a Word page - the
+    grid from `w:tblGrid` widths, `gridSpan`/`vMerge` merged cells, cell
+    shading, bold, alignment, pictures in cells, equations as their
+    linear form, each cell laid out by PyMuPDF's HTML engine
+    (`insert_htmlbox`). Pillow could not: built without raqm it draws
+    Sinhala conjuncts as loose letters; MuPDF shapes them, and carries
+    its own Noto Serif Sinhala/Tamil and Noto Sans Math, so the Linux
+    App Service needs no fonts installed. Its HTML ignores `colspan`,
+    hence the grid drawn by hand.
+- *`structure()` places them* (`_place_tables`): a marker in a question's
+  text is `{"n", "slot": "question"}` on that draft, in its answer (a
+  worked solution, a marking scheme) `"answer"`; in a part's or group's
+  instructions or the paper's own, the first question they introduce.
+  The line leaves the text; it stays in the stored `raw_text`, so "Split
+  it differently" places the same tables again.
+- *Stored*: `intake.document_table` (a new table - document, n, page,
+  file path or bytes) holds each paper's pictures
+  (`store.save_document_tables`, files at `papers/<doc>/tables/<n>.png`);
+  `add_extracted_questions` and `replace_intake_questions` attach each to
+  its question as a `question_image` in that slot (`_attach_tables`). So
+  the data-entry cards, the student/final preview and the teacher's review
+  - which already show a question's and an answer's pictures - show them
+  with no page change, and they travel into the question bank and the
+  EdSider converter like any picture. Data entry can remove one like any
+  picture.
+- *"Read the file again"* (`POST /intake/documents/{id}/reread`, a button
+  in "Split it differently"): a paper uploaded before this has no markers
+  in its text, so a re-split cannot place tables; this reads its stored
+  file with today's extractor (OCR language from the paper's medium) and
+  replaces its questions, destructive like a re-split. Not for pasted text.
+- *Two older losses found on the way.* An MCQ answer key printed as a grid
+  ("Q1: (2)", 40 cells - the GIT Grade 12 scheme) is the paper's answers,
+  not a table (`_is_answer_key`): left out, a fresh upload had answers for
+  3 of 40 MCQs. And a scheme label matching no part ("(a)" where the paper
+  prints "(1)(a)", the GIT A/L model paper's question (02)) dropped that
+  worked answer and its 7 tables; it now stays on the question, under its
+  label.
+
+Measured on every stored PDF and Word file with tables: GIT A/L model 19
+tables (6 on questions, 13 in answers), GIT Grade 12 17 (1 and 16),
+Grade 13 2nd term 2, Political Science 1, Sinhala Business Statistics
+scan 7, 2025 ICT 3 and 1 - every one placed, each paper's questions
+otherwise the same as without markers, 1-7 s a paper (the scan 54 s with
+its bands; 20-350 KB of pictures a paper). Not done: tables in pasted
+text (the local reader still drops Surya's `Table` blocks - there is no
+picture to keep), and the table's exact spot inside a long question - a
+picture shows under the question's text, not between its sentences.
+
+**Pictures the same way.** Every figure on a page with text (PDF picture
+route) and every picture in a Word file is kept as itself, `[Picture N]`
+in the text, numbered with the tables (`intake.document_table` holds both,
+with `content_type` - a photo stays a JPEG). A pasted question's OCR'd
+words stay too, to be corrected and checked for repeats; the picture shows
+the maths the OCR damaged. A picture inside an MCQ option lands in that
+option's own slot (`option:<label>`); one before the first question is the
+paper's crest and is dropped; one under 24 px, or covering most of a page,
+is not a figure; a page read whole by OCR is itself a picture, so its
+"pictures" are not kept. Measured: GIT Grade 12/A/L, the Applied maths
+PDFs, paper 6 (14 pictures, one in option I), the Physics paper, the 2025
+ICT papers (51 pictures - 6 crests dropped) - every figure placed except
+#51's essay diagram, which sits in a part the splitter already loses (its
+Part C follows the marking scheme of Part B).
+
+**Pictures that are the options.** Reported on paper 6, question 7: five
+bags of fish labelled I to V, the labels printed beside the pictures, no
+option text - the pictures went to the question, and no options were
+found. Each picture is now matched to its label and becomes that option
+("[Picture 4 option IV]"):
+- *PDF* (`_pdf_option_pictures`): the label word nearest each picture's
+  top-left corner, where a label sits - "I" left of the first bag, "II"
+  above the second, and "V", which falls inside picture IV's box (a bag
+  drawn with white space around it), far nearer V's own corner (65 points
+  against 198). Within 120 points: question 42's "A" printed 146 under its
+  plough is a caption, not a label. Only when every picture on the page
+  gets its own label and the labels are an option sequence from the start.
+- *Word* (`_docx_option_pictures`): a floating picture is kept where it is
+  anchored, not where it shows - the first of the row in the file is the
+  middle one on the page - so pictures are ordered by their anchoring
+  paragraph, then their offset across (`wp:positionH`), and take the bare
+  label lines beside them in reading order, when the counts match.
+- *Placing* (`_options_from_pictures`): with no option lines of its own,
+  the question's label lines (and the blank lines among them) go and
+  "I." ... "V." are written in - empty options, each with its picture in
+  its `option:<label>` slot, so the cards, the preview and the converter
+  show an MCQ of pictures. With text options under those labels, each
+  picture is its option's; any other shape (question 42: pictures A-C,
+  options I-V about them) leaves the pictures on the question.
+Measured on both paper 6 files: all five right (PDF: III, I, II, V, IV in
+the page's own picture order; Word: 3, 1, 2 for I, II, III); every other
+paper's tables and pictures unchanged. Not handled: a page footer ("2
+Biosystem Technology Grade 13") still lands inside the question that runs
+across it, on every paper.
+
 **Instructions at three levels: the whole paper, each part, and a group
 of questions.** A paper prints instructions above everything ("This paper
 consists of 50 questions. Answer all."), above each part, and above a run
@@ -1653,6 +1765,66 @@ after a part's last sub-part is that part's total; the MCQ hint accepts
 PageHeader/PageFooter blocks ("- 4 -", "[see the next page]"), which had
 landed inside questions. The review page now says plainly when pages could
 not be read and sends data entry to the local reader and "Paste text".
+
+**Worked-solutions papers - "Solution" and what follows it is the
+answer.** The Grade 13 Combined Maths "Full Solutions Guide" (intake
+uploads #84 Word, #85/#86 PDF) prints each question, then "Solution" and
+the working, numbered "1. Base Case", "2. Assumption", "3. Inductive
+Step". Left in the text, those steps became questions 1-3 (the real
+questions 1 and 2 were lost) and options: 2-12 "MCQs" per copy on a
+paper with none. `extract.structure()` now takes every solution out
+before splitting (`_take_out_solutions`, a private-use marker left on
+the line before it) and puts it back as the answer of the question or
+part it follows (`_put_back_solutions`). The rules, each from this paper
+or the older Combined Maths Applied .docx/PDFs (#5-#8, #12, #26, #27,
+#33, #35, #67):
+- *What a solution line is:* "Solution", "Solution:", "Solution
+  Sketch", "Solution: <text>"; and "Answer" alone on its line (the
+  Applied .docx). Not "Solutions": the PDF's header grid breaks "Full
+  Solutions Guide" over three lines. Nothing before the first question
+  is a solution. A second "Solution" inside one stays in it (question
+  06(b) repeats its problem and "Solution Sketch:" in its own working).
+- *Where it ends:* the next question ("Question 3", "2. Question",
+  "Question: Vectors"), a part heading, or the next part in sequence at
+  its level - "(b)" after the question printed "(a)", "ii)" after "i)".
+  Never a numbered line (the working's own steps), and not a part out of
+  sequence: the PDF breaks "(1 + k)(-1/a) = -a" so a line starts "a) =
+  -a", and an answer labels its own working "(i)", "(ii)" again under
+  parts (i) and (ii). Letters and roman numerals are separate levels.
+- *Headings that say two things:* "Part B - Question 01" is a part
+  heading and a question; the first "Question 02 (a)" starts question 2
+  and its part (a), a later "Question 02 (b)" or "Question (b)" is only
+  part (b). Numbers start again after each part heading. "Problem:" is a
+  label and is dropped.
+- *Padding:* the paper prints "Question 01", "Question 02", then
+  "Question 3" to "10". Zero-padded and plain numbers are run as two
+  numberings (an Accounting paper's "1."-"10." list needs that), which
+  lost 01 and 02 - not for a line saying "Question", which is a question
+  however it is padded.
+- *No MCQs from working:* a leaf whose only "options" are bare numbered
+  lines (question 05(c) prints four steps with no "Solution" line) is
+  stored as `question_type` 'descriptive'; a bracketed "(1)"-"(4)" list
+  is still an MCQ. Extraction now stores `question_type` (the column was
+  never written), and `service._question_out` reads options out only for
+  an MCQ (or no type) and blanks only for a fill-in-the-blank - a type
+  someone chose is the type (one stored question changed by this: paper
+  12's question 2, marked descriptive, no longer shows blank boxes).
+- *The PDF's header grid is read first.* Word writes it after the page's
+  text, so it was read at the foot of page 1 - inside question 3. A kept
+  page-1 header table is now moved to the front of the page's text
+  (`_data_tables(..., header=True)`), where the grade/subject/title rules
+  look. Of the stored PDFs only #33, #85 and #86 have one on a text page.
+
+Measured on every stored paper, both split styles: only the Combined
+Maths papers change. Pure maths (#84-#86): 32 questions and parts, 23-24
+with their answers, the one leftover "MCQ" (05(c)) stored as
+descriptive; before, 12-25 drafts and no answers. Applied, by "Question":
+17-18 drafts, 14-17 with answers, no MCQs (before 19, none answered, up
+to 2 MCQs). Not handled: a scan whose OCR lost a question's heading
+(#7's question 5) - that question runs into the solution before it and
+lands in that answer. A paper's stored text keeps whatever order it was
+read in, so #84-#86 were read again from their files ("Read the file
+again", below): 32 questions and parts each, 24 with their answers.
 
 **Still to do here:** promote reviewed drafts into the bank (and back
 to EdSider); decide how handwritten papers are read, and whether maths
@@ -1835,10 +2007,55 @@ Admin -> Data entry's dropdown with their positions ("Assessor, Data Entry
 Operator"); "Refresh from EdSider" there re-reads the list. Several of the
 30 are EdSider's own test accounts, active there, so they show here too.
 
-Still to do: the record of what was sent (step 5) and the send itself
-(step 6), once EdSider chooses the route; who owns a sent paper; whether a
-question our duplicate check found in EdSider's bank is linked instead of
-copied.
+**EdSider's Main Assessment Administrators are this app's admins.** MASAD
+("Main person who is handling all Assessments settings and operations",
+20 people) is synced with TEACH and DEOP (`staff.edsider_admin`, admin in
+`STAFF_ROLE_SQL` ahead of teacher and operator; a role a superadmin set
+still wins). They assign papers and send them to EdSider; losing MASAD in
+EdSider makes them whatever else they are.
+
+**Two teachers per paper.** Asked for: each paper reviewed by two
+teachers, ready to publish once both finish. `intake.review` holds an
+active row per teacher (`idx_intake_review_active` - one active row a stage
+- became `idx_intake_review_operator`, one operator a paper, and
+`idx_intake_review_teacher`, each teacher once; `_schema_is_current` checks
+the index, so the change applies once). `store.assign_teachers()`;
+`POST /intake/documents/{id}/assign` takes `teacher_identities`, exactly
+two, different; the papers list carries `teachers` and `teachers_done`.
+Each teacher ticks questions for themselves (`intake.question_check`) - the
+`teacher_reviewed` column was one tick for everyone, so the second teacher
+would have found every question already ticked; a teacher's GET/PATCH of
+questions reads and writes their own ticks. Review Done closes that
+teacher's part only (`finish_stage(..., who=)`); the second one's syncs
+the bank copy and makes the paper ready to publish. A teacher who has
+finished cannot change it (`paper_access`). Refer Back from either sends
+it to data entry; when data entry finishes again the paper goes straight
+back to both teachers, both reopened - both sign off the final version.
+
+**Sending a paper to EdSider - steps 5 and 6.** Decided: written straight
+into EdSider's database (the pre-prod copy, `examonliine_db_prod_copy`,
+for now), arriving as **ReadyToPublish** (status 11 - EdSider's staff then
+schedule and publish it there), sent by an admin (MASAD/admin/superadmin)
+once both teachers have finished. `POST /intake/documents/{id}/send-to-edsider`
+builds the converter's package with the pictures embedded as data: URLs
+(EdSider keeps them inside the question), refuses it with every blocking
+problem listed (409, `{message, problems}`, shown on the page per
+question), then `src/edsider/send.py` writes it in one EdSider transaction
+in EdSider's order - paper, schedule, chief assessor, parts, sections,
+passages ("ASMNT<id> Q1 - Q2"), questions (parts before their question,
+which names their new ids in `sub_questions`), links, the operator's
+operation and one review row per teacher - with EdSider's default terms
+for the medium. Then `intake.edsider_send` records it (where, who, the
+assessment id and every question's new id; a failed attempt too, with the
+error) and the paper is archived as 'published' ("Sent to EdSider"). Never
+twice. The target is a setting, `EDSIDER_SEND_DB` (on PG_HOST, as
+PG_USER) - unset, sending is off, so no deployed app writes to EdSider
+until someone sets it there; pointing it at live EdSider is that one
+setting. Rehearsed on the pre-prod copy inside a transaction that was
+rolled back: every row accepted (types, foreign keys, the state), nothing
+left. Still open: whether a question our duplicate check found in
+EdSider's bank should be linked instead of copied, and a read-only check
+after sending that the paper opens in EdSider's own screens.
 
 
 

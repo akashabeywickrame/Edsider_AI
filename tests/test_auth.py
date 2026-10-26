@@ -152,7 +152,7 @@ def test_sync_teachers_copies_edsider_teachers(local_db):
     pg = _FakePg([{"email": "t1@gmail.com", "name": "Tea One"},
                   {"email": "t2@gmail.com", "name": None}])
     assert sync_teachers(pg) == 2
-    assert "role_code = 'TEACH'" in pg.cur.sql
+    assert "'TEACH'" in pg.cur.sql
     assert {(t.identity, t.display_name, t.source) for t in service.list_teachers()} == {
         ("t1@gmail.com", "Tea One", "edsider"), ("t2@gmail.com", None, "edsider")}
 
@@ -184,7 +184,7 @@ def test_edsider_data_entry_operators_sign_in_and_fill_the_dropdown(local_db):
          "positions": ["ASSR|Assessor", "DEOP|Data Entry Operator"],
          "user_id": 317, "staff_id": 281}])
     assert sync_teachers(pg) == 1
-    assert "role_code = 'DEOP'" in pg.cur.sql
+    assert "'DEOP'" in pg.cur.sql
     assert service.current_user("Op@Gmail.com")["role"] == "employee"
     assert [(o.identity, o.positions, o.source) for o in service.list_operators()] == [
         ("op@gmail.com", "Assessor, Data Entry Operator", "edsider")]
@@ -200,6 +200,27 @@ def test_edsider_data_entry_operators_sign_in_and_fill_the_dropdown(local_db):
         current_identity("op@gmail.com")
     assert _staff("op@gmail.com").positions is None
     assert _staff("t1@gmail.com").positions == "Teacher"
+
+
+def test_edsider_main_assessment_administrators_are_admins_here(local_db):
+    """MASAD - EdSider's Main Assessment Administrator - is this app's
+    admin: they assign papers and send them to EdSider."""
+    from scripts.sync import sync_teachers
+    pg = _FakePg([
+        {"email": "t1@gmail.com", "name": "Tea One", "roles": ["TEACH"],
+         "positions": ["TEACH|Teacher"], "user_id": 292, "staff_id": 256},
+        {"email": "boss@gmail.com", "name": "Main Admin", "roles": ["MASAD", "TEACH"],
+         "positions": ["MASAD|Main Assessment Administrator", "TEACH|Teacher"],
+         "user_id": 5, "staff_id": 4}])
+    sync_teachers(pg)
+    assert "'MASAD'" in pg.cur.sql
+    assert service.current_user("boss@gmail.com")["role"] == "admin"
+    assert _staff("boss@gmail.com").edsider_admin
+
+    # No longer MASAD in EdSider: a teacher again, not an admin.
+    sync_teachers(_FakePg([{"email": "boss@gmail.com", "name": "Main Admin", "roles": ["TEACH"],
+                            "positions": ["TEACH|Teacher"]}]))
+    assert service.current_user("boss@gmail.com")["role"] == "teacher"
 
 
 def test_an_empty_teacher_list_is_refused_not_applied(local_db):

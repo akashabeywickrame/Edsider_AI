@@ -187,6 +187,13 @@ def paper_name(doc_id, filename, data):
     return f"papers/{doc_id}/{checksum(data)[:32]}{suffix}"
 
 
+def table_name(doc_id, n, content_type="image/png"):
+    """A paper's table or picture, numbered as in its text - see extract's
+    "tables as pictures"."""
+    suffix = mimetypes.guess_extension(content_type or "") or ".png"
+    return f"papers/{doc_id}/tables/{n}{'.jpg' if suffix == '.jpe' else suffix}"
+
+
 def image_name(question_id, image_id, content_type=None):
     suffix = mimetypes.guess_extension(content_type or "") or ""
     if suffix == ".jpe":

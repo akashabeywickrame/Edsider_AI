@@ -144,6 +144,7 @@ export default function PaperIntake() {
 
   const [finishBusy, setFinishBusy] = useState(false)
   const [finishError, setFinishError] = useState(null)
+  const [sendProblems, setSendProblems] = useState([])
   const [checkBusy, setCheckBusy] = useState(false)
   const [checkError, setCheckError] = useState(null)
   const [checkResult, setCheckResult] = useState(null)
@@ -301,6 +302,29 @@ export default function PaperIntake() {
     }
   }
 
+  // Reads the uploaded file again - tables come back as pictures on their
+  // questions - and replaces the questions, as a re-split does.
+  async function handleReread() {
+    const ok = window.confirm(
+      'Read the uploaded file again? Its tables are attached to their questions as pictures. This REPLACES the questions below, including any edits already made to them.',
+    )
+    if (!ok) return
+    setResplitBusy(true)
+    setResplitError(null)
+    try {
+      await api.rereadDocument(selectedId, splitStyle)
+      setPreview(null)
+      loadSelected(selectedId)
+      refreshList()
+      toast.success('Paper read again - its questions have been replaced.')
+    } catch (err) {
+      setResplitError(err.message)
+      toast.error(`Could not read the file again: ${err.message}`)
+    } finally {
+      setResplitBusy(false)
+    }
+  }
+
   function toggleInstructions(key, current) {
     if (instrOpenKey === key) {
       setInstrOpenKey(null)
@@ -337,6 +361,30 @@ export default function PaperIntake() {
   // Data entry's last step: the questions are copied to the question bank and
   // the paper goes on for a teacher's review. An administrator archives it
   // once the teacher has finished and it is ready to publish.
+  // The Main Assessment Administrator's last step: the paper goes into
+  // EdSider, ready to publish there, and is archived here.
+  async function handleSend() {
+    const ok = window.confirm(
+      "Send this paper to EdSider? It is written into EdSider's database ready to publish, and archived here - it can no longer be changed.",
+    )
+    if (!ok) return
+    setFinishBusy(true)
+    setFinishError(null)
+    setSendProblems([])
+    try {
+      const sent = await api.sendToEdsider(selectedId)
+      loadSelected(selectedId)
+      refreshList()
+      toast.success(`Sent to EdSider as assessment #${sent.edsider_assessment_id}.`)
+    } catch (err) {
+      setFinishError(err.message)
+      setSendProblems(err.problems || [])
+      toast.error(`Not sent: ${err.message}`)
+    } finally {
+      setFinishBusy(false)
+    }
+  }
+
   async function handleFinish(archive) {
     const ok = window.confirm(
       archive
@@ -693,6 +741,19 @@ export default function PaperIntake() {
                       <Button variant="primary" size="sm" onClick={handleApplyResplit} disabled={resplitBusy}>
                         {resplitBusy ? 'Re-splitting...' : 'Re-split this paper'}
                       </Button>
+                    </div>
+                  ) : null}
+                  {['pdf', 'docx'].includes(doc.file_type) ? (
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <p className="es-caption" style={{ margin: 0 }}>
+                        Or read the uploaded file again in the style above - its tables come back as
+                        pictures on their questions and answers. This also REPLACES the questions below.
+                      </p>
+                      <div>
+                        <Button variant="secondary" size="sm" onClick={handleReread} disabled={resplitBusy}>
+                          {resplitBusy ? 'Reading...' : 'Read the file again'}
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -1084,14 +1145,24 @@ export default function PaperIntake() {
 
             <section id="status" className="es-card pi-status" aria-label="Finish">
               <div style={{ display: 'grid', gap: 10 }}>
-                <h2 className="scr-h2">{doc.status === 'ready_to_publish' || doc.archived_at ? 'Archive' : 'Finish data entry'}</h2>
+                <h2 className="scr-h2">
+                  {doc.edsider_assessment_id || (doc.status === 'ready_to_publish' && doc.edsider_sending)
+                    ? 'Send to EdSider'
+                    : doc.status === 'ready_to_publish' || doc.archived_at
+                      ? 'Archive'
+                      : 'Finish data entry'}
+                </h2>
                 <p className="es-caption pi-status__text" style={{ margin: 0 }}>
-                  {doc.archived_at
+                  {doc.edsider_assessment_id
+                    ? `Sent to EdSider on ${(doc.sent_to_edsider_at || '').slice(0, 10)} as assessment #${doc.edsider_assessment_id}, ready to publish there. Its questions are kept in the question bank.`
+                    : doc.archived_at
                     ? `Archived on ${doc.archived_at.slice(0, 10)}. Its questions are kept in the question bank.`
                     : doc.status === 'ready_to_publish'
                       ? canUpload
-                        ? "The teacher's review is done and the question bank has every correction. Archiving removes the paper from intake - it is read from the question bank after that and cannot change."
-                        : 'The teacher has finished. An administrator archives the paper from here.'
+                        ? doc.edsider_sending
+                          ? "Both teachers have finished and the question bank has every correction. Sending writes the paper into EdSider, ready to publish there, and archives it here - it cannot change after that."
+                          : "Both teachers have finished and the question bank has every correction. Archiving removes the paper from intake - it is read from the question bank after that and cannot change."
+                        : 'Both teachers have finished. An administrator sends the paper to EdSider from here.'
                       : doc.status === 'checked'
                         ? "The duplicate check has run on the corrected paper. Finishing copies every question to the question bank and passes the paper on for a teacher's review."
                         : DUPLICATES_CHECKED.includes(doc.status) && doc.status !== 'refer_back'
@@ -1101,9 +1172,25 @@ export default function PaperIntake() {
                 {finishError ? (
                   <Notice tone="error" title="Could not finish">
                     {finishError}
+                    {sendProblems.length > 0 ? (
+                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                        {sendProblems.map((p, i) => (
+                          <li key={i}>
+                            {p.question_number ? `Q${p.question_number}: ` : ''}
+                            {p.message}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </Notice>
                 ) : null}
-                {doc.status === 'ready_to_publish' && canUpload ? (
+                {doc.status === 'ready_to_publish' && canUpload && doc.edsider_sending ? (
+                  <div>
+                    <Button variant="primary" onClick={handleSend} disabled={finishBusy}>
+                      {finishBusy ? 'Sending to EdSider...' : 'Send to EdSider'}
+                    </Button>
+                  </div>
+                ) : doc.status === 'ready_to_publish' && canUpload ? (
                   <div>
                     <Button variant="primary" onClick={() => handleFinish(true)} disabled={finishBusy}>
                       {finishBusy ? 'Archiving...' : 'Archive the paper'}

@@ -1211,6 +1211,7 @@ elif page == "Paper intake":
                 # trusting the extracted text blind.
                 file_blob=bytes(up.getbuffer()),
             )
+            store.save_document_tables(conn, doc_id, result.get("tables"))
             store.add_extracted_questions(
                 conn, doc_id, result["questions"],
                 fallback_grade=result["paper"]["grade"],

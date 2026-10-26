@@ -77,17 +77,31 @@ export default function PaperAssignment() {
     }
   }, [])
 
+  // Each paper goes to two different teachers; it is ready to publish once
+  // both have finished their review.
+  const pair = (docId) => chosen[docId] || ['', '']
+  const choose = (docId, slot, identity) =>
+    setChosen((c) => {
+      const next = [...pair(docId)]
+      next[slot] = identity
+      return { ...c, [docId]: next }
+    })
+  const canAssign = (docId) => {
+    const [a, b] = pair(docId)
+    return Boolean(a && b && a !== b)
+  }
+
   async function assign(doc) {
-    const identity = chosen[doc.id]
-    if (!identity) return
+    if (!canAssign(doc.id)) return
+    const identities = pair(doc.id)
     setBusy((b) => ({ ...b, [doc.id]: true }))
     setError(null)
     setMessage(null)
     try {
-      const updated = await api.assignDocument(doc.id, identity)
+      const updated = await api.assignDocument(doc.id, identities)
       setDocs((list) => list.map((d) => (d.id === updated.id ? updated : d)))
-      const who = teachers.find((t) => t.identity === identity)
-      const text = `#${doc.id} ${doc.paper_subject || doc.filename} assigned to ${who?.display_name || identity}.`
+      const names = identities.map((id) => teachers.find((t) => t.identity === id)?.display_name || id)
+      const text = `#${doc.id} ${doc.paper_subject || doc.filename} assigned to ${names.join(' and ')}.`
       setMessage(text)
       toast.success(text)
     } catch (err) {
@@ -126,7 +140,7 @@ export default function PaperAssignment() {
       <PageHeader
         accent="Assign"
         title="papers to teachers"
-        subtitle="Papers data entry has already checked for internal repeats, waiting to be handed to a teacher for subject review."
+        subtitle="Papers data entry has finished, waiting for two teachers to review each one. A paper is ready to publish once both have finished."
       />
 
       {error ? (
@@ -167,29 +181,33 @@ export default function PaperAssignment() {
               #{d.id} - {d.filename}
               {d.uploaded_at ? ` - uploaded ${when(d.uploaded_at)}` : ''}
             </p>
-            <div className="es-field">
-              <label className="es-field__label" htmlFor={`pa-teacher-${d.id}`}>
-                Assign to
-              </label>
-              <select
-                id={`pa-teacher-${d.id}`}
-                className="es-input"
-                value={chosen[d.id] || ''}
-                onChange={(e) => setChosen((c) => ({ ...c, [d.id]: e.target.value }))}
-              >
-                <option value="">Choose a teacher</option>
-                {teachers.map((t) => (
-                  <option key={t.identity} value={t.identity}>
-                    {t.display_name && t.display_name !== t.identity
-                      ? `${t.display_name} (${t.identity})`
-                      : t.identity}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {[0, 1].map((slot) => (
+              <div className="es-field" key={slot}>
+                <label className="es-field__label" htmlFor={`pa-teacher-${d.id}-${slot}`}>
+                  {slot === 0 ? 'First teacher' : 'Second teacher'}
+                </label>
+                <select
+                  id={`pa-teacher-${d.id}-${slot}`}
+                  className="es-input"
+                  value={pair(d.id)[slot]}
+                  onChange={(e) => choose(d.id, slot, e.target.value)}
+                >
+                  <option value="">Choose a teacher</option>
+                  {teachers
+                    .filter((t) => t.identity !== pair(d.id)[1 - slot])
+                    .map((t) => (
+                      <option key={t.identity} value={t.identity}>
+                        {t.display_name && t.display_name !== t.identity
+                          ? `${t.display_name} (${t.identity})`
+                          : t.identity}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            ))}
             <div>
-              <Button variant="primary" size="sm" onClick={() => assign(d)} disabled={!chosen[d.id] || busy[d.id]}>
-                {busy[d.id] ? 'Assigning...' : 'Assign'}
+              <Button variant="primary" size="sm" onClick={() => assign(d)} disabled={!canAssign(d.id) || busy[d.id]}>
+                {busy[d.id] ? 'Assigning...' : 'Assign to both'}
               </Button>
             </div>
           </article>
@@ -205,7 +223,7 @@ export default function PaperAssignment() {
             <thead>
               <tr>
                 <th>Paper</th>
-                <th>Teacher</th>
+                <th>Teachers</th>
                 <th>Status</th>
                 <th>Uploaded</th>
                 <th>Comments</th>
@@ -224,7 +242,18 @@ export default function PaperAssignment() {
                         #{a.id} - {a.filename}
                       </span>
                     </td>
-                    <td>{a.assigned_to ? nameOf(a.assigned_to) : '-'}</td>
+                    <td>
+                      {(a.teachers || []).length === 0
+                        ? '-'
+                        : a.teachers.map((t) => (
+                            <div key={t}>
+                              {nameOf(t)}{' '}
+                              <span className="es-caption">
+                                {(a.teachers_done || []).includes(t) ? '- review done' : '- reviewing'}
+                              </span>
+                            </div>
+                          ))}
+                    </td>
                     <td>
                       <StatusPill status={a.status} />
                     </td>

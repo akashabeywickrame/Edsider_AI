@@ -22,6 +22,7 @@ or POST to /check. See README.md for the request and response shape.
 """
 
 import json
+import base64
 import logging
 import mimetypes
 import os
@@ -46,6 +47,7 @@ sys.path.insert(0, str(ROOT))
 from src import files, id_tokens, store, dedupe
 from src.edsider import export as edsider_export
 from src.edsider import labels as edsider_labels
+from src.edsider import send as edsider_send
 from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.intake import extract as intake_extract
@@ -450,9 +452,12 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
             raise HTTPException(409, "This paper has been passed on from data entry - it can "
                                      "be changed again if a teacher sends it back.")
     elif role == "teacher":
-        if held["teacher"] != user["identity"]:
+        # A paper has two teachers; each changes it only while their own
+        # review is open.
+        if user["identity"] not in (held["teachers"] or []):
             raise HTTPException(403, "This paper is not assigned to you.")
-        if writing and held["status"] != "teacher_review":
+        if writing and (held["status"] != "teacher_review"
+                        or user["identity"] in (held["teachers_done"] or [])):
             raise HTTPException(409, "Your review of this paper is finished.")
     return user
 
@@ -464,6 +469,12 @@ def _actor(identity):
     """Who to log an action against - None when a route is called directly
     (the tests), not through a request."""
     return identity if isinstance(identity, str) else None
+
+
+def _is_teacher(user):
+    """Whether the caller signed in as a teacher - False when a route is
+    called directly (the tests), not through a request."""
+    return isinstance(user, dict) and user.get("role") == "teacher"
 
 
 def _own_papers(user):
@@ -615,7 +626,10 @@ class IntakeDocumentOut(BaseModel):
     # Who has it now: the Data Entry Operator working on it, and the
     # teacher reviewing it (see intake.review).
     operator: Optional[str] = None
+    # The paper's teachers ("a, b"), each of them, and who has finished.
     assigned_to: Optional[str] = None
+    teachers: List[str] = []
+    teachers_done: List[str] = []
     # Set once the paper's questions are in the question bank: they are read
     # from there, and the paper can no longer change.
     archived_at: Optional[str] = None
@@ -644,6 +658,11 @@ class IntakeDocumentDetail(IntakeDocumentOut):
     # Medium, term and year as the paper itself states them, as EdSider ids
     # - offered as the starting values, saved only when data entry saves.
     suggested_edsider_labels: Dict[str, int] = {}
+    # Where the paper went in EdSider, once sent (see send_to_edsider).
+    edsider_assessment_id: Optional[int] = None
+    sent_to_edsider_at: Optional[str] = None
+    # Whether this server sends papers anywhere (EDSIDER_SEND_DB set).
+    edsider_sending: bool = False
 
 
 class McqOptionOut(BaseModel):
@@ -831,6 +850,12 @@ class ResplitRequest(BaseModel):
     style: str
 
 
+class RereadRequest(BaseModel):
+    style: str = intake_extract.DEFAULT_SPLIT_STYLE
+    # For OCR'd pages; by default the paper's medium (Sinhala -> "sin").
+    lang: Optional[str] = None
+
+
 class PastedPaperIn(BaseModel):
     """A paper's text read elsewhere - see create_document_from_text."""
     text: str = Field(..., min_length=1)
@@ -869,8 +894,10 @@ class TeacherOut(BaseModel):
 
 class TeacherSyncOut(BaseModel):
     teachers: int
-    # The same sync also brings EdSider's Data Entry Operators.
+    # The same sync also brings EdSider's Data Entry Operators and its
+    # Main Assessment Administrators (admins here).
     operators: int = 0
+    admins: int = 0
     synced_at: Optional[str] = None
 
 
@@ -914,6 +941,8 @@ class StaffOut(BaseModel):
     in_edsider: bool = False
     # A Data Entry Operator in EdSider, and every position EdSider gives them.
     edsider_operator: bool = False
+    # EdSider's Main Assessment Administrator (MASAD) - an admin here.
+    edsider_admin: bool = False
     positions: Optional[str] = None
     active: bool = True
     subjects: List[str] = []
@@ -925,7 +954,8 @@ class StaffOut(BaseModel):
 
 
 class AssignIn(BaseModel):
-    teacher_identity: str = Field(..., min_length=1)
+    # A paper is reviewed by two teachers.
+    teacher_identities: List[str] = Field(..., min_length=2, max_length=2)
 
 
 class OperatorOut(BaseModel):
@@ -970,6 +1000,8 @@ def _document_out(doc, detail=False):
         paper_grade=doc["paper_grade"], paper_subject=doc["paper_subject"],
         paper_title=doc["paper_title"], split_style=doc["split_style"],
         status=doc["status"], operator=doc["operator"], assigned_to=doc["assigned_to"],
+        teachers=list(doc.get("teachers") or []),
+        teachers_done=list(doc.get("teachers_done") or []),
         archived_at=doc["archived_at"].isoformat() if doc.get("archived_at") else None,
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
@@ -980,8 +1012,13 @@ def _document_out(doc, detail=False):
         suggested = intake_extract.suggest_settings(doc["raw_text"], data["sections"])
         labels = edsider_labels.suggest(doc["raw_text"], doc["filename"], doc["paper_title"],
                                         _edsider_lists())
+        with store.connect() as conn:
+            sent = store.last_send(conn, doc["id"])
         return IntakeDocumentDetail(raw_text=doc["raw_text"], suggested_settings=suggested,
-                                    suggested_edsider_labels=labels, **data)
+                                    suggested_edsider_labels=labels,
+                                    edsider_assessment_id=sent["assessment_id"] if sent else None,
+                                    sent_to_edsider_at=sent["sent_at"].isoformat() if sent else None,
+                                    edsider_sending=bool(edsider_send.target()), **data)
     return IntakeDocumentOut(**data)
 
 
@@ -1014,14 +1051,19 @@ def _question_out(q, has_parts=False):
     # General English paper's question 6 is "Underline the option that
     # best expresses the meaning..." with five depth-1 parts, each
     # itself a complete MCQ with its own four lettered options.
+    # A type someone chose - or the extractor stored, as it does for a
+    # worked-solutions paper's numbered working - is the type: options are
+    # read out only for an MCQ, blanks only for a fill-in-the-blank.
+    chosen = d.get("question_type") or None
     if not has_parts:
-        stem, options = intake_extract.split_mcq_options(d.get("text") or "")
+        stem, options = (intake_extract.split_mcq_options(d.get("text") or "")
+                         if chosen in (None, "mcq") else (None, []))
         if options:
             labels = intake_extract.mcq_correct_labels(d.get("answer"))
             d["mcq"] = McqInfoOut(
                 stem=stem, options=[McqOptionOut(**o) for o in options],
                 correct_labels=labels, correct=labels[0] if labels else None)
-        else:
+        elif chosen in (None, "fill_blank"):
             _stem, blank_positions = intake_extract.split_fill_blanks(d.get("text") or "")
             if blank_positions:
                 expected = intake_extract.fill_blank_answers(d.get("answer"))
@@ -1140,6 +1182,8 @@ def upload_document(
             notes=result["paper_instructions"],
             split_style=style, file_blob=contents,
         )
+        # Before the questions, which attach their tables from these.
+        store.save_document_tables(conn, doc_id, result.get("tables"))
         store.add_extracted_questions(
             conn, doc_id, result["questions"],
             fallback_grade=result["paper"]["grade"],
@@ -1286,26 +1330,73 @@ def resplit_document(doc_id: int, body: ResplitRequest,
                 409, "This paper was uploaded before its raw text was "
                     "kept, so it cannot be re-split - upload it again.")
         parsed = intake_extract.structure(doc["raw_text"], style=body.style)
-        meta = intake_extract.detect_paper_meta(
-            doc["raw_text"], filename=doc["filename"])
-        # The parts and group instructions are rebuilt from the text along
-        # with the questions they hold.
-        store.replace_intake_questions(
-            conn, doc_id, parsed["questions"], sections=parsed["sections"],
-            instruction_groups=parsed["instruction_groups"])
-        # A grade or subject someone chose is kept; one never set takes
-        # what the fresh reading finds, if it is on EdSider's list. The
-        # paper's general instructions are only filled in when nobody has
-        # written any.
-        store.update_intake_document(
-            conn, doc_id, actor=_actor(identity), split_style=body.style,
-            status="extracted",
-            grade_id=doc["grade_id"] or store.list_id(conn, "grade", meta["grade"], strict=False),
-            subject_id=doc["subject_id"] or store.list_id(conn, "subject", meta["subject"],
-                                                          strict=False),
-            paper_title=doc.get("paper_title") or meta["title"],
-            notes=doc.get("notes") or parsed["paper_instructions"],
-        )
+        _replace_split(conn, doc, parsed, doc["raw_text"], body.style, identity)
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
+def _replace_split(conn, doc, parsed, raw_text, style, identity):
+    """A fresh split stored in place of the old one - the re-split's and
+    the re-read's shared last step."""
+    meta = intake_extract.detect_paper_meta(raw_text, filename=doc["filename"])
+    # The parts and group instructions are rebuilt from the text along
+    # with the questions they hold.
+    store.replace_intake_questions(
+        conn, doc["id"], parsed["questions"], sections=parsed["sections"],
+        instruction_groups=parsed["instruction_groups"])
+    # A grade or subject someone chose is kept; one never set takes
+    # what the fresh reading finds, if it is on EdSider's list. The
+    # paper's general instructions are only filled in when nobody has
+    # written any.
+    store.update_intake_document(
+        conn, doc["id"], actor=_actor(identity), split_style=style,
+        status="extracted",
+        grade_id=doc["grade_id"] or store.list_id(conn, "grade", meta["grade"], strict=False),
+        subject_id=doc["subject_id"] or store.list_id(conn, "subject", meta["subject"],
+                                                      strict=False),
+        paper_title=doc.get("paper_title") or meta["title"],
+        notes=doc.get("notes") or parsed["paper_instructions"],
+    )
+
+
+# A paper's medium, as EdSider names it, to the language its pages are OCR'd in.
+_OCR_LANG_FOR_MEDIUM = {"sinhala": "sin", "tamil": "tam", "english": "eng"}
+
+
+@app.post("/intake/documents/{doc_id}/reread",
+         response_model=IntakeDocumentDetail,
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def reread_document(doc_id: int, body: RereadRequest,
+                    identity: str = Depends(current_identity)):
+    """Read the paper's own file again with today's extractor - its tables
+    as pictures on their questions, and any reader fix since it was
+    uploaded - and replace its questions, as a re-split does (destructive
+    the same way; the page asks first). A re-split only re-reads the text
+    kept at upload, which has neither."""
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        data = store.intake_file_blob(conn, doc_id)
+    if not data or doc.get("file_type") == "text":
+        raise HTTPException(
+            409, "This paper has no file to read again - it was pasted as text, or "
+                "uploaded before files were kept. Upload it again instead.")
+    lang = body.lang or _OCR_LANG_FOR_MEDIUM.get(
+        (doc.get("medium_name") or "").strip().lower(), intake_extract.DEFAULT_OCR_LANG)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(doc["filename"]).suffix) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+    try:
+        result = intake_extract.extract(tmp_path, style=body.style, lang=lang,
+                                        filename=doc["filename"])
+    finally:
+        os.unlink(tmp_path)
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        store.set_read_text(conn, doc_id, result["raw_text"], result["extractor"])
+        store.save_document_tables(conn, doc_id, result.get("tables"))
+        parsed = {k: result[k] for k in ("questions", "sections", "instruction_groups",
+                                         "paper_instructions")}
+        _replace_split(conn, doc, parsed, result["raw_text"], body.style, identity)
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
@@ -1450,7 +1541,13 @@ def finish_data_entry(doc_id: int, identity: str = Depends(current_identity)):
         except ValueError as e:
             raise HTTPException(409, str(e))
         store.finish_stage(conn, doc_id, "data_entry", actor=who)
-        store.set_document_status(conn, doc_id, "data_entry_done", actor=who)
+        if store.paper_teachers(conn, doc_id):
+            # Sent back by a teacher: straight back to both of its
+            # teachers, who each review the corrected paper again.
+            store.reopen_stage(conn, doc_id, "teacher", actor=who)
+            store.set_document_status(conn, doc_id, "teacher_review", actor=who)
+        else:
+            store.set_document_status(conn, doc_id, "data_entry_done", actor=who)
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
@@ -1477,18 +1574,24 @@ def archive_document(doc_id: int, identity: str = Depends(current_identity)):
          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
 def assign_document(doc_id: int, body: AssignIn,
                     identity: str = Depends(current_identity)):
-    """The assigning administrator's action - hands a checked paper to
-    one teacher: one of EdSider's own (see sync_teachers), or someone who
-    has opened the teacher app here. Moves the paper straight to
-    'teacher_review'."""
+    """The assigning administrator's action - hands a paper to its two
+    teachers: EdSider's own (see sync_teachers), or people who have opened
+    the teacher app here. Moves the paper straight to 'teacher_review'; it
+    is ready to publish once both have finished. Naming a different
+    teacher takes the paper off the one they replace."""
+    asked = [t.strip() for t in body.teacher_identities]
+    if asked[0].lower() == asked[1].lower():
+        raise HTTPException(400, "Choose two different teachers.")
     with store.connect() as conn:
         _require_document(conn, doc_id)
-        known = {t["identity"] for t in store.assignable_teachers(conn)}
-        if body.teacher_identity not in known:
-            raise HTTPException(
-                404, f"{body.teacher_identity!r} is not an EdSider teacher "
-                    "and has never opened the teacher app here.")
-        store.assign_document(conn, doc_id, body.teacher_identity,
+        # Named as the teacher list names them, whatever the case asked.
+        known = {t["identity"].lower(): t["identity"] for t in store.assignable_teachers(conn)}
+        for teacher in asked:
+            if teacher.lower() not in known:
+                raise HTTPException(
+                    404, f"{teacher!r} is not an EdSider teacher "
+                        "and has never opened the teacher app here.")
+        store.assign_teachers(conn, doc_id, [known[t.lower()] for t in asked],
                               assigned_by=_actor(identity))
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
@@ -1562,6 +1665,93 @@ def edsider_preview(doc_id: int, arrival_state: str = edsider_export.DEFAULT_ARR
                              package=package)
 
 
+class SendIn(BaseModel):
+    # For the question codes (G12-GIT-EM-T2-EX02-...); optional.
+    exam_number: Optional[int] = None
+    # Who to record as sending it - only on a local run, where nobody is
+    # signed in (see edsider_preview).
+    as_email: Optional[str] = None
+
+
+# A paper sent from here arrives in EdSider as it left us, ready to publish;
+# EdSider's own staff schedule and publish it there.
+SEND_ARRIVAL = "ReadyToPublish"
+
+
+@app.post("/intake/documents/{doc_id}/send-to-edsider", response_model=IntakeDocumentDetail,
+          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user)):
+    """The Main Assessment Administrator's last step, once both teachers
+    have finished ('ready_to_publish'): the paper is written into EdSider's
+    database - its paper, schedule, parts, sections, questions, pictures and
+    links, in one transaction (src/edsider/send.py) - recorded here, and
+    archived from intake ('published', "Sent to EdSider"). Anything that
+    would stop EdSider taking it (a missing label, a question with no
+    marks) comes back as a 409 listing each problem, and nothing is sent."""
+    if not edsider_send.target():
+        raise HTTPException(409, "Sending to EdSider is not set up on this server.")
+    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    sender_email = (body.as_email if (body.as_email and caller.get("role") is None)
+                    else caller.get("identity"))
+    who = _actor(caller.get("identity"))
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        if store.last_send(conn, doc_id):
+            raise HTTPException(409, "This paper has already been sent to EdSider.")
+        if doc["status"] != "ready_to_publish":
+            raise HTTPException(409, "A paper is sent to EdSider once both teachers have finished "
+                                     "their review and it is ready to publish.")
+        questions = store.intake_questions(conn, doc_id)
+        images = store.question_images_for_document(conn, doc_id)
+        # EdSider keeps a picture inside the question itself, as a data: URL.
+        urls = {}
+        for rows in images.values():
+            for img in rows:
+                data = store.question_image_blob(conn, img["id"])
+                if data:
+                    urls[img["id"]] = (f"data:{img['content_type'] or 'image/png'};base64,"
+                                       + base64.b64encode(data).decode("ascii"))
+        people = store.document_people(conn, doc_id)
+        sender = store.lookup_staff(conn, sender_email.strip().lower()) if sender_email else None
+    people["sender"] = dict(sender) if sender else {}
+    package = edsider_export.build_package(
+        doc, questions, _edsider_lists(), people, images=images,
+        image_src=lambda img: urls.get(img["id"], ""), arrival_state=SEND_ARRIVAL,
+        exam_number=body.exam_number)
+    problems = [p for p in package["problems"] if p["level"] == "error"]
+    if problems:
+        raise HTTPException(409, {"message": "The paper cannot be sent to EdSider yet.",
+                                  "problems": problems})
+
+    target = edsider_send.target()
+    try:
+        pg = edsider_send.connect()
+    except Exception as e:
+        raise HTTPException(502, f"Could not reach EdSider's database: {e}")
+    try:
+        result = edsider_send.write_package(pg, package)
+        pg.commit()
+    except Exception as e:
+        pg.rollback()
+        with store.connect() as conn:
+            store.record_send(conn, doc_id, who, target, SEND_ARRIVAL, False,
+                              error=f"{type(e).__name__}: {e}"[:2000])
+        raise HTTPException(502, f"EdSider did not take the paper - nothing was written there: {e}")
+    finally:
+        pg.close()
+
+    # In EdSider now: recorded on its own (so the record survives whatever
+    # happens next), then archived here.
+    with store.connect() as conn:
+        store.record_send(conn, doc_id, who, target, SEND_ARRIVAL, True,
+                          assessment_id=result["assessment_id"],
+                          question_ids={str(k): v for k, v in result["questions"].items()})
+    with store.connect() as conn:
+        store.archive_document(conn, doc_id, actor=who, status="published")
+        doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
 @app.get("/intake/documents/{doc_id}/history", response_model=List[HistoryOut],
          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
 def document_history(doc_id: int):
@@ -1578,10 +1768,11 @@ def document_history(doc_id: int):
          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
 def finish_review(doc_id: int, body: FinishIn,
                   identity: str = Depends(current_identity)):
-    """The teacher's "Finish Review" action. Review Done refreshes the
-    paper's copy in the question bank with the teacher's corrections and
-    makes it ready to publish (an administrator then archives it); Refer
-    Back returns it to the Data Entry Operator who worked on it."""
+    """A teacher's "Finish Review" action - one of the paper's two.
+    Review Done closes that teacher's review; once both have, the paper's
+    copy in the question bank is refreshed with their corrections and it is
+    ready to publish. Refer Back from either returns it to the Data Entry
+    Operator; when they finish again, both teachers review it again."""
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
         if doc["status"] != "teacher_review":
@@ -1589,11 +1780,15 @@ def finish_review(doc_id: int, body: FinishIn,
                 409, f"Cannot finish review from status {doc['status']!r} "
                     "- this paper is not currently with a teacher.")
         who = _actor(identity)
-        store.finish_stage(conn, doc_id, "teacher", actor=who)
+        teachers = store.paper_teachers(conn, doc_id)
+        mine = who if who in {t["assigned_to"] for t in teachers} else None
         if body.status == "review_done":
-            store.sync_paper_to_bank(conn, doc_id, actor=who)
-            store.set_document_status(conn, doc_id, "ready_to_publish", actor=who)
+            store.finish_stage(conn, doc_id, "teacher", actor=who, who=mine)
+            if all(t["finished_at"] for t in store.paper_teachers(conn, doc_id)):
+                store.sync_paper_to_bank(conn, doc_id, actor=who)
+                store.set_document_status(conn, doc_id, "ready_to_publish", actor=who)
         else:
+            store.finish_stage(conn, doc_id, "teacher", actor=who, who=mine)
             store.set_document_status(conn, doc_id, body.status, actor=who)
             # Back to the Data Entry Operator who worked on it.
             store.reopen_stage(conn, doc_id, "data_entry", actor=who)
@@ -1606,11 +1801,17 @@ def finish_review(doc_id: int, body: FinishIn,
 @app.get("/intake/documents/{doc_id}/questions",
         response_model=List[IntakeQuestionOut],
         dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
-def list_questions(doc_id: int):
+def list_questions(doc_id: int, user: dict = Depends(current_user)):
     with store.connect() as conn:
         _require_document(conn, doc_id)
         qs = store.intake_questions(conn, doc_id)
+        # A teacher sees their own ticks - the paper's other teacher ticks
+        # every question for themselves.
+        checked = (store.teacher_checks(conn, doc_id, user["identity"])
+                   if _is_teacher(user) else None)
     parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
+    if checked is not None:
+        qs = [dict(q, teacher_reviewed=q["id"] in checked) for q in qs]
     return [_question_out(q, has_parts=q["seq"] in parent_seqs) for q in qs]
 
 
@@ -1666,17 +1867,25 @@ def create_question(doc_id: int, body: QuestionCreate):
 @app.patch("/intake/questions/{q_id}", response_model=IntakeQuestionOut,
           dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
 def update_question(q_id: int, body: QuestionUpdate,
-                    identity: str = Depends(current_identity)):
+                    identity: str = Depends(current_identity),
+                    user: dict = Depends(current_user)):
     fields = body.model_dump(exclude_unset=True)
     for key in ("reviewed", "teacher_reviewed"):
         if key in fields:
             fields[key] = int(fields[key])
+    # A teacher's tick is theirs alone (see store.set_teacher_check).
+    own_tick = fields.pop("teacher_reviewed", None) if _is_teacher(user) else None
     with store.connect() as conn:
         _require_question(conn, q_id)
+        if own_tick is not None:
+            store.set_teacher_check(conn, q_id, identity, bool(own_tick))
         if fields:
             store.update_intake_question(conn, q_id, **fields)
             store.stamp_question_editor(conn, q_id, identity)
         q = store.get_intake_question(conn, q_id)
+        if _is_teacher(user):
+            q = dict(q, teacher_reviewed=q_id in store.teacher_checks(
+                conn, q["document_id"], identity))
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
 
@@ -1974,7 +2183,9 @@ def sync_teachers_from_edsider(user: dict = Depends(require_assigner)):
     with store.connect() as conn:
         at = store.edsider_teachers_synced_at(conn)
         operators = sum(1 for o in store.assignable_operators(conn) if o["source"] == "edsider")
-    return TeacherSyncOut(teachers=count, operators=operators,
+        admins = conn.execute(
+            "SELECT count(*) AS n FROM staff WHERE edsider_admin").fetchone()["n"]
+    return TeacherSyncOut(teachers=count, operators=operators, admins=admins,
                           synced_at=at.isoformat() if at else None)
 
 

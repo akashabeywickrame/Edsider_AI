@@ -150,10 +150,11 @@ TEACHERS_QUERY = """
     WHERE (t.user_status_id IS NULL OR t.user_status_id = 1)
       AND coalesce(trim(su.user_email), '') <> ''
     GROUP BY lower(trim(su.user_email))
-    -- Teachers and Data Entry Operators are the people this app has work
-    -- for; every other role they hold (most operators are also Assessors)
-    -- comes along as a position.
-    HAVING bool_or(r.role_code = 'TEACH' OR r.role_code = 'DEOP')
+    -- Teachers, Data Entry Operators and Main Assessment Administrators
+    -- (MASAD - this app's admins: they assign papers and send them to
+    -- EdSider) are the people this app has work for; every other role they
+    -- hold (most operators are also Assessors) comes along as a position.
+    HAVING bool_or(r.role_code IN ('TEACH', 'DEOP', 'MASAD'))
     ORDER BY lower(trim(su.user_email))
 """
 

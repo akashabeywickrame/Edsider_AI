@@ -436,13 +436,16 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     elif entry:
         problem("warning", f"{entry['assigned_to']} did the data entry but is not on EdSider's "
                            "staff list, so EdSider will not show who did it.")
-    teacher = people.get("teacher")
-    if teacher and teacher.get("to_staff_id"):
-        review = {"teacher_id": teacher["to_staff_id"], "status_id": REVIEW_COMPLETED,
-                  "assign_by": teacher.get("by_staff_id") or staff_id}
-    elif teacher:
-        problem("warning", f"{teacher['assigned_to']} reviewed the paper but is not on EdSider's "
-                           "staff list, so EdSider will not show who reviewed it.")
+    # A paper is reviewed by two teachers - one review row each.
+    reviews = []
+    for teacher in people.get("teachers") or ([people["teacher"]] if people.get("teacher") else []):
+        if teacher.get("to_staff_id"):
+            reviews.append({"teacher_id": teacher["to_staff_id"], "status_id": REVIEW_COMPLETED,
+                            "assign_by": teacher.get("by_staff_id") or staff_id})
+        else:
+            problem("warning", f"{teacher['assigned_to']} reviewed the paper but is not on "
+                               "EdSider's staff list, so EdSider will not show who reviewed it.")
+    review = reviews[0] if reviews else None
 
     if not rows:
         problem("error", "The paper has no questions.")
@@ -458,7 +461,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     return {
         "assessment": assessment, "schedule": schedule, "assessor": assessor,
         "parts": parts, "passages": passages, "questions": rows, "links": links,
-        "operation": operation, "review": review, "problems": problems,
+        "operation": operation, "review": review, "reviews": reviews, "problems": problems,
         "summary": {
             "title": title, "arrival_state": arrival_state, "parts": len(parts),
             "sections": sum(len(p["sections"]) for p in parts),

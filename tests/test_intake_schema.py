@@ -23,8 +23,8 @@ from service import DocumentUpdate, StaffIn, add_staff_member, get_document, upd
 
 SUPER = {"identity": "boss@example.com", "name": "Boss", "role": "superadmin"}
 WHO = "x-ms-client-principal-name"
-ADMIN, OP1, OP2, TEACHER = ("adm@example.com", "op1@example.com", "op2@example.com",
-                            "tea@example.com")
+ADMIN, OP1, OP2, TEACHER, TEACHER2 = ("adm@example.com", "op1@example.com",
+                                      "op2@example.com", "tea@example.com", "tea2@example.com")
 PAPER_TEXT = ("1. Which device is an output device?\n(1) Mouse\n(2) Printer\n(3) Scanner\n"
               "(4) Keyboard\n2. Define the term system. (2 marks)\n")
 
@@ -159,7 +159,7 @@ def client(local_db, monkeypatch):
                 "WEBSITE_SITE_NAME"):
         monkeypatch.delenv(var, raising=False)
     for email, role in ((ADMIN, "admin"), (OP1, "employee"), (OP2, "employee"),
-                        (TEACHER, "teacher")):
+                        (TEACHER, "teacher"), (TEACHER2, "teacher")):
         add_staff_member(StaffIn(email=email, name=email.split("@")[0], role=role),
                          user=SUPER)
     return TestClient(service.app)
@@ -220,28 +220,55 @@ def test_a_paper_goes_operator_teacher_and_back(client):
     done = call(client, OP1, "POST", f"{path}/finish-data-entry")
     assert done.status_code == 200 and done.json()["status"] == "data_entry_done"
 
-    # With the teacher: the teacher may open and tick it, the operator may
+    # With its two teachers: each may open it and tick it, the operator may
     # only look.
     assert call(client, TEACHER, "GET", path).status_code == 403
-    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identity": TEACHER})
+    assert call(client, ADMIN, "POST", f"{path}/assign",
+                json={"teacher_identities": [TEACHER]}).status_code == 422   # two, not one
+    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER, TEACHER2]})
     q = f"/intake/questions/{qs[0]['id']}"
     assert call(client, OP1, "PATCH", q, json={"text": "changed"}).status_code == 409
     assert call(client, OP1, "GET", path).status_code == 200
-    assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": True}).status_code == 200
 
-    # Sent back: the operator can change it again, the teacher cannot.
-    assert call(client, TEACHER, "POST", f"{path}/finish",
-                json={"status": "refer_back"}).status_code == 200
-    assert call(client, OP1, "PATCH", q, json={"text": "fixed"}).status_code == 200
+    # Each teacher's ticks are their own.
+    assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": True}).json()["teacher_reviewed"]
+    ticks = {t: [x["teacher_reviewed"] for x in call(client, t, "GET", f"{path}/questions").json()]
+             for t in (TEACHER, TEACHER2)}
+    assert ticks[TEACHER][0] is True and ticks[TEACHER2][0] is False
+
+    # One finishes: still with the teachers, and that one can change nothing.
+    done = call(client, TEACHER, "POST", f"{path}/finish", json={"status": "review_done"}).json()
+    assert done["status"] == "teacher_review" and done["teachers_done"] == [TEACHER]
     assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": False}).status_code == 409
 
+    # The other sends it back: the operator can change it again, no teacher can.
+    assert call(client, TEACHER2, "POST", f"{path}/finish",
+                json={"status": "refer_back"}).status_code == 200
+    assert call(client, OP1, "PATCH", q, json={"text": "fixed"}).status_code == 200
+    assert call(client, TEACHER2, "PATCH", q, json={"teacher_reviewed": True}).status_code == 409
+
+    # Data entry finishes again: straight back to both teachers, both to review again.
+    service.state["embedder"] = FakeEmbedder()
+    try:
+        call(client, OP1, "POST", f"{path}/check-duplicates")
+    finally:
+        service.state["embedder"] = None
+    again = call(client, OP1, "POST", f"{path}/finish-data-entry").json()
+    assert again["status"] == "teacher_review" and again["teachers_done"] == []
+    call(client, TEACHER, "POST", f"{path}/finish", json={"status": "review_done"})
+    assert call(client, ADMIN, "GET", path).json()["status"] == "teacher_review"
+    last = call(client, TEACHER2, "POST", f"{path}/finish", json={"status": "review_done"}).json()
+    assert last["status"] == "ready_to_publish"
+
     history = call(client, ADMIN, "GET", f"{path}/history").json()
-    assert [(h["action"], h.get("stage")) for h in history] == [
+    actions = [(h["action"], h.get("stage")) for h in history]
+    assert actions[:9] == [
         ("uploaded", None), ("assigned", "data_entry"), ("status", None),
         ("copied to the question bank", None), ("finished", "data_entry"), ("status", None),
-        ("assigned", "teacher"), ("status", None),
-        ("finished", "teacher"), ("status", None), ("reopened", "data_entry")]
+        ("assigned", "teacher"), ("assigned", "teacher"), ("status", None)]
     assert history[0]["actor"] == ADMIN and history[1]["assigned_to"] == OP1
+    assert {h["assigned_to"] for h in history if h["action"] == "assigned"
+            and h.get("stage") == "teacher"} == {TEACHER, TEACHER2}
 
 
 # ----------------------------------------- the copy from the old tables

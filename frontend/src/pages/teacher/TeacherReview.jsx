@@ -20,7 +20,7 @@ const STATUS_TEXT = {
   refer_back: 'Referred back to data entry',
   review_done: 'Review done',
   ready_to_publish: 'Ready to publish',
-  published: 'Published',
+  published: 'Sent to EdSider',
   archived: 'Archived',
 }
 
@@ -52,6 +52,9 @@ export default function TeacherReview() {
   const [finishing, setFinishing] = useState(false)
   const [message, setMessage] = useState(null)
   const [who, setWho] = useState(null)
+  // This teacher's own identity - a paper has two teachers, and whether
+  // it is still open to this one depends on whether they have finished.
+  const [myId, setMyId] = useState(null)
   const [viewAs, setViewAs] = useState(devIdentity() || '')
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -61,7 +64,10 @@ export default function TeacherReview() {
     api
       .touchTeacher()
       .then((t) => {
-        if (live) setWho(t.display_name || t.identity)
+        if (live) {
+          setWho(t.display_name || t.identity)
+          setMyId(t.identity)
+        }
         return api.listMyDocuments()
       })
       .then((list) => {
@@ -106,7 +112,9 @@ export default function TeacherReview() {
     }
   }, [docId])
 
-  const reviewable = doc?.status === 'teacher_review'
+  const iFinished = Boolean(doc && myId && (doc.teachers_done || []).includes(myId))
+  const reviewable = doc?.status === 'teacher_review' && !iFinished
+  const otherTeacher = (doc?.teachers || []).find((t) => t !== myId)
   const done = questions.filter((q) => q.teacher_reviewed).length
   const pct = questions.length ? Math.round((done / questions.length) * 100) : 0
   const allReviewed = questions.length > 0 && done === questions.length
@@ -153,13 +161,22 @@ export default function TeacherReview() {
     try {
       const updated = await api.finishReview(docId, decision)
       setDoc(updated)
+      const bothDone = updated.status === 'ready_to_publish'
       setMessage(
-        decision === 'review_done'
-          ? 'Review done - the question bank has your corrections and the paper is ready to publish.'
-          : 'Referred back to data entry with your comments.',
+        decision !== 'review_done'
+          ? 'Referred back to data entry with your comments.'
+          : bothDone
+            ? 'Review done - both teachers have finished, the question bank has your corrections and the paper is ready to publish.'
+            : 'Review done - waiting for the other teacher to finish their review.',
       )
       setDecision(null)
-      toast.success(decision === 'review_done' ? 'Review finished - the paper is ready to publish.' : 'Paper referred back to data entry.')
+      toast.success(
+        decision !== 'review_done'
+          ? 'Paper referred back to data entry.'
+          : bothDone
+            ? 'Review finished - the paper is ready to publish.'
+            : 'Your review is finished.',
+      )
     } catch (err) {
       setError(err.message)
       toast.error(`Could not finish the review: ${err.message}`)
@@ -258,7 +275,12 @@ export default function TeacherReview() {
 
       {doc ? <PaperSummary doc={doc} questions={questions} /> : null}
 
-      {doc && !reviewable ? (
+      {doc && iFinished && doc.status === 'teacher_review' ? (
+        <Notice tone="info" title="Your review is done">
+          The paper is ready to publish once {otherTeacher ? `the other teacher (${otherTeacher})` : 'the other teacher'}{' '}
+          finishes too. You can read it here.
+        </Notice>
+      ) : doc && !reviewable ? (
         <Notice tone="info" title={`This paper is ${STATUS_TEXT[doc.status] || doc.status}`}>
           You can read it here, but ticks, comments and the finish decision are only open while it is with you.
         </Notice>
