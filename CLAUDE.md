@@ -2128,7 +2128,24 @@ PG_USER) - unset, sending is off, so no deployed app writes to EdSider
 until someone sets it there; pointing it at live EdSider is that one
 setting. Rehearsed on the pre-prod copy inside a transaction that was
 rolled back: every row accepted (types, foreign keys, the state), nothing
-left.
+left. "Send to EdSider" is on Admin -> Paper assignment, beside a
+ready-to-publish paper's status, for MASAD only (`/me` says `masad`, from
+`staff.edsider_admin`; the route refuses anyone else with a 403 - an
+admin a superadmin made here is not one). Disabled, with the reason, on a
+server without `EDSIDER_SEND_DB` (`/health` shows it as `edsider_send`).
+Sent, the paper is 'published'. Data entry used to show "Archive the
+paper" there instead, and an archived paper can never be sent; it now
+only says where the paper is. Every page's status pill is
+`components/StatusPill.jsx` - the design bundle's printed most statuses
+as their codes ("ready_to_publish"); ready to publish and published are
+green.
+
+**The duplicate check no longer takes a paper back from its teachers.**
+It set 'checked' whatever the status, so an admin running it from data
+entry on a paper in teacher review (paper #90) put it back to 'checked':
+both teachers' ticks were refused ("Your review of this paper is
+finished") and "Finish data entry" showed again. It now sets 'checked'
+only while data entry has the paper (`_PASSED_ON`).
 
 **Then sent for real into the pre-prod copy, and read back as EdSider
 reads it** (2026-10-27; the production database and the real pre-prod are

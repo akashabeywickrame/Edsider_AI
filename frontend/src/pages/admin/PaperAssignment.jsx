@@ -1,12 +1,15 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
+import StatusPill from '../../components/StatusPill.jsx'
 import './PaperAssignment.css'
 
 // Papers data entry has checked for internal repeats, waiting to be handed to
 // a teacher - and the ones already with a teacher. Mirrors
 // design-system/screens/project/AssignPapers.dc.html. Nothing here edits a
-// question; it only decides who reviews a paper.
+// question; it decides who reviews a paper and, once both teachers have
+// finished, a Main Assessment Administrator sends it to EdSider from here.
 
 const WITH_TEACHER = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
 
@@ -21,8 +24,15 @@ function when(iso) {
 }
 
 export default function PaperAssignment() {
-  const { PageHeader, Button, Notice, StatusPill } = window.EdSider
+  const { PageHeader, Button, Notice } = window.EdSider
   const toast = useToast()
+  // Only EdSider's Main Assessment Administrators send papers (the API
+  // refuses anyone else). me.role is null on a local run, where it is open.
+  const me = useOutletContext()
+  const canSend = !me || !me.role || Boolean(me.masad)
+  const sendingOn = !me || !me.role || Boolean(me.edsider_sending)
+  const [sending, setSending] = useState(null)
+  const [sendProblems, setSendProblems] = useState({})
   const [docs, setDocs] = useState(null)
   const [teachers, setTeachers] = useState([])
   const [chosen, setChosen] = useState({})
@@ -109,6 +119,31 @@ export default function PaperAssignment() {
       toast.error(`Assignment failed: ${err.message}`)
     } finally {
       setBusy((b) => ({ ...b, [doc.id]: false }))
+    }
+  }
+
+  // The question bank is refreshed one last time, the paper is written into
+  // EdSider ready to publish there, and it is archived here as 'published'.
+  async function sendToEdsider(doc) {
+    const ok = window.confirm(
+      `Send #${doc.id} ${doc.paper_subject || doc.filename} to EdSider? It is written into EdSider's database ready to publish and marked Published here - it can no longer be changed.`,
+    )
+    if (!ok) return
+    setSending(doc.id)
+    setError(null)
+    setMessage(null)
+    setSendProblems((p) => ({ ...p, [doc.id]: null }))
+    try {
+      const sent = await api.sendToEdsider(doc.id)
+      setDocs((list) => list.map((d) => (d.id === sent.id ? { ...d, ...sent } : d)))
+      const text = `#${doc.id} sent to EdSider as assessment #${sent.edsider_assessment_id}.`
+      setMessage(text)
+      toast.success(text)
+    } catch (err) {
+      setSendProblems((p) => ({ ...p, [doc.id]: { message: err.message, problems: err.problems || [] } }))
+      toast.error(`Not sent: ${err.message}`)
+    } finally {
+      setSending(null)
     }
   }
 
@@ -255,7 +290,20 @@ export default function PaperAssignment() {
                           ))}
                     </td>
                     <td>
-                      <StatusPill status={a.status} />
+                      <div className="pa-status">
+                        <StatusPill status={a.status} />
+                        {a.status === 'ready_to_publish' && canSend ? (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => sendToEdsider(a)}
+                            disabled={sending !== null || !sendingOn}
+                            title={sendingOn ? undefined : 'Sending to EdSider is not switched on for this server (EDSIDER_SEND_DB).'}
+                          >
+                            {sending === a.id ? 'Sending...' : 'Send to EdSider'}
+                          </Button>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="es-caption">{when(a.uploaded_at)}</td>
                     <td>
@@ -268,6 +316,25 @@ export default function PaperAssignment() {
                       )}
                     </td>
                   </tr>
+                  {sendProblems[a.id] ? (
+                    <tr>
+                      <td colSpan={5}>
+                        <Notice tone="error" title="Not sent to EdSider">
+                          {sendProblems[a.id].message}
+                          {sendProblems[a.id].problems.length > 0 ? (
+                            <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                              {sendProblems[a.id].problems.map((pr, i) => (
+                                <li key={i}>
+                                  {pr.question_number ? `Q${pr.question_number}: ` : ''}
+                                  {pr.message}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </Notice>
+                      </td>
+                    </tr>
+                  ) : null}
                   {openComments === a.id ? (
                     <tr>
                       <td colSpan={5}>

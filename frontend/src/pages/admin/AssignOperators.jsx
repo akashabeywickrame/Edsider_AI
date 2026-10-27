@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
-import { STATUS_LABEL } from '../data-entry/PaperFinder.jsx'
+import StatusPill, { STATUS_LABEL, statusLabel } from '../../components/StatusPill.jsx'
 import './PaperAssignment.css'
 
 // Giving uploaded papers to Data Entry Operators - EdSider's own "assign an
@@ -44,12 +44,12 @@ function describe(h, nameOf) {
     case 'archived':
       return `Archived - kept in the question bank${by}`
     default:
-      return `${STATUS_LABEL[h.from_status] || h.from_status || '-'} -> ${STATUS_LABEL[h.to_status] || h.to_status}${by}`
+      return `${statusLabel(h.from_status) || '-'} -> ${statusLabel(h.to_status)}${by}`
   }
 }
 
 export default function AssignOperators() {
-  const { PageHeader, Button, Notice, StatusPill } = window.EdSider
+  const { PageHeader, Button, Notice } = window.EdSider
   const toast = useToast()
   const [operators, setOperators] = useState([])
   const [who, setWho] = useState('none')

@@ -6,6 +6,7 @@ import PaperIntakeQuestion, { paperOptionStyle } from './PaperIntakeQuestion.jsx
 import AssessmentSettings from './AssessmentSettings.jsx'
 import EarlyDuplicateCheck from './EarlyDuplicateCheck.jsx'
 import { useToast } from '../../components/Toast.jsx'
+import StatusPill from '../../components/StatusPill.jsx'
 import MarksSection from './MarksSection.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
@@ -79,7 +80,7 @@ function groupByPart(tree, sectionsMeta) {
 }
 
 export default function PaperIntake() {
-  const { PageHeader, Button, Notice, StatusPill, PairReview, QuestionCard, Icon } = window.EdSider
+  const { PageHeader, Button, Notice, PairReview, QuestionCard, Icon } = window.EdSider
   const navigate = useNavigate()
   const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -144,7 +145,6 @@ export default function PaperIntake() {
 
   const [finishBusy, setFinishBusy] = useState(false)
   const [finishError, setFinishError] = useState(null)
-  const [sendProblems, setSendProblems] = useState([])
   const [checkBusy, setCheckBusy] = useState(false)
   const [checkError, setCheckError] = useState(null)
   const [checkResult, setCheckResult] = useState(null)
@@ -359,46 +359,19 @@ export default function PaperIntake() {
   }
 
   // Data entry's last step: the questions are copied to the question bank and
-  // the paper goes on for a teacher's review. An administrator archives it
-  // once the teacher has finished and it is ready to publish.
-  // The Main Assessment Administrator's last step: the paper goes into
-  // EdSider, ready to publish there, and is archived here.
-  async function handleSend() {
+  // the paper goes on for a teacher's review.
+  async function handleFinish() {
     const ok = window.confirm(
-      "Send this paper to EdSider? It is written into EdSider's database ready to publish, and archived here - it can no longer be changed.",
-    )
-    if (!ok) return
-    setFinishBusy(true)
-    setFinishError(null)
-    setSendProblems([])
-    try {
-      const sent = await api.sendToEdsider(selectedId)
-      loadSelected(selectedId)
-      refreshList()
-      toast.success(`Sent to EdSider as assessment #${sent.edsider_assessment_id}.`)
-    } catch (err) {
-      setFinishError(err.message)
-      setSendProblems(err.problems || [])
-      toast.error(`Not sent: ${err.message}`)
-    } finally {
-      setFinishBusy(false)
-    }
-  }
-
-  async function handleFinish(archive) {
-    const ok = window.confirm(
-      archive
-        ? 'Archive this paper? Its questions stay in the question bank, it leaves intake and can no longer be changed.'
-        : `Finish data entry? This paper's ${questions?.length ?? 0} question(s) are copied to the question bank and it goes on for a teacher's review.`,
+      `Finish data entry? This paper's ${questions?.length ?? 0} question(s) are copied to the question bank and it goes on for a teacher's review.`,
     )
     if (!ok) return
     setFinishBusy(true)
     setFinishError(null)
     try {
-      await (archive ? api.archiveDocument(selectedId) : api.finishDataEntry(selectedId))
+      await api.finishDataEntry(selectedId)
       loadSelected(selectedId)
       refreshList()
-      toast.success(archive ? 'Archived - the paper is kept in the question bank.' : 'Copied to the question bank - the paper is ready for a teacher.')
+      toast.success('Copied to the question bank - the paper is ready for a teacher.')
     } catch (err) {
       setFinishError(err.message)
       toast.error(`Could not finish: ${err.message}`)
@@ -1189,9 +1162,11 @@ export default function PaperIntake() {
             <section id="status" className="es-card pi-status" aria-label="Finish">
               <div style={{ display: 'grid', gap: 10 }}>
                 <h2 className="scr-h2">
-                  {doc.edsider_assessment_id || (doc.status === 'ready_to_publish' && doc.edsider_sending)
-                    ? 'Send to EdSider'
-                    : doc.status === 'ready_to_publish' || doc.archived_at
+                  {doc.edsider_assessment_id
+                    ? 'Published'
+                    : doc.status === 'ready_to_publish'
+                      ? 'Ready to publish'
+                      : doc.archived_at
                       ? 'Archive'
                       : 'Finish data entry'}
                 </h2>
@@ -1201,11 +1176,7 @@ export default function PaperIntake() {
                     : doc.archived_at
                     ? `Archived on ${doc.archived_at.slice(0, 10)}. Its questions are kept in the question bank.`
                     : doc.status === 'ready_to_publish'
-                      ? canUpload
-                        ? doc.edsider_sending
-                          ? "Both teachers have finished and the question bank has every correction. Sending writes the paper into EdSider, ready to publish there, and archives it here - it cannot change after that."
-                          : "Both teachers have finished and the question bank has every correction. Archiving removes the paper from intake - it is read from the question bank after that and cannot change."
-                        : 'Both teachers have finished. An administrator sends the paper to EdSider from here.'
+                      ? 'Both teachers have finished and the question bank has every correction. A Main Assessment Administrator sends it to EdSider from Admin - Paper assignment.'
                       : doc.status === 'checked'
                         ? "The duplicate check has run on the corrected paper. Finishing copies every question to the question bank and passes the paper on for a teacher's review."
                         : DUPLICATES_CHECKED.includes(doc.status) && doc.status !== 'refer_back'
@@ -1215,33 +1186,11 @@ export default function PaperIntake() {
                 {finishError ? (
                   <Notice tone="error" title="Could not finish">
                     {finishError}
-                    {sendProblems.length > 0 ? (
-                      <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
-                        {sendProblems.map((p, i) => (
-                          <li key={i}>
-                            {p.question_number ? `Q${p.question_number}: ` : ''}
-                            {p.message}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
                   </Notice>
                 ) : null}
-                {doc.status === 'ready_to_publish' && canUpload && doc.edsider_sending ? (
+                {!doc.archived_at && ['extracted', 'in_review', 'checked', 'refer_back'].includes(doc.status) ? (
                   <div>
-                    <Button variant="primary" onClick={handleSend} disabled={finishBusy}>
-                      {finishBusy ? 'Sending to EdSider...' : 'Send to EdSider'}
-                    </Button>
-                  </div>
-                ) : doc.status === 'ready_to_publish' && canUpload ? (
-                  <div>
-                    <Button variant="primary" onClick={() => handleFinish(true)} disabled={finishBusy}>
-                      {finishBusy ? 'Archiving...' : 'Archive the paper'}
-                    </Button>
-                  </div>
-                ) : !doc.archived_at && ['extracted', 'in_review', 'checked', 'refer_back'].includes(doc.status) ? (
-                  <div>
-                    <Button variant="primary" onClick={() => handleFinish(false)} disabled={doc.status !== 'checked' || finishBusy}>
+                    <Button variant="primary" onClick={handleFinish} disabled={doc.status !== 'checked' || finishBusy}>
                       {finishBusy ? 'Copying to the question bank...' : 'Finish data entry - copy to the question bank'}
                     </Button>
                   </div>

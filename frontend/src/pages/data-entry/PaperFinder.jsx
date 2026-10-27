@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
+import StatusPill, { STATUS_LABEL } from '../../components/StatusPill.jsx'
 
 // Finding one paper among hundreds - a dropdown of every paper stops working
 // long before 1,000 of them. Filter by where it is in the process, its
@@ -7,19 +8,6 @@ import { api } from '../../lib/api.js'
 // at a time from the server (GET /intake/documents/search).
 
 const PAGE = 25
-
-export const STATUS_LABEL = {
-  extracted: 'Extracted',
-  in_review: 'In review',
-  checked: 'Duplicate check done',
-  data_entry_done: 'Ready for a teacher',
-  teacher_review: 'Awaiting teacher review',
-  refer_back: 'Sent back for changes',
-  review_done: 'Review done',
-  ready_to_publish: 'Ready to publish',
-  published: 'Sent to EdSider',
-  archived: 'Archived',
-}
 
 function gradeLabel(code) {
   const m = /^G(\d{2})$/.exec(code || '')
@@ -31,7 +19,7 @@ function withCount(label, n) {
 }
 
 export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
-  const { Button, Notice, StatusPill } = window.EdSider
+  const { Button, Notice } = window.EdSider
   const [status, setStatus] = useState('')
   const [subject, setSubject] = useState('')
   const [grade, setGrade] = useState('')

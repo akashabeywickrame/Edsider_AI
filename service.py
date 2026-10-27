@@ -503,6 +503,9 @@ def health():
         # Where uploaded papers and pictures are kept - every app sharing
         # the database must say the same here (see src/files.py).
         "files": files.describe(),
+        # Which EdSider database "Send to EdSider" writes to - a name, never
+        # the credentials - so a deployed app's setting can be checked.
+        "edsider_send": edsider_send.target() or "off",
     }
 
 
@@ -974,6 +977,10 @@ class MeOut(BaseModel):
     identity: str
     name: str
     role: Optional[Literal["superadmin", "admin", "teacher", "employee"]] = None
+    # EdSider's Main Assessment Administrator - the only person who sends a
+    # paper to EdSider - and whether this server sends at all.
+    masad: bool = False
+    edsider_sending: bool = False
 
 
 StaffRole = Literal["superadmin", "admin", "teacher", "employee"]
@@ -1598,8 +1605,12 @@ def check_document_duplicates(doc_id: int,
             if d["seq"] not in stems and (d["text"] or "").strip()]
     out = intake_review.check_batch(fresh, state["embedder"])
     with store.connect() as conn:
-        # Checked - data entry can now finish it (finish_data_entry).
-        store.set_document_status(conn, doc_id, "checked", actor=_actor(identity))
+        # Checked - data entry can now finish it (finish_data_entry). Only
+        # while data entry still has it: an admin running the check on a
+        # paper with its teachers took it out of 'teacher_review', and the
+        # teachers could no longer tick anything (paper #90).
+        if _require_document(conn, doc_id)["status"] not in _PASSED_ON:
+            store.set_document_status(conn, doc_id, "checked", actor=_actor(identity))
     return out
 
 
@@ -1770,9 +1781,14 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     archived from intake ('published', "Sent to EdSider"). Anything that
     would stop EdSider taking it (a missing label, a question with no
     marks) comes back as a 409 listing each problem, and nothing is sent."""
+    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    # Only EdSider's Main Assessment Administrators send - an admin a
+    # superadmin made here is not one. A local run (no role) is open.
+    if caller.get("role") is not None and not _is_masad(caller):
+        raise HTTPException(403, "Only a Main Assessment Administrator (MASAD in EdSider) can "
+                                 "send a paper to EdSider.")
     if not edsider_send.target():
         raise HTTPException(409, "Sending to EdSider is not set up on this server.")
-    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
     sender_email = (body.as_email if (body.as_email and caller.get("role") is None)
                     else caller.get("identity"))
     who = _actor(caller.get("identity"))
@@ -2264,7 +2280,18 @@ def me(user: dict = Depends(current_user)):
     frontend shows a "contact your administrator" page instead of the
     app - this is the actual "at login, check the signed-in email
     against the list" gate, not something enforced route by route."""
-    return MeOut(**user)
+    return MeOut(**user, masad=_is_masad(user), edsider_sending=bool(edsider_send.target()))
+
+
+def _is_masad(user):
+    """Whether the caller holds MASAD in EdSider (staff.edsider_admin, from
+    the staff sync). A local run (no role) has no EdSider identity at all,
+    so it is not one - the send route lets it through on its own rule."""
+    if not isinstance(user, dict) or user.get("role") is None:
+        return False
+    with store.connect() as conn:
+        person = store.lookup_staff(conn, user["identity"])
+    return bool(person and person["edsider_admin"])
 
 
 _STAFF_TIMES = ("added_at", "synced_at", "first_seen_at", "last_seen_at")

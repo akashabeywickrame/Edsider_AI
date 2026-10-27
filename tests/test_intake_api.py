@@ -352,6 +352,24 @@ def test_check_duplicates_marks_the_document_checked(document):
     assert doc.id in {d.id for d in list_documents(status="checked")}
 
 
+def test_check_duplicates_leaves_a_paper_with_its_teachers(document):
+    """Paper #90: an admin ran the check from data entry while two teachers
+    had the paper; it went back to 'checked', and neither teacher could tick
+    a question any more."""
+    for q in list_questions(document.id):
+        update_question(q.id, QuestionUpdate(reviewed=True), identity="data-entry-1")
+    with store.connect() as conn:
+        store.set_document_status(conn, document.id, "teacher_review")
+    service.state["embedder"] = FakeEmbedder({
+        q.text: _unit([1.0, i, 0.0]) for i, q in enumerate(list_questions(document.id))
+    })
+    try:
+        check_document_duplicates(document.id)
+    finally:
+        service.state["embedder"] = None
+    assert get_document(document.id).status == "teacher_review"
+
+
 # --------------------------------------------- early (pre-review) check
 
 def test_precheck_needs_the_model_loaded(document):

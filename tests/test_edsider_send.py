@@ -166,6 +166,28 @@ def test_a_ready_paper_is_sent_recorded_and_archived(ready_paper, monkeypatch):
     assert err.value.status_code == 409
 
 
+def test_only_a_main_assessment_administrator_sends(ready_paper, monkeypatch):
+    """Asked for: the Send to EdSider button is MASAD's alone - an admin a
+    superadmin made here is not one."""
+    with store.connect() as conn:
+        store.sync_edsider_teachers(conn, [
+            {"email": "masad@gmail.com", "name": "Main", "roles": ["MASAD"], "user_id": 314,
+             "staff_id": 278},
+            {"email": "t@gmail.com", "name": "Teacher", "roles": ["TEACH"], "user_id": 5,
+             "staff_id": 4}])
+    plain_admin = {"identity": "t@gmail.com", "name": "Teacher", "role": "admin"}
+    with pytest.raises(HTTPException) as err:
+        service.send_to_edsider(ready_paper, service.SendIn(), user=plain_admin)
+    assert err.value.status_code == 403
+
+    masad = {"identity": "masad@gmail.com", "name": "Main", "role": "admin"}
+    assert service.me(masad).masad and not service.me(plain_admin).masad
+    edsider = FakeEdsider()
+    monkeypatch.setattr(service.edsider_send, "connect", lambda: edsider)
+    out = service.send_to_edsider(ready_paper, service.SendIn(), user=masad)
+    assert out.status == "published" and edsider.committed
+
+
 def test_a_send_edsider_refuses_leaves_the_paper_as_it_was(ready_paper, monkeypatch):
     edsider = FakeEdsider(fail_on="assessment.assessment_question")
     monkeypatch.setattr(service.edsider_send, "connect", lambda: edsider)

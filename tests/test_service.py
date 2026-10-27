@@ -146,6 +146,15 @@ def test_health_after_load_reports_the_bank_size(loaded):
     assert body["database"] == store.display_name()
 
 
+def test_health_says_where_papers_are_sent(monkeypatch):
+    """The Send to EdSider button shows only where this is set - checkable
+    on a deployed app without signing in."""
+    monkeypatch.delenv("EDSIDER_SEND_DB", raising=False)
+    assert health()["edsider_send"] == "off"
+    monkeypatch.setenv("EDSIDER_SEND_DB", "examonliine_db_prod_copy")
+    assert health()["edsider_send"] == "examonliine_db_prod_copy"
+
+
 # ------------------------------------------------------------- pass 1
 
 def test_exact_text_is_caught_before_any_embedding(loaded):

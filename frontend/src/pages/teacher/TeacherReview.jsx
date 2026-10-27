@@ -23,7 +23,7 @@ const STATUS_TEXT = {
   refer_back: 'Referred back to data entry',
   review_done: 'Review done',
   ready_to_publish: 'Ready to publish',
-  published: 'Sent to EdSider',
+  published: 'Published',
   archived: 'Archived',
 }
 
