@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
+import Pictures from '../../components/Pictures.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { joinSoftBreaks } from '../../lib/text.js'
 import PaperSummary from '../../components/PaperSummary.jsx'
@@ -40,9 +41,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
         {marks != null ? <span className="pi-preview__marks">[{marks} marks]</span> : null}
       </div>
       {stemText ? <p className="pi-preview__text">{stemText}</p> : null}
-      {questionImages.map((im) => (
-        <AuthImg key={im.id} className="pi-preview__img" path={api.imagePath(im.id)} alt="" />
-      ))}
+      <Pictures images={questionImages} className="pi-preview__img" />
       {isMcq ? (
         <div className="pi-preview__choices" role="radiogroup" aria-label={`Options for ${number}`}>
           {choices.map((c) => (
@@ -64,9 +63,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
         <div className="pi-preview__scheme">
           <span className="pi-preview__scheme-label">Marking scheme</span>
           {q.answer ? <p className="pi-preview__text">{joinSoftBreaks(q.answer)}</p> : null}
-          {answerImages.map((im) => (
-            <AuthImg key={im.id} className="pi-preview__img" path={api.imagePath(im.id)} alt="" />
-          ))}
+          <Pictures images={answerImages} className="pi-preview__img" />
         </div>
       ) : null}
       {showAnswers && isFillBlank ? (

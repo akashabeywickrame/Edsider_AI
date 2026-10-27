@@ -2,12 +2,56 @@ import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
+import QuestionHistory from '../../components/QuestionHistory.jsx'
 import { useToast } from '../../components/Toast.jsx'
 
 function slotLabel(slot) {
   if (slot === 'question') return 'Question'
   if (slot === 'answer') return 'Answer'
   return `Option ${slot.replace('option:', '')}`
+}
+
+// Where a picture belongs - the question, the answer or one option - for
+// one the extractor put in the wrong place, and the label printed under it
+// (saved when the box is left; empty unless the question names its
+// pictures, "A", "B", "C").
+function PictureSettings({ im, slots, onSave, disabled }) {
+  const choices = slots.includes(im.slot) ? slots : [...slots, im.slot]
+  return (
+    <div className="pi-img__settings">
+      <label className="pi-img__label">
+        <span className="es-caption">Belongs to</span>
+        <select
+          className="es-input"
+          value={im.slot}
+          disabled={disabled}
+          onChange={(e) => onSave(im, { slot: e.target.value })}
+        >
+          {choices.map((s) => (
+            <option key={s} value={s}>
+              {slotLabel(s)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="pi-img__label">
+        <span className="es-caption">Label under the picture</span>
+        <input
+          key={`${im.id}-${im.label || ''}`}
+          className="es-input"
+          defaultValue={im.label || ''}
+          maxLength={20}
+          placeholder="Only if the paper names it, e.g. A"
+          disabled={disabled}
+          onBlur={(e) => {
+            const label = e.target.value.trim()
+            if ((im.label || '') !== label) onSave(im, { label })
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        />
+      </label>
+    </div>
+  )
 }
 
 // Every label an answer names - "1, 3" -> ["1", "3"], "A/C" -> ["a", "c"] -
@@ -409,6 +453,32 @@ export default function PaperIntakeQuestion({
     }
   }
 
+  // A picture moved to where it belongs, or given the label printed under
+  // it ("A", "B", "C" under three ploughs).
+  async function handleImageEdit(im, changes) {
+    setImgBusy(true)
+    setImgError(null)
+    try {
+      const out = await api.editImage(im.id, changes)
+      onImagesChanged(q.id, (images || []).map((i) =>
+        (i.id === im.id ? { ...i, slot: out.slot, label: out.label } : i)))
+    } catch (err) {
+      setImgError(err.message)
+    } finally {
+      setImgBusy(false)
+    }
+  }
+
+  const [flagBusy, setFlagBusy] = useState(false)
+  async function handleUnflag() {
+    setFlagBusy(true)
+    try {
+      onChanged(await api.unflagRepeat(q.id))
+    } finally {
+      setFlagBusy(false)
+    }
+  }
+
   const label = q.question_number ? `Question ${q.question_number}` : `Question ${q.seq}`
   const imgCount = (images || []).length
   const answerImages = (images || []).filter((i) => i.slot === 'answer')
@@ -469,6 +539,26 @@ export default function PaperIntakeQuestion({
           {q.last_edited_at ? ` - ${new Date(q.last_edited_at).toLocaleString()}` : ''}
         </p>
       ) : null}
+
+      {q.repeat?.status === 'open' ? (
+        <Notice tone="warning" title={`Flagged as a repeat of Q${q.repeat.repeat_of_number}`}>
+          The teacher will replace it with a new question, or keep it.{' '}
+          <Button variant="ghost" size="sm" onClick={handleUnflag} disabled={flagBusy}>
+            Take the flag back
+          </Button>
+        </Notice>
+      ) : q.repeat?.status === 'replaced' ? (
+        <Notice tone="info">
+          It repeated Q{q.repeat.repeat_of_number}; {q.repeat.resolved_by || 'the teacher'} replaced it
+          with a new question. The earlier one is in its history.
+        </Notice>
+      ) : q.repeat?.status === 'kept' ? (
+        <Notice tone="info">
+          Flagged as a repeat of Q{q.repeat.repeat_of_number}; {q.repeat.resolved_by || 'the teacher'} kept
+          it: {q.repeat.resolution_note}
+        </Notice>
+      ) : null}
+      <QuestionHistory key={`h-${q.id}-${q.revisions}`} questionId={q.id} count={q.revisions} />
 
       {isStem ? (
         <p className="es-caption" style={{ margin: 0 }}>
@@ -706,6 +796,7 @@ export default function PaperIntakeQuestion({
                   <div className="pi-img__pic">
                     <AuthImg path={api.imagePath(im.id)} alt={`Answer picture for ${label}`} />
                   </div>
+                  <PictureSettings im={im} slots={slotChoices} onSave={handleImageEdit} disabled={imgBusy} />
                   <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
                     Remove picture
                   </Button>
@@ -735,6 +826,7 @@ export default function PaperIntakeQuestion({
                   <div className="pi-img__pic">
                     <AuthImg path={api.imagePath(im.id)} alt={`${slotLabel(im.slot)} for ${label}`} />
                   </div>
+                  <PictureSettings im={im} slots={slotChoices} onSave={handleImageEdit} disabled={imgBusy} />
                   <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
                     Remove image
                   </Button>

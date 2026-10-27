@@ -24,6 +24,9 @@ LISTS = {
     "grading_method": [{"id": 3, "name": "Auto and Self Grading", "short_code": None,
                         "extra": None}],
     "time_unit": [{"id": 1, "name": "minutes", "short_code": None, "extra": None}],
+    # EdSider's assessment.part: A-C alpha (notation 1), 1-3 numeric (2), I-III roman (3).
+    "part": [{"id": i, "name": n, "short_code": None, "extra": {"notation_id": (i - 1) // 3 + 1}}
+             for i, n in enumerate(["A", "B", "C", "1", "2", "3", "I", "II", "III"], 1)],
 }
 
 SECTIONS = [
@@ -89,6 +92,13 @@ def test_draft_documents_are_edsiders_shape():
     assert export.draft_json([doc]).startswith('[{"blocks":[{"key":')
 
 
+def test_a_pictures_label_is_a_line_under_it():
+    doc = export.draft_doc("Which implement?", "s", images=[("data:a", "A"), ("data:b", None)])
+    assert [(b["type"], b["text"]) for b in doc["blocks"]] == [
+        ("unstyled", "Which implement?"), ("atomic", " "), ("unstyled", "A"), ("atomic", " ")]
+    assert [b["entityRanges"][0]["key"] for b in doc["blocks"] if b["type"] == "atomic"] == [0, 1]
+
+
 def test_mcq_answers_are_weights_adding_to_100():
     assert export.mcq_weights(4, [1]) == "0,100,0,0"
     assert export.mcq_weights(4, [0, 2]) == "50,0,50,0"
@@ -109,6 +119,9 @@ def test_a_finished_paper_becomes_edsiders_rows():
     assert pkg["assessor"]["user_role_id"] == "CASS314"
 
     part1, part2 = pkg["parts"]
+    # EdSider's own Roman parts I and II - its paper-details screen skips a
+    # part without one (found sending to the pre-prod copy).
+    assert (part1["row"]["part_id"], part2["row"]["part_id"]) == (7, 8)
     assert part1["row"]["part_instruction"] == DOC["notes"]
     assert part1["sections"][0]["row"]["section_title"] == "Multiple Choice Questions"
     s2 = part2["sections"][0]["row"]
@@ -147,6 +160,20 @@ def test_a_finished_paper_becomes_edsiders_rows():
                                 "operation_completed": True, "assign_by": 278}
     assert pkg["review"] == {"teacher_id": 256, "status_id": 8, "assign_by": 240}
     assert pkg["summary"]["marks"] == 2 + 5 + 4 + 9
+
+
+def test_a_time_edsider_cannot_hold_is_reported_not_sent():
+    """A buffer of 6,000,000,000 minutes (paper #55) made EdSider refuse the
+    whole send with "integer out of range"."""
+    doc = dict(DOC, assessment_settings=dict(DOC["assessment_settings"],
+                                             access_buffer_value=6000000000,
+                                             access_buffer_unit="minutes"))
+    pkg = export.build_package(doc, QUESTIONS, LISTS, PEOPLE)
+    errors = [p["message"] for p in pkg["problems"] if p["level"] == "error"]
+    assert any("access buffer time" in m and "6,000,000,000" in m for m in errors)
+    fine = export.build_package(dict(DOC, assessment_settings=dict(
+        DOC["assessment_settings"], access_buffer_value=10)), QUESTIONS, LISTS, PEOPLE)
+    assert not any("buffer" in p["message"] for p in fine["problems"])
 
 
 def test_what_edsider_requires_is_reported_before_anything_is_sent():

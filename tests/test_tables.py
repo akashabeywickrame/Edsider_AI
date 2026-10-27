@@ -510,8 +510,9 @@ def test_word_option_pictures_are_matched_in_the_order_they_show():
 
 
 def test_pictures_labelled_beside_text_options_stay_on_the_question():
-    """Paper 6's question 42: ploughs labelled A, B, C, and text options
-    I to V that talk about them - the pictures are the question's."""
+    """Labels beside pictures that are not the question's options leave
+    the pictures on the question, unlabelled: that reading also finds a
+    question's own number beside a picture that starts it."""
     text = ("42.Choose the correct implements with its use.\n"
             "[Picture 6 option A]\n[Picture 7 option B]\n[Picture 8 option C]\nA B C\n"
             "I. A-Sweep hoe is used for initial land preparation\n"
@@ -521,3 +522,99 @@ def test_pictures_labelled_beside_text_options_stay_on_the_question():
             "V. B-Cultivator is used for both tillages\n")
     q = extract.structure(text)["questions"][0]
     assert {t["slot"] for t in q["tables"]} == {"question"}
+    assert not any(t.get("label") for t in q["tables"])
+
+
+def test_pictures_captioned_under_text_options_keep_their_labels():
+    """Paper 6's question 42: ploughs captioned A, B, C, and text options
+    I to V that talk about them - the pictures are the question's, each
+    with its label to show under it."""
+    text = ("42.Choose the correct implements with its use.\n"
+            "[Picture 7 label B]\n[Picture 6 label A]\n[Picture 8 label C]\nA\nB\nC\n"
+            "I. A-Sweep hoe is used for initial land preparation\n"
+            "II. B-Primary plough is used for secondary tillage\n"
+            "III. C-Primary plough is used for initial land preparation\n"
+            "IV. A-Swiss hoe is used for deep land preparation\n"
+            "V. B-Cultivator is used for both tillages\n")
+    q = extract.structure(text)["questions"][0]
+    assert {t["slot"] for t in q["tables"]} == {"question"}
+    # In the order they are labelled; the bare label lines go, the options stay.
+    assert [(t["n"], t["label"]) for t in q["tables"]] == [(6, "A"), (7, "B"), (8, "C")]
+    assert "\nA\n" not in q["text"] and "I. A-Sweep hoe" in q["text"]
+    assert [o["label"] for o in extract.split_mcq_options(q["text"])[1]] == [
+        "I", "II", "III", "IV", "V"]
+
+
+def test_pictures_captioned_with_no_option_text_are_the_options():
+    text = ("9.Which of these is a plough?\n"
+            "[Picture 1 label A]\n[Picture 2 label B]\n[Picture 3 label C]\nA B C\n"
+            "10.The next question.")
+    q = extract.structure(text)["questions"][0]
+    assert [t["slot"] for t in q["tables"]] == ["option:A", "option:B", "option:C"]
+
+
+def _ploughs(tmp_path, captions=("A", "B", "C")):
+    """Paper 6's question 42 as its PDF lays it out: three pictures on a
+    row, a label 3 points under each, centred, then options I to V."""
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((60, 180), "42.Choose the correct implements with its use.", fontsize=11)
+    boxes = [(47, 196, 192, 316), (205, 196, 361, 316), (379, 208, 580, 313)]
+    for box, caption in zip(boxes, captions):
+        page.insert_image(fitz.Rect(*box), stream=_picture_png(200, 160))
+        if caption:
+            page.insert_text(((box[0] + box[2]) / 2 - 4, 330), caption, fontsize=11)
+    for i, line in enumerate(["I. A-Sweep hoe is used for initial land preparation",
+                              "II. B-Primary plough is used for secondary tillage",
+                              "III. C-Primary plough is used at a deeper level",
+                              "IV. A-Swiss hoe is used for deep land preparation",
+                              "V. B-Cultivator is used for both tillages"]):
+        page.insert_text((60, 360 + 16 * i), line, fontsize=11)
+    # An MCQ paper: the next question has options too.
+    page.insert_text((60, 460), "43.What is the main function of the engine?", fontsize=11)
+    for i, line in enumerate(["I. To pump water", "II. To turn the crank shaft",
+                              "III. To cool the valves", "IV. To idle", "V. To drive the gear"]):
+        page.insert_text((60, 476 + 16 * i), line, fontsize=11)
+    path = tmp_path / "ploughs.pdf"
+    doc.save(path)
+    return path
+
+
+def test_pdf_pictures_captioned_under_them_keep_their_labels(tmp_path):
+    result = extract.extract(_ploughs(tmp_path), ocr=lambda image: "")
+    q42 = result["questions"][0]
+    assert [(t["slot"], t.get("label")) for t in q42["tables"]] == [
+        ("question", "A"), ("question", "B"), ("question", "C")]
+    assert [o["label"] for o in extract.split_mcq_options(q42["text"])[1]] == [
+        "I", "II", "III", "IV", "V"]
+
+
+def test_a_lone_letter_under_one_picture_is_no_label(tmp_path):
+    """One caption is not a naming of the question's pictures."""
+    result = extract.extract(_ploughs(tmp_path, captions=("A", None, None)),
+                             ocr=lambda image: "")
+    assert not any(t.get("label") for t in result["questions"][0]["tables"])
+
+
+def test_picture_labels_are_stored_and_go_to_the_bank(local_db, tmp_path):
+    from src import store
+    result = extract.extract(_ploughs(tmp_path), ocr=lambda image: "")
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "ploughs.pdf", raw_text=result["raw_text"],
+                                              sections=result["sections"])
+        store.save_document_tables(conn, doc_id, result["tables"])
+        store.add_extracted_questions(conn, doc_id, result["questions"])
+        q42 = store.intake_questions(conn, doc_id)[0]
+        images = store.question_images_for_document(conn, doc_id)[q42["id"]]
+        assert [i["label"] for i in images] == ["A", "B", "C"]
+
+        # Data entry corrects one and clears another.
+        assert store.update_question_image(conn, images[1]["id"], {"label": "  B2 "})["label"] == "B2"
+        assert store.update_question_image(conn, images[2]["id"], {"label": ""})["label"] is None
+        with pytest.raises(KeyError):
+            store.update_question_image(conn, 999999, {"label": "A"})
+
+        store.sync_paper_to_bank(conn, doc_id)
+        bank = conn.execute("SELECT id, label FROM question_files ORDER BY id").fetchall()
+    assert [(r["id"], r["label"]) for r in bank] == [
+        (images[0]["id"], "A"), (images[1]["id"], "B2"), (images[2]["id"], None)]

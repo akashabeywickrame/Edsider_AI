@@ -75,7 +75,9 @@ def _block(text, key, kind="unstyled"):
 def draft_doc(text, seed, images=()):
     """One Draft.js document: a block per line of `text` (blank lines at
     either end dropped, runs of them kept as one), then each picture as
-    an atomic block - the shape EdSider's own editor saves."""
+    an atomic block - the shape EdSider's own editor saves. A picture is
+    its src, or (src, label): a label the paper prints under it ("A") is a
+    line of its own under the picture."""
     lines = [line.rstrip() for line in (text or "").replace("\r\n", "\n").split("\n")]
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -87,12 +89,15 @@ def draft_doc(text, seed, images=()):
             kept.append(line)
     blocks = [_block(line, _key(seed, "t", i)) for i, line in enumerate(kept)]
     entity_map = {}
-    for i, src in enumerate(images):
+    for i, picture in enumerate(images):
+        src, label = picture if isinstance(picture, tuple) else (picture, None)
         n = len(entity_map)
         block = _block(" ", _key(seed, "i", i), "atomic")
         block["entityRanges"] = [{"offset": 0, "length": 1, "key": n}]
         blocks.append(block)
         entity_map[str(n)] = {"type": "IMAGE", "mutability": "MUTABLE", "data": {"src": src}}
+        if label:
+            blocks.append(_block(label, _key(seed, "l", i)))
     if not blocks:
         blocks.append(_block("", _key(seed, "e")))
     return {"blocks": blocks, "entityMap": entity_map}
@@ -133,6 +138,10 @@ def _part_label(question_number):
     becomes once flattened into its parent part."""
     m = _LAST_LABEL.search(question_number or "")
     return m.group(1) if m else ""
+
+
+# The largest whole number EdSider's integer columns hold.
+_MAX_MINUTES = 2_147_483_647
 
 
 def _minutes(value, unit):
@@ -286,6 +295,15 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     }
     if settings.get("time_limit") and schedule["exam_time_interval"] is None:
         problem("error", "The paper has a time limit but no duration.")
+    # EdSider keeps both as whole minutes in an integer column; a figure
+    # outside it fails the whole send (paper #55's buffer of 6,000,000,000,
+    # typed in Assessment settings) - caught here, named, before writing.
+    for column, setting in (("exam_time_interval", "duration"),
+                            ("buffer_time", "access buffer time")):
+        minutes = schedule[column]
+        if minutes is not None and not 0 <= minutes <= _MAX_MINUTES:
+            problem("error", f"The {setting} in Assessment settings is {minutes:,} minutes; "
+                             f"EdSider takes 0 to {_MAX_MINUTES:,}. Correct it there.")
     assessor = {"user_role_id": f"CASS{uid_text}" if uid_text else None, "role_code": "CASS",
                 "user_id": uid_text, "assigned_by": uid_text, "status": "Active"}
 
@@ -300,10 +318,22 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
         by_parent.setdefault(q["parent_seq"], []).append(q)
     top = [q for q in questions if q["parent_seq"] is None]
 
+    # Each part names EdSider's own part for the paper's notation and its
+    # place - Roman's second is "II" (assessment.part 8). EdSider's
+    # paper-details screen skips a part without one; its own papers set it
+    # whenever the paper has a notation.
+    notation_id = NOTATION_IDS.get(settings.get("part_notation"))
+    part_ids = {}
+    for p in lists.get("part", []):
+        if notation_id and (p.get("extra") or {}).get("notation_id") == notation_id:
+            part_ids.setdefault(len(part_ids) + 1, p["id"])
+
     parts, section_of_label = [], {}
     for pi, group in enumerate(groups, 1):
+        if notation_id and pi not in part_ids:
+            problem("error", f"EdSider has no part {pi} in this paper's part notation.")
         part = {"key": f"part{pi}", "row": {
-            "part_id": None, "part_title": group["title"], "display_order": pi,
+            "part_id": part_ids.get(pi), "part_title": group["title"], "display_order": pi,
             "no_of_sections": len(group["sections"]), "created_by": uid,
             "allow_instruction": False, "part_instruction": None}, "sections": []}
         if pi == 1 and notes:
@@ -350,7 +380,8 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
               "guidence": draft_json([draft_doc("", "guidance")])}
 
     def pictures(q, slot):
-        return [image_src(img) for img in images.get(q["id"], []) if img["slot"] == slot]
+        return [(image_src(img), dict(img).get("label")) for img in images.get(q["id"], [])
+                if img["slot"] == slot]
 
     rows, links = [], []
     numbers_seen = {}

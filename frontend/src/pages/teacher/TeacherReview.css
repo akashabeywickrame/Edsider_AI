@@ -63,3 +63,18 @@
   .tr-original { position: static; }
   .tr-original__frame { height: 70vh; }
 }
+
+/* A question flagged as repeated on its paper - see RepeatPanel.jsx. */
+.tr-repeat {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--warning, #d97706);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: var(--warning-soft, rgba(217, 119, 6, 0.06));
+}
+.tr-repeat__title { margin: 0; font-weight: 600; }
+.tr-repeat__original { padding: 6px 10px; border-left: 3px solid var(--border, #d0d5dd); }
+.tr-repeat__form { display: grid; gap: 6px; }
+.tr-repeat__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

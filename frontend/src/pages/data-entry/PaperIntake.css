@@ -37,6 +37,8 @@
 .pi-img__slot { font: 700 12px/16px var(--font-heading); letter-spacing: .04em; text-transform: uppercase; color: var(--primary); }
 .pi-img__pic { background: #fff; border: 1px solid var(--border-soft); border-radius: 8px; display: flex; align-items: center; justify-content: center; min-height: 120px; overflow: hidden; }
 .pi-img__pic img { max-width: 100%; max-height: 220px; display: block; }
+.pi-img__settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.pi-img__label { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
 .pi-attach { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: end; padding-top: 12px; border-top: 1px dashed var(--border-soft); }
 .pi-file { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border: 1.5px dashed var(--border-strong); border-radius: 12px; font-size: 14px; color: var(--text-muted); background: var(--surface-page); cursor: pointer; }

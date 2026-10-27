@@ -6,6 +6,9 @@ import { joinSoftBreaks } from '../../lib/text.js'
 import { useToast } from '../../components/Toast.jsx'
 import PaperSummary from '../../components/PaperSummary.jsx'
 import OriginalPaper from './OriginalPaper.jsx'
+import RepeatPanel from './RepeatPanel.jsx'
+import QuestionHistory from '../../components/QuestionHistory.jsx'
+import Pictures from '../../components/Pictures.jsx'
 import { groupsStartingAt } from '../data-entry/GroupInstructions.jsx'
 import './TeacherReview.css'
 
@@ -118,6 +121,24 @@ export default function TeacherReview() {
   const done = questions.filter((q) => q.teacher_reviewed).length
   const pct = questions.length ? Math.round((done / questions.length) * 100) : 0
   const allReviewed = questions.length > 0 && done === questions.length
+  // Repeats data entry flagged that no teacher has resolved yet - the paper
+  // cannot be marked Review done until each is replaced or kept.
+  const openRepeats = questions.filter((q) => q.repeat?.status === 'open').length
+  const byId = Object.fromEntries(questions.map((x) => [x.id, x]))
+
+  // A question replaced or kept: its card updates; if its pictures went with
+  // the old question, the pictures are read again.
+  async function handleRepeatChanged(updated, picturesMoved) {
+    setQuestions((list) => list.map((x) => (x.id === updated.id ? updated : x)))
+    toast.success(updated.repeat?.status === 'kept' ? 'Question kept.' : 'Question replaced - the old one is in its history.')
+    if (picturesMoved) {
+      try {
+        setImages(await api.listDocumentImages(docId))
+      } catch {
+        // The card still shows the new question; pictures refresh on reload.
+      }
+    }
+  }
 
   const labelOf = (q) => (q.question_number ? `Q${q.question_number}` : `Q${q.seq}`)
 
@@ -343,15 +364,21 @@ export default function TeacherReview() {
                 <span className="tr-q__marks">{q.marks != null ? `${q.marks} ${q.marks === 1 ? 'mark' : 'marks'}` : 'Marks not set'}</span>
               </div>
 
+              <RepeatPanel
+                key={`${q.id}-${q.repeat?.status}`}
+                q={q}
+                original={q.repeat ? byId[q.repeat.repeat_of] : null}
+                editable={reviewable}
+                onChanged={handleRepeatChanged}
+              />
+
               {stem ? (
                 <div>
                   <p className="tr-lab">Question</p>
                   <p className="tr-text">{stem}</p>
                 </div>
               ) : null}
-              {questionImages.map((im) => (
-                <AuthImg key={im.id} className="tr-img" path={api.imagePath(im.id)} alt="" />
-              ))}
+              <Pictures images={questionImages} className="tr-img" />
 
               {isMcq ? (
                 <div>
@@ -377,9 +404,7 @@ export default function TeacherReview() {
                 <div className="tr-guide">
                   <p className="tr-lab">Marking scheme</p>
                   {q.answer ? <p className="tr-text">{joinSoftBreaks(q.answer)}</p> : null}
-                  {answerImages.map((im) => (
-                    <AuthImg key={im.id} className="tr-img" path={api.imagePath(im.id)} alt="" />
-                  ))}
+                  <Pictures images={answerImages} className="tr-img" />
                 </div>
               ) : null}
 
@@ -388,6 +413,8 @@ export default function TeacherReview() {
                   <span className="tr-lab">Correct answer</span> {q.mcq.correct_labels.map((l) => l.toUpperCase()).join(', ')}
                 </p>
               ) : null}
+
+              <QuestionHistory key={`h-${q.id}-${q.revisions}`} questionId={q.id} count={q.revisions} />
 
               {qComments.length ? (
                 <div className="tr-comments">
@@ -494,11 +521,18 @@ export default function TeacherReview() {
             </label>
           </fieldset>
           {!allReviewed ? <Notice tone="info">Mark every question reviewed before finishing.</Notice> : null}
+          {openRepeats && decision === 'review_done' ? (
+            <Notice tone="warning">
+              {openRepeats} question(s) are flagged as repeats on this paper - replace each with a new
+              question, or keep it, before finishing as Review done.
+            </Notice>
+          ) : null}
           <div>
             <Button
               variant="primary"
               onClick={finish}
-              disabled={!reviewable || !allReviewed || !decision || finishing}
+              disabled={!reviewable || !allReviewed || !decision || finishing
+                || (decision === 'review_done' && openRepeats > 0)}
             >
               {finishing ? 'Saving...' : 'Finish review'}
             </Button>

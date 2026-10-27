@@ -741,6 +741,63 @@ class IntakeQuestionOut(BaseModel):
     # are sent so the page can say "detected as X" next to a correction.
     question_type: Optional[str] = None
     detected_type: Optional[str] = None
+    # Data entry's flag that this question repeats another on the paper, and
+    # what the teacher did about it (see flag_repeat / replace_question).
+    repeat: Optional["RepeatOut"] = None
+    # How many earlier versions it has (GET /intake/questions/{id}/history).
+    revisions: int = 0
+
+
+class RepeatOut(BaseModel):
+    status: str                       # open, replaced or kept
+    repeat_of: Optional[int] = None   # the question it repeats, on the same paper
+    repeat_of_number: Optional[str] = None
+    note: Optional[str] = None
+    flagged_by: Optional[str] = None
+    flagged_at: Optional[str] = None
+    resolved_by: Optional[str] = None
+    resolved_at: Optional[str] = None
+    resolution_note: Optional[str] = None
+
+
+IntakeQuestionOut.model_rebuild()
+
+
+class FlagRepeatIn(BaseModel):
+    repeat_of: int
+    note: Optional[str] = None
+
+
+class ReplaceQuestionIn(BaseModel):
+    text: str = Field(..., min_length=1)
+    answer: Optional[str] = None
+    marks: Optional[int] = None
+    # Why - kept with the earlier version ("repeated Q05 on this paper").
+    reason: Optional[str] = None
+    # False: the question's pictures belong to the earlier version.
+    keep_pictures: bool = True
+
+
+class KeepQuestionIn(BaseModel):
+    note: str = Field(..., min_length=1)
+
+
+class QuestionVersionOut(BaseModel):
+    id: int
+    question_number: Optional[str] = None
+    text: Optional[str] = None
+    answer: Optional[str] = None
+    marks: Optional[int] = None
+    question_type: Optional[str] = None
+    replaced_by: Optional[str] = None
+    replaced_at: Optional[str] = None
+    reason: Optional[str] = None
+    pictures: List[Dict[str, Any]] = []
+
+
+class QuestionHistoryOut(BaseModel):
+    current: "IntakeQuestionOut"
+    earlier: List[QuestionVersionOut]
 
 
 class QuestionUpdate(BaseModel):
@@ -882,6 +939,15 @@ class ImageOut(BaseModel):
     slot: str
     content_type: Optional[str] = None
     created_at: Optional[str] = None
+    # What the paper prints under the picture ("A"), shown with it.
+    label: Optional[str] = None
+
+
+class ImageEditIn(BaseModel):
+    # Shown under the picture; empty clears it.
+    label: Optional[str] = Field(None, max_length=20)
+    # 'question', 'answer' or 'option:<label>' - where it belongs.
+    slot: Optional[str] = None
 
 
 class TeacherOut(BaseModel):
@@ -1035,6 +1101,22 @@ def _edsider_lists(refresh=False):
             _EDSIDER_LISTS["lists"] = store.edsider_lookups(conn)
         _EDSIDER_LISTS["at"] = now
     return _EDSIDER_LISTS["lists"]
+
+
+def _repeat_out(flag):
+    if not flag:
+        return None
+    iso = {k: (flag[k].isoformat() if flag.get(k) else None) for k in ("flagged_at", "resolved_at")}
+    return RepeatOut(**{**{k: flag.get(k) for k in RepeatOut.model_fields}, **iso})
+
+
+def _with_repeats(conn, doc_id, questions):
+    """The paper's questions with their repeat flags and history counts -
+    two queries for the whole paper, not two a question."""
+    flags = store.question_flags(conn, doc_id)
+    counts = store.revision_counts(conn, doc_id)
+    return [dict(q, repeat=_repeat_out(flags.get(q["id"])), revisions=counts.get(q["id"], 0))
+            for q in questions]
 
 
 def _question_out(q, has_parts=False):
@@ -1731,6 +1813,9 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     try:
         result = edsider_send.write_package(pg, package)
         pg.commit()
+    except edsider_send.TitleTaken as e:
+        pg.rollback()
+        raise HTTPException(409, str(e))
     except Exception as e:
         pg.rollback()
         with store.connect() as conn:
@@ -1783,6 +1868,10 @@ def finish_review(doc_id: int, body: FinishIn,
         teachers = store.paper_teachers(conn, doc_id)
         mine = who if who in {t["assigned_to"] for t in teachers} else None
         if body.status == "review_done":
+            if store.open_flags(conn, doc_id):
+                raise HTTPException(
+                    409, "Some questions are flagged as repeats on this paper - replace each "
+                         "with a new question, or keep it saying why, before finishing.")
             store.finish_stage(conn, doc_id, "teacher", actor=who, who=mine)
             if all(t["finished_at"] for t in store.paper_teachers(conn, doc_id)):
                 store.sync_paper_to_bank(conn, doc_id, actor=who)
@@ -1809,6 +1898,7 @@ def list_questions(doc_id: int, user: dict = Depends(current_user)):
         # every question for themselves.
         checked = (store.teacher_checks(conn, doc_id, user["identity"])
                    if _is_teacher(user) else None)
+        qs = _with_repeats(conn, doc_id, qs)
     parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
     if checked is not None:
         qs = [dict(q, teacher_reviewed=q["id"] in checked) for q in qs]
@@ -1888,6 +1978,86 @@ def update_question(q_id: int, body: QuestionUpdate,
                 conn, q["document_id"], identity))
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
+
+
+def _one_question_out(conn, q_id, user=None):
+    q = store.get_intake_question(conn, q_id)
+    if _is_teacher(user):
+        q = dict(q, teacher_reviewed=q_id in store.teacher_checks(
+            conn, q["document_id"], user["identity"]))
+    q = _with_repeats(conn, q["document_id"], [q])[0]
+    return _question_out(q, has_parts=store.intake_question_has_children(conn, q_id))
+
+
+@app.post("/intake/questions/{q_id}/flag", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def flag_repeated_question(q_id: int, body: FlagRepeatIn,
+                           identity: str = Depends(current_identity)):
+    """Data entry, from the duplicate check: this question repeats another
+    on the same paper. The teacher sees it and replaces it or keeps it."""
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        try:
+            store.flag_repeat(conn, q_id, body.repeat_of, flagged_by=_actor(identity),
+                              note=body.note)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return _one_question_out(conn, q_id)
+
+
+@app.delete("/intake/questions/{q_id}/flag", response_model=IntakeQuestionOut,
+            dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def unflag_repeated_question(q_id: int, identity: str = Depends(current_identity)):
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        store.unflag_repeat(conn, q_id, actor=_actor(identity))
+        return _one_question_out(conn, q_id)
+
+
+@app.post("/intake/questions/{q_id}/replace", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+def replace_repeated_question(q_id: int, body: ReplaceQuestionIn,
+                              identity: str = Depends(current_identity),
+                              user: dict = Depends(current_user)):
+    """The teacher puts a new question in place of a repeated one. The old
+    question - text, answer, marks - is kept in its history, and its repeat
+    flag is resolved as replaced."""
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        store.replace_question(conn, q_id, body.text, answer=body.answer, marks=body.marks,
+                               replaced_by=_actor(identity), reason=body.reason,
+                               keep_pictures=body.keep_pictures)
+        return _one_question_out(conn, q_id, user)
+
+
+@app.post("/intake/questions/{q_id}/keep", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+def keep_flagged_question(q_id: int, body: KeepQuestionIn,
+                          identity: str = Depends(current_identity),
+                          user: dict = Depends(current_user)):
+    """The teacher keeps a flagged question - it is not a repeat - saying why."""
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        try:
+            store.keep_question(conn, q_id, kept_by=_actor(identity), note=body.note)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        return _one_question_out(conn, q_id, user)
+
+
+@app.get("/intake/questions/{q_id}/history", response_model=QuestionHistoryOut,
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
+def question_history(q_id: int, user: dict = Depends(current_user)):
+    """A question now and every earlier version of it, oldest first - what
+    it was before each replacement, who replaced it, when and why."""
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        earlier = store.question_history(conn, q_id)
+        current = _one_question_out(conn, q_id, user)
+    return QuestionHistoryOut(current=current, earlier=[
+        QuestionVersionOut(**{**r, "replaced_at": r["replaced_at"].isoformat()
+                              if r.get("replaced_at") else None})
+        for r in earlier])
 
 
 @app.post("/intake/documents/{doc_id}/marks", response_model=List[IntakeQuestionOut],
@@ -2023,7 +2193,7 @@ def list_document_images(doc_id: int):
     return {
         str(qid): [ImageOut(id=i["id"], question_id=i["question_id"],
                             slot=i["slot"], content_type=i["content_type"],
-                            created_at=str(i["created_at"]))
+                            created_at=str(i["created_at"]), label=i["label"])
                   for i in imgs]
         for qid, imgs in by_q.items()
     }
@@ -2065,6 +2235,24 @@ def get_image(image_id: int):
 def remove_image(image_id: int):
     with store.connect() as conn:
         store.delete_question_image(conn, image_id)
+
+
+@app.patch("/intake/images/{image_id}",
+           dependencies=[Depends(require_api_key), Depends(EMPLOYEE_OR_TEACHER), PAPER])
+def edit_image(image_id: int, body: ImageEditIn):
+    """Set or clear the label shown under a picture - for a question that
+    names its pictures ("A", "B", "C" under three ploughs) where the
+    extractor did not read the label off the paper - and move it to the
+    question, the answer or an option, where the extractor put it in the
+    wrong one. Data entry, and a teacher during their review, the same as
+    editing the question."""
+    with store.connect() as conn:
+        try:
+            return store.update_question_image(conn, image_id, body.model_dump(exclude_unset=True))
+        except KeyError:
+            raise HTTPException(404, f"No image with id {image_id} on a paper.")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
 
 # ------------------------------------------------------- teachers / admin

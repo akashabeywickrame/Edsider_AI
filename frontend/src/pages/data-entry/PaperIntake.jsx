@@ -449,6 +449,38 @@ export default function PaperIntake() {
   const parts = doc ? groupByPart(tree, doc.sections) : []
   const byId = useMemo(() => Object.fromEntries((questions || []).map((q) => [q.id, q])), [questions])
 
+  // Data entry, from the duplicate check: the later of two copies is the
+  // repeat, flagged for the teacher to replace with a new question.
+  async function flagAsRepeat(qid, repeatOf) {
+    try {
+      handleQuestionChanged(await api.flagRepeat(qid, repeatOf))
+      toast.success('Flagged for the teacher - they will replace it with a new question.')
+    } catch (err) {
+      toast.error(`Could not flag it: ${err.message}`)
+    }
+  }
+  // [later, earlier] of two questions on the paper, by their place on it.
+  function laterAndEarlier(a, b) {
+    const qa = byId[a]
+    const qb = byId[b]
+    if (!qa || !qb) return null
+    return qa.seq > qb.seq ? [qa, qb] : [qb, qa]
+  }
+  function FlagButton({ repeat, original }) {
+    const { Button } = window.EdSider
+    if (!repeat || !original) return null
+    const flagged = repeat.repeat?.status === 'open' && repeat.repeat.repeat_of === original.id
+    const n = (x) => x.question_number || x.seq
+    return flagged ? (
+      <span className="es-caption">Q{n(repeat)} is flagged as a repeat of Q{n(original)} for the teacher.</span>
+    ) : (
+      <Button variant="secondary" size="sm" disabled={Boolean(doc.archived_at)}
+        onClick={() => flagAsRepeat(repeat.id, original.id)}>
+        Flag Q{n(repeat)} as a repeat of Q{n(original)}
+      </Button>
+    )
+  }
+
   function brief(id) {
     const q = byId[id]
     if (!q) return { id: String(id), text: '(question no longer on this paper)' }
@@ -999,7 +1031,7 @@ export default function PaperIntake() {
                           <PaperIntakeQuestion
                             q={q}
                             isStem={childrenSeqs.has(q.seq)}
-                            images={images[String(q.id)] || []}
+                            images={(images[String(q.id)] || []).filter((i) => !i.slot.startsWith('earlier:'))}
                             comments={comments[String(q.id)] || []}
                             optionStyle={optionStyle}
                             onChanged={handleQuestionChanged}
@@ -1116,29 +1148,40 @@ export default function PaperIntake() {
                     <Notice tone="success">No repeats found on this paper.</Notice>
                   ) : null}
 
-                  {checkResult.exact_groups.map((ids, i) => (
-                    <div className="es-card" key={`exact-${i}`} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      <span className="es-pill es-tone--dup">Exact copies</span>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
-                        {ids.map((id) => (
-                          <QuestionCard key={id} {...brief(id)} />
+                  {checkResult.exact_groups.map((ids, i) => {
+                    const ordered = ids.map((id) => byId[id]).filter(Boolean).sort((x, y) => x.seq - y.seq)
+                    return (
+                      <div className="es-card" key={`exact-${i}`} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        <span className="es-pill es-tone--dup">Exact copies</span>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+                          {ids.map((id) => (
+                            <QuestionCard key={id} {...brief(id)} />
+                          ))}
+                        </div>
+                        {ordered.slice(1).map((x) => (
+                          <FlagButton key={x.id} repeat={byId[x.id]} original={ordered[0]} />
                         ))}
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
 
-                  {checkResult.similar_pairs.map((p, i) => (
-                    <PairReview
-                      key={`pair-${i}`}
-                      verdict={p.verdict}
-                      score={p.score}
-                      raw={p.raw_score}
-                      reasons={p.reasons}
-                      a={brief(p.a)}
-                      b={brief(p.b)}
-                      readOnly
-                    />
-                  ))}
+                  {checkResult.similar_pairs.map((p, i) => {
+                    const pair = laterAndEarlier(p.a, p.b)
+                    return (
+                      <div key={`pair-${i}`} style={{ display: 'grid', gap: 8 }}>
+                        <PairReview
+                          verdict={p.verdict}
+                          score={p.score}
+                          raw={p.raw_score}
+                          reasons={p.reasons}
+                          a={brief(p.a)}
+                          b={brief(p.b)}
+                          readOnly
+                        />
+                        {pair ? <FlagButton repeat={pair[0]} original={pair[1]} /> : null}
+                      </div>
+                    )
+                  })}
                 </div>
               ) : null}
             </section>

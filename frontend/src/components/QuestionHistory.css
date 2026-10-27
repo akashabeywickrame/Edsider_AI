@@ -1,0 +1,13 @@
+.qh { display: grid; gap: 8px; }
+.qh__list { display: grid; gap: 10px; }
+.qh__version {
+  border-left: 3px solid var(--border, #d0d5dd);
+  padding: 6px 10px;
+  background: var(--surface-muted, rgba(0, 0, 0, 0.03));
+  border-radius: 4px;
+}
+.qh__version--now { border-left-color: var(--primary, #2563eb); }
+.qh__meta { margin: 0 0 4px; }
+.qh__text { margin: 0 0 4px; white-space: pre-wrap; }
+.qh__pic { margin: 6px 0 0; }
+.qh__pic img { max-width: 100%; max-height: 220px; }

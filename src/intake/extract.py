@@ -1674,6 +1674,93 @@ def _looks_like_marking_scheme(text, start):
     return bool(_BLANK_ANSWER_LINE.match(lines[1]))
 
 
+# ------------------------------------------------ running page lines
+#
+# A paper's footer or header, printed on every page with its page number -
+# "4 Biosystem Technology Grade 13" (paper 6, 21 pages). Read with the page,
+# it lands wherever the page breaks: inside an option list that runs on to
+# the next page (question 14: "II. By reducing biodiversity", the footer,
+# then "III. ..."), and after the last option of every page's last question.
+# Either way the options stop looking like an option list - on one upload
+# of paper 6, 14 of its 50 MCQs were split into "parts" instead. Such lines
+# are taken out before the paper is split (the read text keeps them).
+
+# "4 Biosystem Technology Grade 13", "Biosystem Technology Grade 13 4",
+# "Page 4 Physics", the number and the words apart.
+_RUNNING_LINE = re.compile(
+    r"^\s*(?:(?:page\s*)?(?P<lead>\d{1,3})\s+(?P<after>\S.*?)|(?P<before>\S.*?)\s+(?:page\s*)?(?P<tail>\d{1,3}))\s*$",
+    re.IGNORECASE)
+# "Page 4 of 21", "4 / 21", "- 4 -": a page number alone.
+_PAGE_NUMBER_LINE = re.compile(
+    r"^\s*(?:page\s*\d{1,3}\s*(?:of|/)\s*\d{1,3}|\d{1,3}\s*(?:of|/)\s*\d{1,3}|[-–]\s*\d{1,3}\s*[-–])\s*$",
+    re.IGNORECASE)
+_RUNNING_MIN = 3   # pages a line must repeat on before it is the page's own, not the paper's
+
+
+def strip_running_lines(text):
+    """`text` without its running page lines - the same words on every page
+    with the page number changing (see above). A line counts only when its
+    words recur on at least three pages, at least 8 letters of them, with a
+    different number each time, going up: a question's own repeated phrase
+    ("(2 marks)") does not carry a page count."""
+    lines = text.split("\n")
+    groups = {}
+    for i, line in enumerate(lines):
+        if _PAGE_NUMBER_LINE.match(line):
+            groups.setdefault("#page", []).append((i, None))
+            continue
+        m = _RUNNING_LINE.match(line)
+        if not m:
+            continue
+        words = " ".join((m.group("after") or m.group("before")).split()).lower()
+        if len(re.sub(r"[^a-z஀-௿඀-෿]", "", words)) < 8:
+            continue
+        groups.setdefault(words, []).append((i, int(m.group("lead") or m.group("tail"))))
+    drop = set()
+    for words, found in groups.items():
+        if len(found) < _RUNNING_MIN:
+            continue
+        numbers = [n for _i, n in found]
+        if words != "#page":
+            ups = sum(1 for a, b in zip(numbers, numbers[1:]) if b > a)
+            if len(set(numbers)) < len(numbers) or ups < len(numbers) - 2:
+                continue
+        drop.update(i for i, _n in found)
+    if not drop:
+        return text
+    return "\n".join(line for i, line in enumerate(lines) if i not in drop)
+
+
+# An option or part label alone on its line, its words on the next - how
+# PyMuPDF reads a list whose label and text are separate runs (another
+# upload of paper 6: "I. \nIgnoring climate data"). Read that way no line
+# looks like an option, the part is not taken for multiple choice, and its
+# questions' options are split off as "parts". A bare "1." is left alone:
+# it is a question number as often as not.
+_LONE_MARKER = re.compile(
+    r"^[ \t]*(?:\((?:[a-zA-Z]|[ivxIVX]{1,4}|\d{1,2})\)|(?:[a-zA-Z]|[ivxIVX]{1,4})[.)])[ \t]*$")
+
+
+def join_lone_markers(text):
+    """Each label alone on its line joined to the line of words after it."""
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        # Never onto a picture's or table's "[Picture 2]" line, which must
+        # stay a line of its own - an option whose only content is a picture.
+        if (_LONE_MARKER.match(line) and nxt is not None and nxt.strip()
+                and not _LONE_MARKER.match(nxt) and not _Q_START.match(nxt)
+                and not _TABLE_MARK.match(nxt)):
+            out.append(line.rstrip() + " " + nxt.strip())
+            i += 2
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 # ------------------------------------------------------ worked solutions
 #
 # A worked-solutions paper (the Grade 13 Combined Maths "Full Solutions
@@ -1909,6 +1996,7 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
     hand rather than an empty screen.
     """
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = join_lone_markers(strip_running_lines(text))
     text, solutions = _take_out_solutions(text)
     result = _structure(text, style)
     if solutions:
@@ -1917,32 +2005,62 @@ def structure(text, style=DEFAULT_SPLIT_STYLE):
 
 
 def _options_from_pictures(text):
-    """A question whose option pictures carry their labels ("[Picture 4
-    option IV]", see _pdf_option_pictures / _docx_option_pictures) ->
-    (its text, {picture n: "option:<label>"}). With option lines of its own
-    under those labels, each picture is that option's; with none - only the
-    labels, printed beside the pictures - the bare label lines go and the
-    options are written in ("I." ... "V."), empty, each its picture. Any
-    other shape leaves the pictures on the question."""
-    labelled = {int(n): label for n, label in _PICTURE_OPTION.findall(text)}
-    plain = _PICTURE_OPTION.sub(lambda m: _picture_mark(m.group(1)), text)
-    _stem, options = split_mcq_options(_TABLE_LINE.sub("", plain))
+    """A question whose pictures carry their printed labels ("[Picture 4
+    option IV]" beside them, see _pdf_option_pictures /
+    _docx_option_pictures; "[Picture 6 label A]" under them, see
+    _pdf_picture_captions) ->
+    (its text, {picture n: "option:<label>"}, {picture n: label}). With
+    option lines of its own under those labels, each picture is that
+    option's; with none - only the labels, printed beside the pictures -
+    the bare label lines go and the options are written in ("I." ... "V."),
+    empty, each its picture. Any other shape leaves the pictures on the
+    question; captioned ones - question 42 of paper 6: ploughs A, B, C,
+    options I-V about them - keep their labels to show under them, and the
+    line of bare labels goes, since the pictures now carry it."""
+    beside = {int(n): label for n, label in _PICTURE_OPTION.findall(text)}
+    captions = {int(n): label for n, label in _PICTURE_LABEL.findall(text)}
+    labelled = {**beside, **captions}
+    plain = _PICTURE_LABEL.sub(lambda m: _picture_mark(m.group(1)),
+                               _PICTURE_OPTION.sub(lambda m: _picture_mark(m.group(1)), text))
+    # Two or more pictures in the question named that way, or none: one
+    # letter under one picture names nothing.
+    if len(captions) < 2:
+        captions = {}
+    captioned = _drop_label_lines(plain, captions.values())
+
+    def leave():
+        return captioned, {}, captions
+
+    # Its own options, judged without the bare label lines - "A" / "B" /
+    # "C" a line each is a list of options to split_mcq_options.
+    _stem, options = split_mcq_options(_TABLE_LINE.sub("", captioned))
     if options:
         have = {o["label"] for o in options}
         if set(labelled.values()) <= have:
-            return plain, {n: f"option:{label}" for n, label in labelled.items()}
-        return plain, {}
+            return plain, {n: f"option:{label}" for n, label in labelled.items()}, {}
+        return leave()
     order = _label_order(list(labelled.values()))
     if not order:
-        return plain, {}
+        return leave()
     # The label lines go, and the blank and tab-only lines they sat among.
     keep = [line for line in plain.split("\n")
             if line.split() and not set(line.split()) <= set(order)]
     rebuilt = "\n".join(keep).rstrip() + "\n" + "\n".join(f"{label}." for label in order)
     _stem, options = split_mcq_options(_TABLE_LINE.sub("", rebuilt))
     if [o["label"] for o in options] != order:
-        return plain, {}
-    return rebuilt, {n: f"option:{label}" for n, label in labelled.items()}
+        return leave()
+    return rebuilt, {n: f"option:{label}" for n, label in labelled.items()}, {}
+
+
+def _drop_label_lines(text, labels):
+    """`text` without the lines made only of these labels ("A B C", or "A"
+    / "B" / "C" a line each) - what is left of captions once each picture
+    carries its own."""
+    labels = set(labels)
+    if not labels:
+        return text
+    return "\n".join(line for line in text.split("\n")
+                     if not (line.split() and set(line.split()) <= labels))
 
 
 def _place_tables(result):
@@ -1967,14 +2085,18 @@ def _place_tables(result):
         return {int(n): f"option:{o['label']}" for o in options
                 for n in _PICTURE_MARK.findall(o.get("text") or "")}
 
-    def give(question, found, slot):
+    def give(question, found, slot, captions=None):
         if question is not None and found:
-            question.setdefault("tables", []).extend({"n": n, "slot": slot} for n in found)
+            question.setdefault("tables", []).extend(
+                dict({"n": n, "slot": slot},
+                     **({"label": captions[n]} if captions and n in captions else {}))
+                for n in found)
 
     for q in questions:
-        labelled = {}
-        if q.get("text") and _PICTURE_OPTION.search(q["text"]):
-            q["text"], labelled = _options_from_pictures(q["text"])
+        labelled, captions = {}, {}
+        if q.get("text") and (_PICTURE_OPTION.search(q["text"])
+                              or _PICTURE_LABEL.search(q["text"])):
+            q["text"], labelled, captions = _options_from_pictures(q["text"])
         for field, slot in (("text", "question"), ("answer", "answer")):
             raw = q.get(field)
             in_option = option_slots(raw) if field == "text" and raw and _PICTURE_MARK.search(raw) else {}
@@ -1984,7 +2106,13 @@ def _place_tables(result):
             if found:
                 q[field] = value if value is not None or field == "answer" else ""
                 for n in found:
-                    give(q, [n], in_option.get(n, slot))
+                    give(q, [n], in_option.get(n, slot), captions)
+            if field == "text" and captions:
+                # Shown in the order they are labelled, not the order the
+                # file holds them (a row's middle picture can come first).
+                order = _label_order(list(captions.values())) or []
+                q["tables"].sort(key=lambda t: order.index(t["label"])
+                                 if t.get("label") in order else -1)
     first = questions[0] if questions else None
     for part in result["sections"]:
         part["instructions"], found = take(part.get("instructions"))
@@ -2671,12 +2799,16 @@ def _blank_tables(image, page, tables):
 # that is an MCQ option's whole content - question 7 of the Biosystem paper
 # (paper 6): five bags of fish labelled I to V, the labels printed beside
 # them and no option text at all - is "[Picture 4 option IV]".
-_TABLE_MARK = re.compile(r"^[ \t]*\[(?:Table|Picture) (\d+)(?: option [^\]\s]+)?\][ \t]*$",
+_TABLE_MARK = re.compile(r"^[ \t]*\[(?:Table|Picture) (\d+)(?: (?:option|label) [^\]\s]+)?\][ \t]*$",
                          re.MULTILINE)
-_TABLE_LINE = re.compile(r"^[ \t]*\[(?:Table|Picture) \d+(?: option [^\]\s]+)?\][ \t]*(?:\n|$)",
+_TABLE_LINE = re.compile(r"^[ \t]*\[(?:Table|Picture) \d+(?: (?:option|label) [^\]\s]+)?\][ \t]*(?:\n|$)",
                          re.MULTILINE)
-_PICTURE_MARK = re.compile(r"^[ \t]*\[Picture (\d+)(?: option [^\]\s]+)?\][ \t]*$", re.MULTILINE)
+_PICTURE_MARK = re.compile(r"^[ \t]*\[Picture (\d+)(?: (?:option|label) [^\]\s]+)?\][ \t]*$",
+                           re.MULTILINE)
 _PICTURE_OPTION = re.compile(r"^[ \t]*\[Picture (\d+) option ([^\]\s]+)\][ \t]*$", re.MULTILINE)
+# A picture captioned by a label printed under it (paper 6's question 42,
+# ploughs A, B, C) is "[Picture 6 label A]".
+_PICTURE_LABEL = re.compile(r"^[ \t]*\[Picture (\d+) label ([^\]\s]+)\][ \t]*$", re.MULTILINE)
 # A picture smaller than this is a bullet, a rule or a stray mark, not a
 # figure; one covering most of a page is the page's own background.
 _MIN_FIGURE_PX = 24
@@ -2689,8 +2821,10 @@ def _table_mark(n):
     return f"[Table {n}]"
 
 
-def _picture_mark(n, option=None):
-    return f"[Picture {n} option {option}]" if option else f"[Picture {n}]"
+def _picture_mark(n, option=None, label=None):
+    if option:
+        return f"[Picture {n} option {option}]"
+    return f"[Picture {n} label {label}]" if label else f"[Picture {n}]"
 
 
 # The labels an MCQ's options are printed with, each list in order.
@@ -2714,16 +2848,57 @@ def _label_order(labels):
 
 
 def _pdf_option_pictures(page, numbered):
-    """{n: label} for pictures on a PDF page whose option label is printed
-    beside them rather than as an option line - the label nearest each
-    picture's top-left corner, where a label sits (paper 6 question 7: "I"
-    left of the first bag, "II" above the second, and "V" - which falls
-    inside picture IV's box, the bag drawn with white space around it - far
-    nearer V's own corner). Only when every picture gets its own label and
-    the labels are an option sequence from the start."""
+    """{n: label} for pictures on a PDF page whose label is printed beside
+    them rather than as an option line - the label nearest each picture's
+    top-left corner, where a label sits (paper 6 question 7: "I" left of the
+    first bag, "II" above the second, and "V" - which falls inside picture
+    IV's box, the bag drawn with white space around it - far nearer V's own
+    corner). Only when every picture gets its own label and the labels are
+    an option sequence from the start. A label beside a picture is used
+    only to make it an option (_options_from_pictures): the same reading
+    finds a question's own number beside a picture that starts it (the
+    Grade 13 Applied paper, "1" and "2")."""
     if len(numbered) < 2:
         return {}
     words = [w for w in page.extract_words() if _OPTION_LABEL.match(w["text"])]
+    return _pdf_labels_beside(words, numbered)
+
+
+def _pdf_picture_captions(page, numbered):
+    """{n: label} for pictures captioned by a lone label printed just under
+    them and centred on them - paper 6 question 42: "A", "B", "C" 3 points
+    under three ploughs. Only the pictures that have one, when there are
+    two or more and their labels run in sequence from the start; a page's
+    other pictures are left alone."""
+    if len(numbered) < 2:
+        return {}
+    words = [w for w in page.extract_words() if _OPTION_LABEL.match(w["text"])]
+    found = {}
+    for n, box in numbered:
+        middle, half = (box[0] + box[2]) / 2, (box[2] - box[0]) / 2
+        under = [w for w in words
+                 if abs((w["x0"] + w["x1"]) / 2 - middle) <= _CAPTION_OFF_CENTRE * half
+                 and -_CAPTION_OVERLAP <= w["top"] - box[3] <= _CAPTION_GAP]
+        if len(under) == 1:
+            found[n] = _OPTION_LABEL.match(under[0]["text"]).group(1)
+    if len(found) < 2 or len(set(found.values())) != len(found) \
+            or not _label_order(list(found.values())):
+        return {}
+    return found
+
+
+# A caption sits within this many points under its picture (paper 6: 3),
+# or this much over its bottom edge where a picture's box has white space,
+# and near its middle - within this share of half its width (paper 6: 0.05
+# to 0.1); a word at a wide picture's left edge is the text's own.
+_CAPTION_GAP = 20
+_CAPTION_OVERLAP = 6
+_CAPTION_OFF_CENTRE = 0.4
+
+
+def _pdf_labels_beside(words, numbered):
+    """The label nearest each picture's top-left corner - see
+    _pdf_option_pictures."""
     pairs = []
     for w in words:
         label = _OPTION_LABEL.match(w["text"]).group(1)
@@ -2746,7 +2921,8 @@ def _pdf_option_pictures(page, numbered):
 
 # How far (points) from a picture's top-left corner its label may be - the
 # farthest in paper 6 is 65 (V); a caption printed under a picture (the
-# same paper's question 42, "A" 146 below its plough) is not a label.
+# same paper's question 42, "A" 146 below its plough) is not one beside
+# it - _pdf_picture_captions reads those.
 _OPTION_LABEL_REACH = 120
 
 
@@ -2910,8 +3086,10 @@ def read_pdf(path, ocr, force_ocr=False, tables=None):
                     for box in boxes:
                         if (box[2] - box[0]) * (box[3] - box[1]) <= _MAX_FIGURE_COVER * area:
                             pictured.append((len(collect) + len(numbered) + len(pictured) + 1, box))
-            # Pictures that are MCQ options, their labels printed beside them.
+            # Pictures that are MCQ options, their labels printed beside them;
+            # else pictures captioned by a label under each.
             options = _pdf_option_pictures(page, pictured) if pictured else {}
+            captions = {} if options or not pictured else _pdf_picture_captions(page, pictured)
             if tables or header:
                 tables_skipped += len(tables)
                 _drop_tables_from_text(mu_page, tables + header)
@@ -2937,7 +3115,8 @@ def read_pdf(path, ocr, force_ocr=False, tables=None):
                         text = _text_with_pictures_read(
                             page, mu_page, boxes, ocr,
                             marks=[(box[1] - oy, _table_mark(n)) for n, box in numbered]
-                            + [(box[1] - oy, _picture_mark(n, options.get(n))) for n, box in pictured])
+                            + [(box[1] - oy, _picture_mark(n, options.get(n), captions.get(n)))
+                               for n, box in pictured])
                     from_layer = False
                     read_by_ocr += 1
                 except ExtractionUnavailable as e:
@@ -2951,7 +3130,8 @@ def read_pdf(path, ocr, force_ocr=False, tables=None):
                     text = _insert_table_marks(
                         text, mu_page,
                         [(box[3], _table_mark(n)) for n, box in numbered]
-                        + [(box[3], _picture_mark(n, options.get(n))) for n, box in pictured],
+                        + [(box[3], _picture_mark(n, options.get(n), captions.get(n)))
+                           for n, box in pictured],
                         float(page.bbox[1]))
                 collect.extend({"n": n, "page": i + 1, "png": _cut_out_table(page, box),
                                 "kind": "table", "content_type": "image/png"}

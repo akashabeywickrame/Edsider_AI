@@ -195,6 +195,15 @@ export const api = {
     request(`/intake/documents/${docId}/resplit/preview`, { method: 'POST', body: { style } }),
   resplitDocument: (docId, style) =>
     request(`/intake/documents/${docId}/resplit`, { method: 'POST', body: { style } }),
+  // A question repeated on its own paper: data entry flags it (repeat_of is
+  // the question it copies); the teacher replaces it or keeps it.
+  flagRepeat: (qid, repeatOf, note) =>
+    request(`/intake/questions/${qid}/flag`, { method: 'POST', body: { repeat_of: repeatOf, note } }),
+  unflagRepeat: (qid) => request(`/intake/questions/${qid}/flag`, { method: 'DELETE' }),
+  replaceQuestion: (qid, body) => request(`/intake/questions/${qid}/replace`, { method: 'POST', body }),
+  keepQuestion: (qid, note) => request(`/intake/questions/${qid}/keep`, { method: 'POST', body: { note } }),
+  // A question now and every earlier version of it.
+  questionHistory: (qid) => request(`/intake/questions/${qid}/history`),
   // Reads the paper's own file again - its tables as pictures, and any
   // reader fix since the upload - and replaces its questions.
   rereadDocument: (docId, style) =>
@@ -245,6 +254,10 @@ export const api = {
     return request(`/intake/questions/${qId}/images`, { method: 'POST', body: form })
   },
   deleteImage: (imageId) => request(`/intake/images/${imageId}`, { method: 'DELETE' }),
+  // A picture's label (printed under it, "A"; empty clears it) and/or
+  // where it belongs: { label, slot } - slot 'question', 'answer', 'option:<label>'.
+  editImage: (imageId, changes) =>
+    request(`/intake/images/${imageId}`, { method: 'PATCH', body: changes }),
 
   // ---- teacher review (the subject teacher's app) ----
   // Registers the signed-in teacher the first time the page opens, so the

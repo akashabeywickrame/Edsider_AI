@@ -32,7 +32,7 @@ from service import (
     finish_review, get_document, get_image, list_comments,
     list_document_images, list_documents, list_questions, list_teachers,
     my_documents, precheck_document_duplicates, preview_resplit,
-    remove_image, remove_question, resplit_document, touch_teacher,
+    remove_image, remove_question, resplit_document, touch_teacher, edit_image,
     update_document, update_question, upload_document,
 )
 
@@ -266,6 +266,20 @@ def test_images_round_trip(document):
 
     resp = get_image(img.id)
     assert resp.body == picture
+
+    # A label under it, only when the paper names its pictures; moved to
+    # where it belongs when the extractor put it in the wrong place.
+    assert edit_image(img.id, service.ImageEditIn(label="A")) == {
+        "id": img.id, "slot": "question", "label": "A"}
+    assert list_document_images(document.id)[str(qs[0].id)][0].label == "A"
+    moved = edit_image(img.id, service.ImageEditIn(slot="answer"))
+    assert moved == {"id": img.id, "slot": "answer", "label": "A"}
+    assert edit_image(img.id, service.ImageEditIn(slot="option:II", label=""))["label"] is None
+    assert list_document_images(document.id)[str(qs[0].id)][0].slot == "option:II"
+    for bad in ("earlier:1:question", "nowhere"):
+        with pytest.raises(HTTPException) as err:
+            edit_image(img.id, service.ImageEditIn(slot=bad))
+        assert err.value.status_code == 400
 
     remove_image(img.id)
     assert list_document_images(document.id) == {}

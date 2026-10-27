@@ -27,8 +27,9 @@ class FakeEdsider:
     """Records each INSERT as (table, {column: value}); RETURNING gets the
     next id. `fail_on` names a table whose insert raises."""
 
-    def __init__(self, fail_on=None):
+    def __init__(self, fail_on=None, titles=()):
         self.rows, self.next_id, self.fail_on = [], 1000, fail_on
+        self.titles = {t.lower(): i for i, t in enumerate(titles, 1)}
         self.committed = self.rolled_back = self.closed = False
 
     def cursor(self):
@@ -38,6 +39,9 @@ class FakeEdsider:
         self._result = None
         if sql.startswith("SELECT now()"):
             self._result = (datetime.datetime(2026, 10, 27, 9, 0),)
+        elif "lower(title)" in sql:
+            found = self.titles.get(params[0].lower())
+            self._result = (found,) if found else None
         elif "assessment_term_condition" in sql:
             self._result = ("<p>Terms</p>",)
         elif sql.startswith("INSERT INTO"):
@@ -99,6 +103,16 @@ def test_a_paper_is_written_in_edsiders_order_with_edsiders_ids():
     # Both teachers are recorded as having reviewed it.
     assert [r["teacher_id"] for r in edsider.table("assessment.assessment_review_new")] == [256, 288]
     assert not edsider.committed            # the caller commits
+
+
+def test_a_title_edsider_already_has_is_refused_before_writing():
+    """EdSider's screens keep titles unique, its database does not (found
+    sending the same paper to the pre-prod copy twice)."""
+    title = _package()["assessment"]["title"]
+    edsider = FakeEdsider(titles=[title.upper()])
+    with pytest.raises(send.TitleTaken, match="already has a paper titled"):
+        send.write_package(edsider, _package())
+    assert edsider.rows == []
 
 
 def test_a_paper_with_problems_is_not_written():

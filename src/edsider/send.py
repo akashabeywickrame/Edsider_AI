@@ -23,6 +23,10 @@ class SendNotSetUp(RuntimeError):
     """EDSIDER_SEND_DB is not set - sending is off on this server."""
 
 
+class TitleTaken(ValueError):
+    """EdSider already has a paper with this title."""
+
+
 def target():
     """The database papers are sent to, or None when sending is off."""
     return (os.environ.get("EDSIDER_SEND_DB") or "").strip() or None
@@ -60,6 +64,14 @@ def write_package(pg, package):
     cur = pg.cursor()
 
     paper = dict(package["assessment"])
+    # EdSider's screens keep paper titles unique; its database does not, so
+    # a second paper under a taken title would get in and trip them up.
+    cur.execute("SELECT assessment_id FROM assessment.assessment WHERE lower(title) = lower(%s) "
+                "LIMIT 1", (paper.get("title"),))
+    taken = cur.fetchone()
+    if taken:
+        raise TitleTaken(f"EdSider already has a paper titled \"{paper.get('title')}\" "
+                         f"(#{taken[0]}). Change this paper's title and send it again.")
     if paper.get("terms_content") is None and paper.get("language_id") is not None:
         # EdSider's default terms for the paper's medium, as its own form adds.
         cur.execute("SELECT content FROM assessment.assessment_term_condition "

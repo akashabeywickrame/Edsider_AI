@@ -1629,9 +1629,53 @@ found. Each picture is now matched to its label and becomes that option
   options I-V about them) leaves the pictures on the question.
 Measured on both paper 6 files: all five right (PDF: III, I, II, V, IV in
 the page's own picture order; Word: 3, 1, 2 for I, II, III); every other
-paper's tables and pictures unchanged. Not handled: a page footer ("2
-Biosystem Technology Grade 13") still lands inside the question that runs
-across it, on every paper.
+paper's tables and pictures unchanged.
+
+**Pictures named by a label under them.** Paper 6's question 42 prints
+three ploughs with "A", "B", "C" under them, and options I-V about them
+("A-Sweep hoe is used for..."): the pictures are the question's, but each
+needs its letter. `_pdf_picture_captions` reads a lone label 3-20 points
+under a picture and near its middle (within 0.4 of half its width) - for
+two or more pictures whose labels run in sequence - as "[Picture 6 label
+A]", a marker of its own: a label *beside* a picture ("option") is only
+ever used to make it an option, because that reading also finds a
+question's own number next to a picture that starts it (the Grade 13
+Applied PDF's "1" and "2"; first measured as false labels when the two
+were one marker). At placement a captioned picture whose labels are not
+the question's options stays on the question with `label`, in label
+order, and the bare "A B C" line leaves the text; with no option text
+they become the options, as before. Stored as `intake.question_image.
+label` (and `question_files.label` in the bank copy), shown under each
+picture side by side in the preview and the teacher's review
+(`components/Pictures.jsx`), sent to EdSider as a line under the picture.
+Data entry sets, corrects or clears one on any picture, and moves a
+picture the extractor put in the wrong place - question, answer or an
+option - with `PATCH /intake/images/{id}` (`store.update_question_image`;
+an earlier version's picture is history and cannot move). Measured on
+every stored PDF and Word file: labels on paper 6's question 42 only, no
+other question changed.
+
+**Page footers and labels on a line of their own broke MCQs.** Reported on
+paper 6 again (uploads #89/#90, read with every option label alone on its
+line - "I. \nIgnoring climate data" - where #49/#62 read "I. Ignoring..."):
+question 14 was "sub-questions" with parts 14(I)-14(V), and so were 13
+more of its 50 MCQs. Two causes, both fixed in `structure()` before
+anything is split, so a re-split of the stored text picks them up:
+- *Running page lines* (`strip_running_lines`): "4 Biosystem Technology
+  Grade 13", read with its page, sat inside an option list that runs on
+  to the next page and after the last option of every page; an option
+  holding a blank line and a footer is no option. A line goes when its
+  words (8+ letters) recur on 3+ pages with a different page number each
+  time, going up - and "-2-", "Page 2 of 21" lines. A question's own
+  repeated "(2 marks)" carries no page count and stays.
+- *A label alone on its line* (`join_lone_markers`) is joined to the words
+  after it - "(a)", "I.", "A)"; never a bare "1.", which is as often a
+  question number. Read apart, no line looked like an option, so the part
+  was not taken for multiple choice and long options were split as parts.
+Measured on every stored paper: #89/#90 109 drafts and 49/50 MCQs, the
+same as the other copies of paper 6 (it was 178 drafts and 36-37); the
+footer lines go from paper 6's other copies and the "-2-" page numbers
+from the 2025 ICT papers; no other paper changes.
 
 **Instructions at three levels: the whole paper, each part, and a group
 of questions.** A paper prints instructions above everything ("This paper
@@ -2032,6 +2076,37 @@ finished cannot change it (`paper_access`). Refer Back from either sends
 it to data entry; when data entry finishes again the paper goes straight
 back to both teachers, both reopened - both sign off the final version.
 
+**A question repeated on its own paper - flagged, replaced, its history
+kept.** The duplicate check's results were shown once and saved nowhere,
+so a teacher never saw them. Now:
+- *Data entry flags* the repeat from the results: on exact copies and
+  similar pairs, "Flag Q7 as a repeat of Q3" (the later copy is the repeat)
+  - `POST /intake/questions/{id}/flag` (`store.flag_repeat`), taken back
+  with `DELETE` while no teacher has acted. The card says it is flagged.
+- *The teacher sees it* on the question: "Repeated in this paper - the same
+  as Q3", the other question's text beside it, and either **Write a new
+  question** (text, answer, marks, and whether its pictures belong to the
+  old question) - `POST .../replace`, `store.replace_question` - or **Keep
+  it - not a repeat**, with a reason - `POST .../keep`. Review Done is
+  refused while a flag is open; Refer Back is not. With two teachers,
+  whoever resolves it resolves it for both, and the other sees what was done.
+- *The history* (`intake.question_revision`): before a question is
+  replaced, what it was - text, answer, marks, type - is saved with who
+  replaced it, when and why; `GET /intake/questions/{id}/history` returns
+  every earlier version and the current one, shown as "Earlier versions" on
+  the teacher's and data entry's cards. Pictures that belonged to the old
+  question are not deleted: they move to slot `earlier:<revision>:<slot>`,
+  hidden from the question, shown with that version. Flags
+  (`intake.question_flag`) and revisions are keyed to the paper, not by
+  foreign key to the question, so archiving - which removes the paper's
+  question rows - keeps them; the history then finds its pictures in the
+  bank copy. Every flag, replacement and keep is in the paper's log.
+- *Found on the way:* `question_images_for_document` listed the paper's
+  bank copy beside its own pictures for every paper, not only archived
+  ones, so from the moment data entry finished (and the bank copy was
+  made) the teacher saw every picture twice. It reads the bank copy only
+  once the paper is archived.
+
 **Sending a paper to EdSider - steps 5 and 6.** Decided: written straight
 into EdSider's database (the pre-prod copy, `examonliine_db_prod_copy`,
 for now), arriving as **ReadyToPublish** (status 11 - EdSider's staff then
@@ -2053,7 +2128,38 @@ PG_USER) - unset, sending is off, so no deployed app writes to EdSider
 until someone sets it there; pointing it at live EdSider is that one
 setting. Rehearsed on the pre-prod copy inside a transaction that was
 rolled back: every row accepted (types, foreign keys, the state), nothing
-left. Still open: whether a question our duplicate check found in
+left.
+
+**Then sent for real into the pre-prod copy, and read back as EdSider
+reads it** (2026-10-27; the production database and the real pre-prod are
+not ours to touch). Paper #55 (GIT A/L model, 64 rows) went in with the
+same converter and writer as the button, from a scratch script that does
+not archive our paper, and was read back the way EdSider's own
+paper-details API assembles a paper
+(`paper_details_route.get_assessment_details_with_parts_section`: parts
+through `assessment.part`, sections, links by section, `sub_questions`
+ids, Draft.js content, MCQ weights), then compared column by column with
+#2141, a paper made in EdSider's screens. Three things it found, all fixed:
+- *Integer out of range* - the whole send refused at the schedule: the
+  paper's access buffer was entered as 100,000,000 hours. The converter
+  now reports a duration or buffer outside EdSider's integer column as an
+  error naming the setting (EdSider's own papers mostly use 525,600
+  minutes, a year).
+- *Every part had `part_id` NULL*, and EdSider's paper-details screen skips
+  a part it cannot find in `assessment.part` - the paper would have shown
+  no questions there. EdSider sets it whenever a paper has a part notation
+  (Roman I = 7, II = 8; numeric 1 = 4; alpha A = 1); its NULLs are on
+  papers without one (#2141 is an exception, which is where the converter
+  copied it from). Now set from the synced `part` list.
+- *Titles are unique in EdSider's screens, not its database*, so a second
+  send of the same paper got in. `write_package` now refuses a taken title
+  (case-insensitive) before writing - a 409 asking for a new title.
+After the fixes: every part, section and all 64 links resolve, 40 MCQs
+with weights matching their options, 7 questions naming their 17 parts -
+EdSider assessment #2156 in the copy. Left as test data there. Not yet
+tested: the operation and review rows (#55's operator and reviewer are not
+on EdSider's staff list, so none were written), and opening it in
+EdSider's own screens. Still open: whether a question our duplicate check found in
 EdSider's bank should be linked instead of copied, and a read-only check
 after sending that the paper opens in EdSider's own screens.
 
