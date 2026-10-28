@@ -1783,6 +1783,56 @@ auto-numbered "1."-"10." list, and "10." (the same padded or not) jumped a
 zero-padded run 01, 03, 04 past the real "06." - a padded run no longer
 jumps to a number when a padded one in between is still to come.
 
+**A scanned Sinhala paper is read as Sinhala+English, and repaired.**
+Reported on the Grade 12 Business Statistics paper uploaded as #94 - a
+15-page scan with no text layer, two papers in one file (50 MCQs; then
+Part I and Part II of structured questions). Read as Sinhala alone it gave
+17 "questions" and no Paper 2: its Latin-script markers came back as
+Sinhala look-alikes ("A." "B." "C." as "&," "පි." "ට,"; ")" as a digit, so
+"13)" was "138"), and the default layout read the indented "1."-"5."
+option lists as a separate column and dropped their numbers. Now
+(`extract.ocr_sinhala_page`, used for `lang == "sin"` only - Tamil prints
+the same markers but has not been measured):
+- *Read twice*, Sinhala+English in the default and the one-block layout
+  (psm 6); the reading with more lines starting a question, option or part
+  (`_marker_lines`) is kept - on #94, 207 against 147. Twice the OCR time
+  for a Sinhala scan (about 120 s for #94's 15 pages).
+- *Repaired* (`repair_sinhala_ocr`), each fix only where the lines around
+  it say what it must be, measured line by line against the printed paper:
+  "C." read "ට," on the line after "B."; "1," for "1."; one look-alike
+  between "2." and "4." ("රි." -> "3."); roman runs "(i) (1) (iii)" and
+  "(1) (1) (ili) (iv)" -> i ii iii iv, never a "(1) (2) (3)" option list,
+  and a "(5)" marks line does not break a run; a lone "2)" after "අ)" "ආ)"
+  inside question 02 is "ඉ)"; combination answer lines ("1. A පමණි 2. A
+  හා B පමණි ...") get their letters back ("&" / "ගු" / "ඨී" ... -> A, "පි"
+  -> B, "ට" -> C, "3. හා B" -> "A හා B" since nothing else can stand before
+  "and B"); options on one line have their numbers walked in order ("4,"
+  -> "4.", "ර3." -> "3.") - only the number expected next, so an option
+  "7, 21" keeps its comma.
+- *Headings in Sinhala*: "N පත්‍රය ... කාලය" (paper N, with its time) and
+  "I/II කොටස" (part; OCR "| කොටස", "1! කොටස", "11 කොටස") - `_sinhala_heading`.
+  The MCQ hint accepts the OCR's "තොරන්න" for "තෝරන්න". A part's marks
+  "(3)" alone on a line are no longer glued onto the heading after them
+  (`join_lone_markers`) - that hid Part II on the pasted copies too.
+- *Grade and subject*: "12 ශ්‍රේණිය" (file names write "12 ශ්_රේණිය") is
+  G12; "ව්‍යාපාර සංඛ්‍යානය" is Business Statistics.
+- *An ellipsis is not a blank*: dots glued to text on both sides ("6-A,
+  6-B.........,6-F", option 4 of question 11; Political Science's
+  "(..........)" answer box) no longer stop an option list (`_has_blank`);
+  every real gap measured has a space or a quote beside it.
+Measured: #94 read again end to end - Paper 1 50 MCQs, 49 with all five
+options (question 29's answer line, read in bands around the page's table,
+stays garbled), Paper 2 Part I 01-04 and Part II 05-08 with every lettered
+and roman part as printed, grade G12, subject Business Statistics. Every
+stored paper re-split with and without the change: only the Business
+Statistics copies (scans and pastes, now with Paper 2's parts), Political
+Science (#21/#57-#59 gain question 3's options; the OCR'd #60/#61 gain their
+real Part II from question 31) and the badly-read #83 change.
+`tests/data/business_statistics_g12_ocr.txt` is the paper as read, for
+`tests/test_sinhala_ocr.py`. Still OCR, so still checked by a person: the
+local Tesseract is what reads it - the deployed App Service has none, and
+there a scan still needs the local reader and "Paste text".
+
 **Chemistry - formulas, equations and drawn structures.** The real
 scanned 2025 A/L Chemistry paper (Sinhala medium) came back from the
 deployed site as one empty draft: every page is a picture and the server
@@ -2088,10 +2138,9 @@ put the owner first (`store._TEACHER_ORDER`), and the paper carries
 `teacher_owner`; a paper assigned before duties were kept counts its first
 teacher as owner. Reassigning in the other order swaps them.
 
-**A paper referred back waits at the top of its operator's page** ("N
-papers sent back to you by a teacher", a button per paper) - it always
-went back to the same operator (`reopen_stage`), but nothing pointed them
-at it.
+**A paper referred back waits at the top of data entry's page** ("N
+papers sent back by a teacher", a button per paper) - nothing
+pointed anyone at it before.
 
 **Data entry sees each picture where it belongs.** The card showed every
 picture inside a closed "Images (N)" panel, apart from answer pictures,
@@ -2101,10 +2150,39 @@ text, an option's inside that option, the answer's under the answer -
 each with its label, where it belongs and Remove. The panel became "Add a
 picture", plus any picture naming an option the card does not show.
 
-**Papers are added on Admin -> Data entry only.** The upload and paste
-form (`pages/admin/UploadPaper.jsx`) sits above the list where each paper
-is given to an operator; data entry's page no longer has it, for admins
-either. The routes were already admin-only.
+**Numbers as the paper prints them.** Asked for: "5", then "a", then
+"i" - not "05(a)(i)". `frontend/src/lib/numbers.js` `shownNumber()` shows
+a whole question by its number alone ("05" and "(01)" lose the padding and
+brackets) and a part by its own last label; each card is indented 30px a
+level (`marginLeft` from depth - `.pi-part` was one fixed step). Used on
+the data-entry cards, the student/final preview and the teacher's review.
+The stored `question_number` stays whole - answers and marking schemes
+match on it, and the duplicate check and marks list still show it, since
+they mix questions and parts.
+
+**Papers are added by data entry, and no longer given to one operator.**
+Asked for, in turn: uploading moved to the admin side, then back - the
+admin side is only assigning teachers (and Manage users for a superadmin).
+So Admin -> Data entry (`AssignOperators.jsx`), `GET /operators` and `POST
+/intake/documents/{id}/operator` are gone; the upload and paste form
+(`pages/data-entry/UploadPaper.jsx`) is at the top of Paper intake again,
+and its two routes are data entry's (`EMPLOYEE`; admins pass every rule).
+Every Data Entry Operator sees and works on every paper still with data
+entry (`paper_access`, `_own_papers`); whoever finishes data entry is
+recorded as the paper's operator (`finish_data_entry` -> `assign_review`),
+so its history and EdSider's operation row still name the person who did
+it.
+
+**A paper uploaded by mistake can be removed - while it is still
+Extracted.** A "Remove" beside each Extracted paper in data entry's paper
+list (`PaperFinder.jsx`), `DELETE /intake/documents/{id}` (data entry and
+admins). `store.delete_intake_document()` refuses any other status, an
+archived paper and one ever sent - by then a copy is in the question bank,
+its teachers or EdSider may have it, and its history matters. One delete
+takes every row (each intake table names the paper `ON DELETE CASCADE`);
+the stored file, pictures and table pictures go only after that commits
+(`delete_stored_files`), so a failure leaves an unused file, never a row
+naming a missing one.
 
 **A question repeated on its own paper - flagged, replaced, its history
 kept.** The duplicate check's results were shown once and saved nowhere,

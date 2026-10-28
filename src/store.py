@@ -2988,6 +2988,41 @@ def update_intake_question(conn, q_id, **fields):
                  (*fields.values(), q_id))
 
 
+def delete_intake_document(conn, doc_id):
+    """An upload made by mistake, removed whole - only while it is still
+    'extracted': once data entry has checked it, a copy is in the question
+    bank, its teachers or EdSider may have it, and its history matters.
+    Every row of it goes (each table names the paper ON DELETE CASCADE).
+    Returns the stored files it held, for delete_stored_files() once this
+    has committed - files first and a failed commit would leave rows
+    naming files that are gone."""
+    doc = conn.execute("SELECT status, archived_at FROM intake.document WHERE id = ?",
+                       (doc_id,)).fetchone()
+    if doc is None:
+        raise KeyError(doc_id)
+    if doc["status"] != "extracted" or doc["archived_at"] or last_send(conn, doc_id):
+        raise ValueError("Only a paper still at Extracted can be removed - this one has "
+                         "moved on.")
+    paths = [r["p"] for r in conn.execute(
+        """SELECT file_path AS p FROM intake.document_file WHERE document_id = ?
+           UNION ALL SELECT i.image_path FROM intake.question_image i
+                       JOIN intake.question q ON q.id = i.question_id WHERE q.document_id = ?
+           UNION ALL SELECT image_path FROM intake.document_table WHERE document_id = ?""",
+        (doc_id, doc_id, doc_id)).fetchall() if r["p"]]
+    conn.execute("DELETE FROM intake.document WHERE id = ?", (doc_id,))
+    return paths
+
+
+def delete_stored_files(paths):
+    """Files no row names any more. One that will not go is left behind
+    rather than failing a delete that has already happened."""
+    for path in paths:
+        try:
+            files.delete(path)
+        except Exception:
+            pass
+
+
 def delete_intake_question(conn, q_id):
     """A spurious extraction - a heading read as a question, a page
     number - that a reviewer drops entirely, with its parts (they are

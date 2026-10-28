@@ -124,7 +124,9 @@ _SUBJECT_ALIASES = [
     ("Logic and Scientific Method", [r"logic\s+and\s+scientific\s+method"]),
     ("Communication and Media",
      [r"communication\s+and\s+media(?:\s+studies)?"]),
-    ("Business Statistics", [r"business\s+statistics"]),
+    # The Sinhala-medium paper (#94) names it only in Sinhala.
+    ("Business Statistics", [r"business\s+statistics",
+                             r"ව්‍?යාපාර\s+සංඛ්‍?යානය"]),
     ("Business Studies", [r"business\s+studies"]),
     ("Political Science", [r"political\s+science"]),
     ("Home Economics", [r"home\s+economics"]),
@@ -169,8 +171,13 @@ _TITLE = re.compile(
 _HEADER_CHARS = 900
 
 
+# "12 ශ්‍රේණිය" - "Grade 12" on a Sinhala paper (#94); its file name writes
+# the joiner as "_" ("12 ශ්_රේණිය").
+_SINHALA_GRADE = re.compile(r"(?<!\d)(\d{1,2})[ \t]*ශ්[‍_]?රේණිය")
+
+
 def _grade_from(text):
-    for m in _GRADE.finditer(text):
+    for m in list(_GRADE.finditer(text)) + list(_SINHALA_GRADE.finditer(text)):
         g = int(m.group(1))
         if 1 <= g <= 13:
             return f"G{g:02d}"
@@ -886,9 +893,23 @@ def split_mcq_options(body):
     #     each numbered word its own item) - a real option is written as
     #     continuous text and never contains a blank line itself; the
     #     blank line always falls BETWEEN options, never inside one.
-    if any(_BLANK_RUN.search(o["text"]) or "\n\n" in o["text"] for o in options):
+    if any(_has_blank(o["text"]) or "\n\n" in o["text"] for o in options):
         return body.strip(), []
     return body[:starts[0][0]].strip(), options
+
+
+def _has_blank(text):
+    """A gap to fill in. Dots glued to text on both sides are an ellipsis
+    inside a list - "6-A, 6-B.........,6-F", an option on the Sinhala
+    Business Statistics paper (#94) - not a gap; every real gap measured
+    has a space or a quote beside it ("Perhaps you ......\"")."""
+    for m in _BLANK_RUN.finditer(text):
+        dots = m.group().startswith(".")
+        glued = (m.start() > 0 and not text[m.start() - 1].isspace()
+                 and m.end() < len(text) and text[m.end()] not in " \t\n\"'”’")
+        if not (dots and glued):
+            return True
+    return False
 
 
 # A fill-in-the-blank gap - a run of underscores or dots standing in for a
@@ -1250,8 +1271,9 @@ _MCQ_HINT = re.compile(
     # match on otherwise. "ක්" is an optional indefinite marker. The real
     # A/L Chemistry paper's Part I says it as "පිළිතුර තෝරා ගෙන" ("having
     # chosen the answer") - the same verb in another form.
+    # OCR reads its long vowel "ෝ" as the short "ො" ("තොරන්න", #94).
     r"|පිළිතුර(?:ක්)?"
-    r"[ \t]*තෝර(?:න්න|ා)",
+    r"[ \t]*ත[ෝො]ර(?:න්න|ා)",
     re.IGNORECASE,
 )
 _STRUCTURED_HINT = re.compile(r"structured|essay", re.IGNORECASE)
@@ -1392,10 +1414,33 @@ def _kind_from(bodies):
     return None
 
 
+# A Sinhala paper's own headings: "2 පත්‍රය" ("Paper 2") on the line that
+# also gives its time ("කාලය"), and "I කොටස" / "II කොටස" ("Part I") - the
+# real Business Statistics paper (#94), whose Part I and Part II OCR reads
+# as "| කොටස" and "1! කොටස".
+_SINHALA_PAPER = re.compile(r"(?<!\d)(?P<tag>[1-4])[ \t]*පත්‍?රය.*කාලය")
+_SINHALA_PART = re.compile(r"^(?P<tag>IV|[IVl1|!]{1,3})[ \t]*කොටස(?:[ \t]|$)")
+
+
+def _sinhala_heading(s):
+    m = _SINHALA_PAPER.search(s)
+    if m:
+        return {"kind": _kind_hint(s), "label": f"Paper {m.group('tag')}", "heading": s}
+    m = _SINHALA_PART.match(s)
+    if m and len(s) <= 40:
+        tag = m.group("tag")
+        tag = "IV" if tag == "IV" else "I" * len(tag)
+        return {"kind": _kind_hint(s), "label": f"Part {tag}", "heading": s}
+    return None
+
+
 def _heading(line):
     """{kind, label, heading} for a line that starts a part of the paper,
     or its answers - else None."""
     s = line.strip()
+    found = _sinhala_heading(s) if s and len(s) <= 120 else None
+    if found:
+        return found
     if not s or len(s) > 90 or "|" in s:
         return None
     if _ANSWERS_LINE.match(s) and len(s) <= 60:
@@ -1750,9 +1795,11 @@ def join_lone_markers(text):
         nxt = lines[i + 1] if i + 1 < len(lines) else None
         # Never onto a picture's or table's "[Picture 2]" line, which must
         # stay a line of its own - an option whose only content is a picture.
+        # Nor onto a part heading: a part's last marks, "(3)" alone, glued
+        # to "II කොටස" hid the Sinhala Business Statistics paper's Part II.
         if (_LONE_MARKER.match(line) and nxt is not None and nxt.strip()
                 and not _LONE_MARKER.match(nxt) and not _Q_START.match(nxt)
-                and not _TABLE_MARK.match(nxt)):
+                and not _TABLE_MARK.match(nxt) and not _heading(nxt)):
             out.append(line.rstrip() + " " + nxt.strip())
             i += 2
             continue
@@ -2673,6 +2720,211 @@ def recover_missing_numbers(text):
                 lines[c] = f"{n}. {lines[c].lstrip()}"
                 changed = True
     return "\n".join(lines) if changed else text
+
+
+# ----------------------------------------------------------- Sinhala OCR
+# A Sinhala paper prints its question numbers, option numbers, statement
+# letters "A." "B." "C." and roman sub-parts in Latin script. Read with
+# Sinhala data alone, Tesseract turns those into Sinhala look-alikes - on
+# the real Grade 12 Business Statistics paper (intake #94, a 15-page scan)
+# "A." "B." "C." came back as "&," "පි." "ට,", ")" as a digit ("13)" ->
+# "138"), and the indented "1."-"5." option numbers were dropped: 17
+# questions found of 50. Read as Sinhala+English it found all 50, each with
+# its options. Its layout matters too: the default mode read that paper's
+# indented option lists as a separate column and lost their numbers (147
+# lines starting with a question, option or part marker); the one-block
+# mode kept them (207). Neither wins on every page, so both are read and
+# the one keeping more markers is kept. Measured on Sinhala only - Tamil
+# papers print the same Latin markers but have not been tried.
+
+_STRUCTURE_LINE = re.compile(
+    r"^\s*(?:\(?\d{1,2}[.)]|\([ivxIVX]{1,4}\)|[A-E][.)]|[අ-ඖ]\))")
+
+
+def _marker_lines(text):
+    return sum(1 for line in text.split("\n") if _STRUCTURE_LINE.match(line))
+
+
+def ocr_sinhala_page(image):
+    """One page or picture of a Sinhala paper: read as Sinhala+English in
+    both layouts, keep the reading with more question/option/part markers
+    (the default layout on a tie), then repair what the reading still gets
+    wrong (repair_sinhala_ocr)."""
+    reads = [ocr_image(image, lang="sin+eng"), ocr_image(image, lang="sin+eng", psm=6)]
+    return repair_sinhala_ocr(max(reads, key=_marker_lines))
+
+
+# What Sinhala+English still misreads on the real paper, each only where
+# the lines around it say what it must be:
+#   "C." as "ට," / "ට." - always on the line after "B.";
+#   "1." as "1," at the start of an option line;
+#   one option number as a Sinhala letter ("රි." between "2." and "4.");
+#   "(ii)" as "(1)" or "(li)", "(iii)" as "(ili)" - in a run of roman
+#   sub-parts, never in a run of "(1)" "(2)" options;
+#   the letters in a combination answer line ("1. A පමණි 2. A හා B
+#   පමණි ...", "only" / "and") as "&", "පි", "ට".
+_STATEMENT = re.compile(r"^(\s*)([A-E])[.,](\s)")
+_STATEMENT_C = re.compile(r"^(\s*)ට[.,](\s)")
+_QUESTION_HEAD = re.compile(r"^\s*\d{1,2}\)")
+_OPTION_COMMA = re.compile(r"^(\s*)([1-9]),(\s+)(?=[^\d\s])")
+_OPTION_NUMBER = re.compile(r"^\s*([1-9])\.")
+_OPTION_LOOKALIKE = re.compile(r"^(\s*)([඀-෿]{1,2})\.(\s*)(?=[඀-෿])")
+_BRACKET_MARK = re.compile(r"^(\s*)\(([^()\s]{1,4})\)")
+_ROMAN = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii"]
+_I_LIKE = set("il1I|!")
+_PART_MARK = re.compile(r"^\s*(?:\d{1,2}\)|[අ-ඖ]\)|[a-h]\))")
+_LONE_MARK = re.compile(r"^(\s*)([^\s(]{1,2})\)\s*$")
+_SINHALA_LETTERS = ["අ", "ආ", "ඉ", "ඊ", "උ", "ඌ", "එ", "ඒ"]
+_ONLY, _AND = "පමණි", "හා"
+_COMBINATION_FIXES = [
+    (re.compile(r"&[ා-ෟ්‌‍]*"), "A"),
+    (re.compile(r"AmB"), f"A {_AND} B"),
+    (re.compile(rf"(?<=[A-C]){_AND}"), f" {_AND}"),
+    (re.compile(rf"(?<=[A-C])\s*{_AND}(?=\S)"), f" {_AND} "),
+    (re.compile(rf"(?<=[\s,])a(?=C)"), f"{_AND} "),
+    (re.compile(rf"පිං?\s*(?={_AND}|{_ONLY})"), "B "),
+    (re.compile(rf"(?<={_AND}\s)පි(?=\s|$)"), "B"),
+    (re.compile(rf"ටි?\s*(?={_ONLY})"), "C "),
+    (re.compile(rf"(?<={_AND})\s*ටි?(?=\s|$)"), " C"),
+    # Last: they read the letters the rules above have put back.
+    # Every one of these stood for "A" on the real paper, each time.
+    (re.compile(rf"(?<!\S)(?:ගු|ගී|ඨී|ඨැ|ඵැ|ඨ)(?=,?\s*(?:{_AND}|{_ONLY})|,\s*[BC])"), "A"),
+    # "3. හා B" lost its first letter - before "and B" it can only be A.
+    (re.compile(rf"(?<=\d\.\s){_AND}(?=\s+B)"), f"A {_AND}"),
+    (re.compile(r"(?<=\s)/(?=[A-C])"), ""),
+]
+
+
+def repair_sinhala_ocr(text):
+    """Put back the Latin markers a Sinhala reading turns into Sinhala
+    look-alikes (see above). Anything not confirmed by its neighbours is
+    left as read, for the reviewer."""
+    lines = text.split("\n")
+
+    # Statement letters: "C." after "B.", and "A," -> "A.".
+    last = None
+    for i, line in enumerate(lines):
+        if _QUESTION_HEAD.match(line):
+            last = None
+        m = _STATEMENT.match(line)
+        if m:
+            last = m.group(2)
+            lines[i] = _STATEMENT.sub(r"\1\2.\3", line, count=1)
+            continue
+        if last == "B" and _STATEMENT_C.match(line):
+            lines[i] = _STATEMENT_C.sub(r"\1C.\2", line, count=1)
+            last = "C"
+
+    # Option numbers: "1," -> "1.", then one look-alike between two numbers.
+    lines = [_OPTION_COMMA.sub(r"\1\2.\3", line, count=1) for line in lines]
+    numbered = [(i, int(m.group(1))) for i, line in enumerate(lines)
+                for m in [_OPTION_NUMBER.match(line)] if m]
+    for (ia, a), (ib, b) in zip(numbered, numbered[1:]):
+        if b == a + 2 and ib - ia <= 4:
+            between = [j for j in range(ia + 1, ib) if _OPTION_LOOKALIKE.match(lines[j])]
+            if len(between) == 1:
+                j = between[0]
+                lines[j] = _OPTION_LOOKALIKE.sub(rf"\g<1>{a + 1}.\3", lines[j], count=1)
+
+    # Roman sub-parts: a run of "(x)" markers under one part.
+    run = []
+
+    def settle():
+        tokens = [_BRACKET_MARK.match(lines[j]).group(2) for j in run]
+        # A roman run says so with at least one numeral read right; a run
+        # holding "(2)" or "(3)" is a list of numbered options - left alone.
+        if not any(t in _ROMAN for t in tokens):
+            return
+        if any(t.isdigit() and set(t) != {"1"} for t in tokens):
+            return
+        for k, (j, t) in enumerate(zip(run, tokens)):
+            want = _ROMAN[k] if k < len(_ROMAN) else None
+            # Only an all-"i" numeral can be mistaken for strokes like these.
+            if want and t != want and set(t) <= _I_LIKE and set(want) == {"i"}:
+                lines[j] = _BRACKET_MARK.sub(rf"\1({want})", lines[j], count=1)
+
+    for i, line in enumerate(lines):
+        if _BRACKET_MARK.match(line):
+            # "(5)" alone on its line is the marks of the part above it.
+            if _BRACKET_MARK.sub("", line, count=1).strip():
+                run.append(i)
+        elif _PART_MARK.match(line) or _QUESTION_HEAD.match(line):
+            if run:
+                settle()
+            run = []
+    if run:
+        settle()
+
+    # Sinhala part letters on a line of their own: "අ)" "ආ)" then "ඉ)" read
+    # as "2)" (#94's question 02) - a lone mark after part letters that is
+    # not the next question's number is the next letter.
+    current, letter = None, None
+    for i, line in enumerate(lines):
+        head = re.match(r"^\s*(\d{1,2})\)", line)
+        # The next question, or question 1 starting the next paper's count.
+        if head and (current is None or int(head.group(1)) in (current + 1, 1)):
+            current, letter = int(head.group(1)), None
+            continue
+        part = re.match(r"^\s*([අ-ඖ])\)", line)
+        if part:
+            letter = part.group(1)
+            continue
+        lone = _LONE_MARK.match(line)
+        if (lone and letter in _SINHALA_LETTERS
+                and _SINHALA_LETTERS.index(letter) + 1 < len(_SINHALA_LETTERS)):
+            letter = _SINHALA_LETTERS[_SINHALA_LETTERS.index(letter) + 1]
+            lines[i] = _LONE_MARK.sub(rf"\1{letter})", line, count=1)
+
+    # Options numbered on one line - combination answers ("1. A පමණි 2. A
+    # හා B පමණි ...") and numeric ones ("1. 44 2. 60 ...").
+    for i, line in enumerate(lines):
+        combination = bool(_OPTION_NUMBER.match(line)) and line.count(_ONLY) >= 3
+        if combination:
+            for pattern, repl in _COMBINATION_FIXES:
+                line = pattern.sub(repl, line)
+            line = re.sub(r"[ \t]{2,}", " ", line)
+        if combination or _is_inline_option_line(line):
+            line = _inline_option_numbers(line)
+        lines[i] = line
+    return "\n".join(lines)
+
+
+_INLINE_FIRST = re.compile(r"^\s*1[.,]\s*")
+_INLINE_LOOKALIKE = re.compile(r"(?<!\S)[඀-෿][඀-෿‌‍]{0,2}\.(?=\s)")
+
+
+def _inline_number(k):
+    # "4," for "4.", or a stray letter stuck to it ("ර3.").
+    return re.compile(rf"(?<!\S)[඀-෿]{{0,2}}{k}[.,](?=\s|[A-C])")
+
+
+def _inline_option_numbers(line):
+    """"1. 40.67 2. 42.36 3. 39 4, 43.5 5. 41.25", "1. A පමණි 2, B පමණි ර. A
+    හා C ..." - options numbered on one line. Walked in order: the next
+    number in the count, written "4," or "ර3.", is "4." / "3."; a number
+    missing altogether is the one look-alike ("ර.") before the number
+    after it. Only ever the number expected next, so an option such as
+    "7, 21" keeps its comma."""
+    first = _INLINE_FIRST.match(line)
+    if not first:
+        return line
+    pos = first.end()
+    for k in range(2, 6):
+        hit = _inline_number(k).search(line, pos)
+        if not hit:
+            nxt = _inline_number(k + 1).search(line, pos)
+            hits = list(_INLINE_LOOKALIKE.finditer(line, pos, nxt.start() if nxt else len(line)))
+            if len(hits) != 1:
+                break
+            hit = hits[0]
+        line = line[:hit.start()] + f"{k}." + line[hit.end():]
+        pos = hit.start() + 2
+    return line
+
+
+def _is_inline_option_line(line):
+    return bool(_INLINE_FIRST.match(line)) and len(
+        re.findall(r"(?<!\S)[2-5][.,](?=\s|[A-C])", line)) >= 2
 
 
 # ---------------------------------------------------------------- tables
@@ -3922,6 +4174,10 @@ def extract(path, style=DEFAULT_SPLIT_STYLE, lang=DEFAULT_OCR_LANG, ocr=None,
     suffix = path.suffix.lower()
     if ocr is None:
         def ocr(image):
+            if lang == "sin":
+                # Both layouts, Sinhala+English, and the look-alikes repaired
+                # - see "Sinhala OCR".
+                return ocr_sinhala_page(image)
             text = ocr_image(image, lang=lang)
             # A dense typed page can come back nearly empty in the default layout
             # mode - try the uniform-block mode and keep whichever read more.

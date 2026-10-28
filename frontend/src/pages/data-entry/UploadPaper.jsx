@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
-import { OCR_LANGS, SPLIT_STYLES } from '../data-entry/paperOptions.js'
-import '../data-entry/PaperIntake.css'
+import { OCR_LANGS, SPLIT_STYLES } from './paperOptions.js'
+import './PaperIntake.css'
 
 // Adding a paper - an upload, or text read on a data-entry computer and
-// pasted in. Only on the admin side: whoever assigns papers adds them, then
-// gives each to a Data Entry Operator in the list below this form.
+// pasted in - at the top of data entry's Paper intake page.
 export default function UploadPaper({ onUploaded }) {
   const { Button, Notice, Icon } = window.EdSider
   const toast = useToast()

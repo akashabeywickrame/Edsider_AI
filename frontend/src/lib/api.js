@@ -186,6 +186,8 @@ export const api = {
   createDocumentFromText: (text, title, style) =>
     request('/intake/documents/from-text', { method: 'POST', body: { text, title: title || null, style } }),
   getIntakeDocument: (docId) => request(`/intake/documents/${docId}`),
+  // A paper uploaded by mistake - only while it is still Extracted.
+  deleteIntakeDocument: (docId) => request(`/intake/documents/${docId}`, { method: 'DELETE' }),
   // Many questions' marks in one request - [{question_id, marks}] - returns the paper's questions.
   setQuestionMarks: (docId, items) =>
     request(`/intake/documents/${docId}/marks`, { method: 'POST', body: { marks: items } }),
@@ -283,15 +285,6 @@ export const api = {
       body: { teacher_identities: teacherIdentities },
     }),
 
-  // ---- data entry assignment (administrators) ----
-  // Everyone who can sign in as a Data Entry Operator.
-  listOperators: () => request('/operators'),
-  // Gives a paper to one operator (null takes it off whoever has it).
-  assignOperator: (docId, operatorIdentity) =>
-    request(`/intake/documents/${docId}/operator`, {
-      method: 'POST',
-      body: { operator_identity: operatorIdentity || null },
-    }),
   // Everything that happened to a paper, oldest first.
   documentHistory: (docId) => request(`/intake/documents/${docId}/history`),
 }

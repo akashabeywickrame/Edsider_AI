@@ -10,12 +10,14 @@ import StatusPill from '../../components/StatusPill.jsx'
 import MarksSection from './MarksSection.jsx'
 import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
+import UploadPaper from './UploadPaper.jsx'
 import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import { SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
 
 const RAIL = [
+  { id: 'upload', icon: 'upload', label: 'Upload' },
   { id: 'paper', icon: 'paper', label: 'Questions' },
   { id: 'dup', icon: 'copy', label: 'Duplicate check' },
   { id: 'status', icon: 'check', label: 'Review status' },
@@ -459,14 +461,14 @@ export default function PaperIntake() {
           title="intake"
           subtitle={
             canUpload
-              ? 'Every uploaded paper. Papers are uploaded and given to a Data Entry Operator on Admin - Data entry; open one here to see or correct it.'
-              : 'The papers an administrator has given you. Correct each question the extractor read, tick it reviewed, then run the duplicate check to pass the paper on to a teacher.'
+              ? 'Upload a question paper - PDF, Word, or an image of one. Its questions are pulled out, corrected, and checked for repeats against themselves before any of it joins the bank.'
+              : 'Upload a question paper, or open one already uploaded. Correct each question the extractor read, tick it reviewed, run the duplicate check, then finish data entry to pass the paper on to its teachers.'
           }
         />
 
 
         {sentBack.length ? (
-          <Notice tone="warning" title={`${sentBack.length} paper${sentBack.length === 1 ? '' : 's'} sent back to you by a teacher`}>
+          <Notice tone="warning" title={`${sentBack.length} paper${sentBack.length === 1 ? '' : 's'} sent back by a teacher`}>
             Correct what the teacher commented on, mark each question reviewed, run the duplicate check,
             then finish data entry - the paper goes straight back to both of its teachers.
             <div className="es-row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
@@ -480,12 +482,23 @@ export default function PaperIntake() {
           </Notice>
         ) : null}
 
+        <UploadPaper
+          onUploaded={(d) => {
+            refreshList()
+            setSearchParams({ doc: String(d.id) })
+          }}
+        />
+
         <section id="paper" className="es-card" aria-label="Paper details" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <h2 className="scr-h2" style={{ margin: 0 }}>{canUpload ? 'Uploaded papers' : 'Your papers'}</h2>
           <PaperFinder
             selectedId={selectedId}
             onSelect={(id, opts) => setSearchParams({ doc: id }, opts)}
             refreshKey={listVersion}
+            onRemoved={(d) => {
+              if (String(d.id) === String(selectedId)) setSearchParams({})
+              toast.success(`#${d.id} ${d.paper_title || d.filename} removed.`)
+            }}
           />
           {doc ? (
             <div className="pi-paper__head">
@@ -514,8 +527,8 @@ export default function PaperIntake() {
           {!loading && !doc ? (
             <Notice tone="info">
               {canUpload
-                ? 'No paper is open. Choose one from the list above - new papers are uploaded on Admin - Data entry.'
-                : 'No paper is open. Choose one of the papers given to you from the list above.'}
+                ? 'No paper is open. Choose one from the list above, or upload a new paper.'
+                : 'No paper is open. Choose one from the list above, or upload a new paper.'}
             </Notice>
           ) : null}
 

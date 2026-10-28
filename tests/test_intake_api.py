@@ -352,6 +352,37 @@ def test_check_duplicates_marks_the_document_checked(document):
     assert doc.id in {d.id for d in list_documents(status="checked")}
 
 
+def test_a_paper_uploaded_by_mistake_is_removed_with_its_file(document):
+    """Asked for: remove an upload from the list - only while it is still
+    Extracted; any other has moved on to the bank, its teachers or EdSider."""
+    from src import files
+    with store.connect() as conn:
+        path = conn.execute("SELECT file_path FROM intake.document_file WHERE document_id = ?",
+                            (document.id,)).fetchone()["file_path"]
+    assert path and files.get(path)
+
+    service.remove_document(document.id)
+    with store.connect() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM intake.question WHERE document_id = ?",
+                            (document.id,)).fetchone()["n"] == 0
+    assert files.get(path) is None
+    with pytest.raises(HTTPException) as err:
+        get_document(document.id)
+    assert err.value.status_code == 404
+    with pytest.raises(HTTPException) as err:
+        service.remove_document(document.id)
+    assert err.value.status_code == 404
+
+
+def test_a_paper_that_has_moved_on_is_not_removed(document):
+    with store.connect() as conn:
+        store.set_document_status(conn, document.id, "checked")
+    with pytest.raises(HTTPException) as err:
+        service.remove_document(document.id)
+    assert err.value.status_code == 409
+    assert get_document(document.id).status == "checked"
+
+
 def test_a_paper_both_teachers_finished_is_not_checked_or_flagged_again(document):
     """Asked for: once a paper is ready to publish its review is over, so a
     duplicate check or a repeat flag has nothing left to change."""

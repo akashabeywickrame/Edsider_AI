@@ -5,6 +5,7 @@ import { AuthImg } from '../../lib/useFileUrl.jsx'
 import Pictures from '../../components/Pictures.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { joinSoftBreaks } from '../../lib/text.js'
+import { shownNumber } from '../../lib/numbers.js'
 import PaperSummary from '../../components/PaperSummary.jsx'
 import { groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
@@ -32,7 +33,7 @@ function QuestionBody({ q, images, depth, hasParts, marks, showAnswers }) {
   const isMcq = q.question_type === 'mcq' && choices.length > 0
   const blanks = q.blanks || []
   const isFillBlank = q.question_type === 'fill_blank' && blanks.length > 0
-  const number = q.question_number || `Q${q.seq}`
+  const number = shownNumber(q)
 
   return (
     <div className="pi-preview__q" style={{ marginLeft: depth * 28 }}>

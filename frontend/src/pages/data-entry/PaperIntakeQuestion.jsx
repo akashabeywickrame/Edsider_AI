@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
+import { shownNumber } from '../../lib/numbers.js'
 import RichEditor from '../../components/RichEditor.jsx'
 import QuestionHistory from '../../components/QuestionHistory.jsx'
 import { useToast } from '../../components/Toast.jsx'
@@ -504,6 +505,9 @@ export default function PaperIntakeQuestion({
   }
 
   const label = q.question_number ? `Question ${q.question_number}` : `Question ${q.seq}`
+  // As the paper prints it: "Question 5", then its parts "a" and "i",
+  // each indented under the one it belongs to.
+  const heading = (q.depth || 0) > 0 ? shownNumber(q) : `Question ${shownNumber(q)}`
   const answerImages = (images || []).filter((i) => i.slot === 'answer')
   const detectedOptions = q.mcq?.options || []
   // Every option a student could see as correct, read from the stored answer.
@@ -538,10 +542,11 @@ export default function PaperIntakeQuestion({
   return (
     <article
       className={`es-card es-draft${isStem ? ' es-draft--stem' : ''}${q.depth > 0 ? ' pi-part' : ''}`}
+      style={{ marginLeft: (q.depth || 0) * 30 }}
       aria-label={label}
     >
       <div className="es-draft__head">
-        <span className="pi-label">{label}</span>
+        <span className="pi-label">{heading}</span>
         {q.extraction_confidence === 'low' ? (
           <span className="es-pill es-tone--review">Low-confidence read</span>
         ) : null}

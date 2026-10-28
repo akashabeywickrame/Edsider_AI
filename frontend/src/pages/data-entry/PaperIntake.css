@@ -46,7 +46,8 @@
 
 .pi-parthead { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 14px 0 6px; border-bottom: 2px solid var(--primary); }
 .pi-label { font: 700 16px/22px var(--font-heading); color: var(--primary); }
-.pi-part { margin-left: 30px; }
+/* Each part sits 30px further in than the one it belongs to - set on
+   the card from its depth. */
 
 /* .es-mcq__opt is a plain div in bundle.css (read-only display) that
    already sets display:flex/gap/border/padding - reused as-is here, an

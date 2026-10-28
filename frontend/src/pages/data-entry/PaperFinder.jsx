@@ -18,7 +18,7 @@ function withCount(label, n) {
   return n != null ? `${label} (${n})` : label
 }
 
-export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
+export default function PaperFinder({ selectedId, onSelect, refreshKey, onRemoved }) {
   const { Button, Notice } = window.EdSider
   const [status, setStatus] = useState('')
   const [subject, setSubject] = useState('')
@@ -29,6 +29,8 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [removing, setRemoving] = useState(null)
+  const [reload, setReload] = useState(0)
 
   // Search as the person types, once they pause.
   useEffect(() => {
@@ -57,12 +59,30 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, subject, grade, search, page, refreshKey])
+  }, [status, subject, grade, search, page, refreshKey, reload])
 
   const facets = result?.facets || { status: {}, subject: {}, grade: {} }
   const total = result?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE))
   const filtered = Boolean(status || subject || grade || search)
+
+  // An upload made by mistake goes while it is still Extracted - after
+  // that it has moved on (the API refuses it too).
+  async function remove(d) {
+    const name = d.paper_title || d.filename
+    if (!window.confirm(`Remove #${d.id} ${name}? Its questions, pictures and file are deleted. This cannot be undone.`)) return
+    setRemoving(d.id)
+    setError(null)
+    try {
+      await api.deleteIntakeDocument(d.id)
+      setReload((n) => n + 1)
+      if (onRemoved) onRemoved(d)
+    } catch (err) {
+      setError(`Not removed: ${err.message}`)
+    } finally {
+      setRemoving(null)
+    }
+  }
 
   function change(setter) {
     return (e) => {
@@ -159,22 +179,22 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
         {(result?.items || []).map((d) => {
           const active = String(d.id) === String(selectedId)
           return (
+            <div key={d.id} role="listitem" style={{ display: 'flex', alignItems: 'center',
+              borderBottom: '1px solid var(--border-soft)', background: active ? 'var(--surface-sunk)' : 'transparent' }}>
             <button
-              key={d.id}
               type="button"
-              role="listitem"
               aria-current={active ? 'true' : undefined}
               onClick={() => onSelect(String(d.id))}
               style={{
                 display: 'flex',
-                width: '100%',
+                flex: 1,
+                minWidth: 0,
                 gap: 12,
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 padding: '10px 14px',
                 border: 'none',
-                borderBottom: '1px solid var(--border-soft)',
-                background: active ? 'var(--surface-sunk)' : 'transparent',
+                background: 'transparent',
                 textAlign: 'left',
                 cursor: 'pointer',
                 font: 'inherit',
@@ -193,6 +213,13 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey }) {
               </span>
               <StatusPill status={d.status} />
             </button>
+            {d.status === 'extracted' && !d.archived_at ? (
+              <Button variant="ghost" size="sm" onClick={() => remove(d)} disabled={removing !== null}
+                aria-label={`Remove paper ${d.id}`} style={{ marginRight: 10 }}>
+                {removing === d.id ? 'Removing...' : 'Remove'}
+              </Button>
+            ) : null}
+            </div>
           )
         })}
         {result && !result.items.length ? (

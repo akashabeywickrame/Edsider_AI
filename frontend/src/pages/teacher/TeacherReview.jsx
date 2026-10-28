@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
 import { devIdentity, isDevAuth, setDevIdentity } from '../../lib/auth.js'
 import { joinSoftBreaks } from '../../lib/text.js'
+import { shownNumber } from '../../lib/numbers.js'
 import { useToast } from '../../components/Toast.jsx'
 import PaperSummary from '../../components/PaperSummary.jsx'
 import OriginalPaper from './OriginalPaper.jsx'
@@ -372,7 +373,9 @@ export default function TeacherReview() {
               aria-label={`${labelOf(q)} review`}
             >
               <div className="tr-q__head">
-                <h2 className="scr-h2 tr-q__label">{labelOf(q)}</h2>
+                <h2 className="scr-h2 tr-q__label">
+                  {depth > 0 ? shownNumber(q) : `Question ${shownNumber(q)}`}
+                </h2>
                 <span className="tr-q__marks">{q.marks != null ? `${q.marks} ${q.marks === 1 ? 'mark' : 'marks'}` : 'Marks not set'}</span>
               </div>
 

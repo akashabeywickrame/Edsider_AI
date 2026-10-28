@@ -186,8 +186,10 @@ def test_edsider_data_entry_operators_sign_in_and_fill_the_dropdown(local_db):
     assert sync_teachers(pg) == 1
     assert "'DEOP'" in pg.cur.sql
     assert service.current_user("Op@Gmail.com")["role"] == "employee"
-    assert [(o.identity, o.positions, o.source) for o in service.list_operators()] == [
-        ("op@gmail.com", "Assessor, Data Entry Operator", "edsider")]
+    with store.connect() as conn:
+        operators = [(o["identity"], o["positions"], o["source"])
+                     for o in store.assignable_operators(conn)]
+    assert operators == [("op@gmail.com", "Assessor, Data Entry Operator", "edsider")]
     with store.connect() as conn:
         row = store.lookup_staff(conn, "op@gmail.com")
     assert (row["edsider_user_id"], row["edsider_staff_id"]) == (317, 281)
@@ -195,7 +197,8 @@ def test_edsider_data_entry_operators_sign_in_and_fill_the_dropdown(local_db):
     # No longer an operator in EdSider: out of the dropdown, cannot sign in.
     sync_teachers(_FakePg([{"email": "t1@gmail.com", "name": "Tea One", "roles": ["TEACH"],
                             "positions": ["TEACH|Teacher"]}]))
-    assert service.list_operators() == []
+    with store.connect() as conn:
+        assert store.assignable_operators(conn) == []
     with pytest.raises(HTTPException):
         current_identity("op@gmail.com")
     assert _staff("op@gmail.com").positions is None

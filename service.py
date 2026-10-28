@@ -421,10 +421,10 @@ _PASSED_ON = {"data_entry_done", "teacher_review", "review_done", "ready_to_publ
 
 def paper_access(request: Request, user: dict = Depends(current_user)):
     """The paper-level rule, on every route that names a paper, a question
-    or a picture in its path: a Data Entry Operator works only on the
-    papers an administrator assigned to them, and not while a teacher has
-    one; a teacher opens only the papers assigned to them, and changes one
-    only while their review is open. Admins and a local run reach every
+    or a picture in its path: a Data Entry Operator works on any paper
+    still with data entry - papers are not given to one operator - and not
+    while a teacher has it; a teacher opens only the papers assigned to
+    them, and changes one only while their review is open. Admins and a local run reach every
     paper. Resolved from the path, so a paper cannot be reached by
     guessing its number."""
     role = user["role"]
@@ -446,8 +446,6 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
     if role in (None, "admin", "superadmin"):
         return user
     if role == "employee":
-        if held["operator"] != user["identity"]:
-            raise HTTPException(403, "This paper is not assigned to you.")
         if writing and held["status"] in _PASSED_ON:
             raise HTTPException(409, "This paper has been passed on from data entry - it can "
                                      "be changed again if a teacher sends it back.")
@@ -491,11 +489,10 @@ def _is_teacher(user):
 
 
 def _own_papers(user):
-    """(operator, teacher) a paper list is narrowed to: a Data Entry
-    Operator sees only their own papers, a teacher only theirs."""
+    """(operator, teacher) a paper list is narrowed to: a teacher sees only
+    their own papers; Data Entry Operators see every paper, since papers
+    are not given to one of them."""
     role = user.get("role") if isinstance(user, dict) else None
-    if role == "employee":
-        return user["identity"], None
     if role == "teacher":
         return None, user["identity"]
     return None, None
@@ -1047,21 +1044,6 @@ class AssignIn(BaseModel):
     teacher_identities: List[str] = Field(..., min_length=2, max_length=2)
 
 
-class OperatorOut(BaseModel):
-    identity: str
-    display_name: Optional[str] = None
-    # Their EdSider positions ("Assessor, Data Entry Operator"), if synced.
-    positions: Optional[str] = None
-    # 'edsider' - a Data Entry Operator in EdSider; 'added_here' - made one
-    # by a superadmin on Manage users.
-    source: Optional[str] = None
-
-
-class OperatorAssignIn(BaseModel):
-    # null takes the paper off whoever has it.
-    operator_identity: Optional[str] = None
-
-
 class HistoryOut(BaseModel):
     action: str
     stage: Optional[str] = None
@@ -1245,7 +1227,7 @@ def search_documents(status: Optional[str] = None, subject: Optional[str] = None
 
 
 @app.post("/intake/documents", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(ADMIN)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def upload_document(
     file: UploadFile = File(...),
     lang: str = Form(intake_extract.DEFAULT_OCR_LANG),
@@ -1300,7 +1282,7 @@ def upload_document(
 
 
 @app.post("/intake/documents/from-text", response_model=IntakeDocumentDetail,
-         dependencies=[Depends(require_api_key), Depends(ADMIN)])
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE)])
 def create_document_from_text(body: PastedPaperIn,
                               identity: str = Depends(current_identity)):
     """A paper whose text was read somewhere else - the local OCR tool on
@@ -1646,6 +1628,10 @@ def finish_data_entry(doc_id: int, identity: str = Depends(current_identity)):
             raise HTTPException(
                 409, "Run the duplicate check on the corrected paper first - every question "
                      "reviewed - then finish it.")
+        if who and doc["operator"] != who:
+            # Papers are not given to one operator: whoever finishes data
+            # entry did it, and EdSider's operation row names them.
+            store.assign_review(conn, doc_id, "data_entry", who, assigned_by=who)
         try:
             store.sync_paper_to_bank(conn, doc_id, actor=who)
         except ValueError as e:
@@ -1703,34 +1689,6 @@ def assign_document(doc_id: int, body: AssignIn,
                         "and has never opened the teacher app here.")
         store.assign_teachers(conn, doc_id, [known[t.lower()] for t in asked],
                               assigned_by=_actor(identity))
-        doc = store.get_intake_document(conn, doc_id)
-    return _document_out(doc, detail=True)
-
-
-@app.get("/operators", response_model=List[OperatorOut],
-         dependencies=[Depends(require_api_key), Depends(ADMIN)])
-def list_operators():
-    """Who a paper can be given to for data entry - every Data Entry
-    Operator (role 'employee') who may sign in now."""
-    with store.connect() as conn:
-        return [OperatorOut(**dict(r)) for r in store.assignable_operators(conn)]
-
-
-@app.post("/intake/documents/{doc_id}/operator", response_model=IntakeDocumentDetail,
-          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
-def assign_operator(doc_id: int, body: OperatorAssignIn,
-                    identity: str = Depends(current_identity)):
-    """The administrator giving a paper to a Data Entry Operator - from
-    then on only they (and admins) can open and correct it. Giving it to
-    someone else takes it off the previous person; null takes it off
-    everyone. Their earlier assignments stay in the paper's history."""
-    who = (body.operator_identity or "").strip().lower() or None
-    with store.connect() as conn:
-        _require_document(conn, doc_id)
-        if who and who not in {o["identity"] for o in store.assignable_operators(conn)}:
-            raise HTTPException(
-                404, f"{who!r} is not a Data Entry Operator - add them on Manage users first.")
-        store.assign_review(conn, doc_id, "data_entry", who, assigned_by=_actor(identity))
         doc = store.get_intake_document(conn, doc_id)
     return _document_out(doc, detail=True)
 
@@ -2134,6 +2092,23 @@ def set_question_marks(doc_id: int, body: MarksBulkIn,
         qs = store.intake_questions(conn, doc_id)
         parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
     return [_question_out(q, has_parts=q["seq"] in parent_seqs) for q in qs]
+
+
+@app.delete("/intake/documents/{doc_id}", status_code=204,
+            dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def remove_document(doc_id: int):
+    """A paper uploaded by mistake, removed with its questions, pictures and
+    file - only while it is still 'extracted' (store.delete_intake_document);
+    one that has moved on is a 409."""
+    with store.connect() as conn:
+        try:
+            paths = store.delete_intake_document(conn, doc_id)
+        except KeyError:
+            raise HTTPException(404, f"No paper #{doc_id}.")
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+    # Committed: only now do the files go.
+    store.delete_stored_files(paths)
 
 
 @app.delete("/intake/questions/{q_id}", status_code=204,

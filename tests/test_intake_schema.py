@@ -169,42 +169,30 @@ def call(client, who, method, path, **kw):
     return client.request(method, path, headers={WHO: who}, **kw)
 
 
-def test_only_an_administrator_uploads_and_only_the_assigned_operator_works(client):
+def test_data_entry_adds_papers_and_every_operator_works_on_them(client):
+    """Asked for: papers are not given to one Data Entry Operator, and data
+    entry adds them - the admin only assigns teachers."""
     paste = {"text": PAPER_TEXT, "title": "GIT Gr12"}
-    assert call(client, OP1, "POST", "/intake/documents/from-text", json=paste).status_code == 403
-    doc = call(client, ADMIN, "POST", "/intake/documents/from-text", json=paste).json()
+    assert call(client, TEACHER, "POST", "/intake/documents/from-text", json=paste).status_code == 403
+    doc = call(client, OP1, "POST", "/intake/documents/from-text", json=paste).json()
     path = f"/intake/documents/{doc['id']}"
 
-    # Nobody's yet: no operator can open it, and it shows as unassigned.
-    assert call(client, OP1, "GET", path).status_code == 403
-    unassigned = call(client, ADMIN, "GET", "/intake/documents/search?operator=none").json()
-    assert [d["id"] for d in unassigned["items"]] == [doc["id"]]
-    assert call(client, ADMIN, "POST", f"{path}/operator",
-                json={"operator_identity": TEACHER}).status_code == 404
-
-    given = call(client, ADMIN, "POST", f"{path}/operator", json={"operator_identity": OP1})
-    assert given.json()["operator"] == OP1
-    assert call(client, OP1, "GET", path).status_code == 200
-    assert call(client, OP2, "GET", path).status_code == 403
+    for op in (OP1, OP2):
+        assert call(client, op, "GET", path).status_code == 200
+        assert call(client, op, "GET", "/intake/documents/search").json()["total"] == 1
     q = call(client, OP1, "GET", f"{path}/questions").json()[0]
     assert call(client, OP2, "PATCH", f"/intake/questions/{q['id']}",
-                json={"reviewed": True}).status_code == 403
-    assert call(client, OP1, "GET", "/intake/documents/search").json()["total"] == 1
-    assert call(client, OP2, "GET", "/intake/documents/search").json()["total"] == 0
-    # Asking for someone else's papers still shows only their own.
-    assert call(client, OP2, "GET", f"/intake/documents/search?operator={OP1}").json()["total"] == 0
-
-    # Reassigned: the first operator loses it.
-    call(client, ADMIN, "POST", f"{path}/operator", json={"operator_identity": OP2})
-    assert call(client, OP1, "GET", path).status_code == 403
-    assert call(client, OP2, "GET", path).status_code == 200
+                json={"reviewed": True}).status_code == 200
+    # Teachers still see only the papers given to them.
+    assert call(client, TEACHER, "GET", path).status_code == 403
+    assert call(client, ADMIN, "POST", f"{path}/operator",
+                json={"operator_identity": OP1}).status_code in (404, 405)
 
 
 def test_a_paper_goes_operator_teacher_and_back(client):
     doc = call(client, ADMIN, "POST", "/intake/documents/from-text",
                json={"text": PAPER_TEXT, "title": "GIT Gr12"}).json()
     path = f"/intake/documents/{doc['id']}"
-    call(client, ADMIN, "POST", f"{path}/operator", json={"operator_identity": OP1})
     qs = call(client, OP1, "GET", f"{path}/questions").json()
     for q in qs:
         assert call(client, OP1, "PATCH", f"/intake/questions/{q['id']}",
@@ -262,11 +250,12 @@ def test_a_paper_goes_operator_teacher_and_back(client):
 
     history = call(client, ADMIN, "GET", f"{path}/history").json()
     actions = [(h["action"], h.get("stage")) for h in history]
+    # Whoever finished data entry is recorded as its operator.
     assert actions[:9] == [
-        ("uploaded", None), ("assigned", "data_entry"), ("status", None),
+        ("uploaded", None), ("status", None), ("assigned", "data_entry"),
         ("copied to the question bank", None), ("finished", "data_entry"), ("status", None),
         ("assigned", "teacher"), ("assigned", "teacher"), ("status", None)]
-    assert history[0]["actor"] == ADMIN and history[1]["assigned_to"] == OP1
+    assert history[0]["actor"] == ADMIN and history[2]["assigned_to"] == OP1
     assert {h["assigned_to"] for h in history if h["action"] == "assigned"
             and h.get("stage") == "teacher"} == {TEACHER, TEACHER2}
 
