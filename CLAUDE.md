@@ -2056,12 +2056,13 @@ A paper is, in write order: `assessment.assessment` (1 row),
 `question.question` (a question's parts before the question),
 `assessment_question` (one link per question row: `question_number` per
 section, `mark_allocation`), `assessment_operation` (+ its log) and
-`assessment_review_new`. Measured rules:
+`assessment_review` (`assessment_review_new` until EdSider renamed it -
+see "Publishing in EdSider" below). Measured rules:
 - People are named two ways. The paper's `created_by` /
   `assessment_admin`, the schedule's `scheduled_by`, the assessor row and
   every link's `added_by` use `staff_user.user_id` as text ("314",
   "CASS314"); `assessment_operation.employee_id` / `assign_by`,
-  `assessment_review_new.teacher_id` / `assign_by` and
+  `assessment_review.teacher_id` / `assign_by` and
   `question.passage.created_by` use `registration.teacher.user_id`
   (= `staff_user.staff_id`) - EdSider's own models join them that way.
 - `assessment_state` (an enum) and `status_id` are set together and
@@ -2315,6 +2316,20 @@ EdSider's own screens. Still open: whether a question our duplicate check found 
 EdSider's bank should be linked instead of copied, and a read-only check
 after sending that the paper opens in EdSider's own screens.
 
+
+**Publishing in EdSider - the reviewers' table was renamed.** ASMNT2159
+(our demo paper) arrived fine, but EdSider's own Publish button returned
+a 500 on the pre-prod copy: its `update_assessment_status` route sets the
+paper's status, then the same status on `assessment.assessment_review` -
+and the copy has no such table. EdSider renamed `assessment_review_new` to
+`assessment_review` in code (its commit 70ed7a63, 2026-09-07) with no
+migration in the repo, the table renamed by hand on its own databases; the
+copy was made before that. Any paper failed to publish there, not only
+ours. `send._review_table()` now writes the reviewers to whichever name the
+database has (`to_regclass`), so a send works before and after the copy is
+renamed, and on EdSider's real databases. Same as the two
+`assessment_part` columns the copy lacked: EdSider's team should know
+their copy is behind.
 
 
 ## A paper's way into the question bank - copied, reviewed, then archived

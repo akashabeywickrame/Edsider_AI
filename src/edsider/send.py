@@ -54,6 +54,18 @@ def _insert(cur, table, row, returning=None):
     return cur.fetchone()[0] if returning else None
 
 
+def _review_table(cur):
+    """Where EdSider keeps a paper's reviewers. EdSider renamed
+    assessment_review_new to assessment_review (its commit 70ed7a63,
+    2026-09-07) in code, with the table renamed by hand; a database copied
+    before that still has the old name. Its publish route updates
+    assessment_review, so a paper sent to a database with the new name must
+    be reviewed there."""
+    cur.execute("SELECT to_regclass('assessment.assessment_review') IS NOT NULL")
+    return ("assessment.assessment_review" if cur.fetchone()[0]
+            else "assessment.assessment_review_new")
+
+
 def write_package(pg, package):
     """Every row of `package` into EdSider, through connection `pg` (not
     committed). Returns {"assessment_id", "questions": {our question id:
@@ -128,9 +140,11 @@ def write_package(pg, package):
     if package.get("operation"):
         _insert(cur, "assessment.assessment_operation",
                 dict(package["operation"], asmnt_id=aid, created_at=now, updated_at=now))
-    for review in package.get("reviews") or []:
-        _insert(cur, "assessment.assessment_review_new",
-                dict(review, asmnt_id=aid, created_at=now, updated_at=now))
+    reviews = package.get("reviews") or []
+    if reviews:
+        table = _review_table(cur)
+        for review in reviews:
+            _insert(cur, table, dict(review, asmnt_id=aid, created_at=now, updated_at=now))
     cur.close()
     return {"assessment_id": aid, "questions": ours, "links": len(package["links"]),
             "passages": len(passages)}

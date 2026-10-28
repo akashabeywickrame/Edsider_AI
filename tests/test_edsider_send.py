@@ -25,10 +25,13 @@ TWO_TEACHERS = dict(PEOPLE, teachers=[
 
 class FakeEdsider:
     """Records each INSERT as (table, {column: value}); RETURNING gets the
-    next id. `fail_on` names a table whose insert raises."""
+    next id. `fail_on` names a table whose insert raises. `renamed` is
+    whether the reviewers' table has EdSider's current name,
+    assessment_review, or the one older copies keep, assessment_review_new."""
 
-    def __init__(self, fail_on=None, titles=()):
+    def __init__(self, fail_on=None, titles=(), renamed=True):
         self.rows, self.next_id, self.fail_on = [], 1000, fail_on
+        self.renamed = renamed
         self.titles = {t.lower(): i for i, t in enumerate(titles, 1)}
         self.committed = self.rolled_back = self.closed = False
 
@@ -44,6 +47,8 @@ class FakeEdsider:
             self._result = (found,) if found else None
         elif "assessment_term_condition" in sql:
             self._result = ("<p>Terms</p>",)
+        elif "to_regclass('assessment.assessment_review')" in sql:
+            self._result = (self.renamed,)
         elif sql.startswith("INSERT INTO"):
             table = sql.split()[2]
             if table == self.fail_on:
@@ -84,7 +89,7 @@ def test_a_paper_is_written_in_edsiders_order_with_edsiders_ids():
                      "assessment.assessment_assessor", "assessment.assessment_part",
                      "assessment.assessment_part_section", "question.passage",
                      "question.question", "assessment.assessment_question",
-                     "assessment.assessment_operation", "assessment.assessment_review_new"]
+                     "assessment.assessment_operation", "assessment.assessment_review"]
     paper, = edsider.table("assessment.assessment")
     assert (paper["assessment_state"], paper["status_id"]) == ("ReadyToPublish", 11)
     assert paper["terms_content"] == "<p>Terms</p>" and paper["created_by"] == "314"
@@ -102,8 +107,18 @@ def test_a_paper_is_written_in_edsiders_order_with_edsiders_ids():
     assert not any(k in r for r in questions for k in ("key", "sub_question_keys", "passage_key"))
 
     # Both teachers are recorded as having reviewed it.
-    assert [r["teacher_id"] for r in edsider.table("assessment.assessment_review_new")] == [256, 288]
+    assert [r["teacher_id"] for r in edsider.table("assessment.assessment_review")] == [256, 288]
     assert not edsider.committed            # the caller commits
+
+
+def test_reviewers_go_to_the_old_table_on_a_database_copied_before_the_rename():
+    """EdSider renamed assessment_review_new to assessment_review; its
+    pre-prod copy kept the old name, and its publish route reads the new
+    one - so each database is written under the name it has."""
+    edsider = FakeEdsider(renamed=False)
+    send.write_package(edsider, _package())
+    assert edsider.table("assessment.assessment_review") == []
+    assert [r["teacher_id"] for r in edsider.table("assessment.assessment_review_new")] == [256, 288]
 
 
 def test_a_title_edsider_already_has_is_refused_before_writing():
