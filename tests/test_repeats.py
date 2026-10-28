@@ -111,15 +111,49 @@ def test_a_flagged_repeat_is_replaced_and_its_old_version_kept(client, paper):
     assert "Q3 flagged as a repeat of Q1" in log and "Q3 replaced with a new question" in log
 
 
-def test_a_teacher_may_keep_a_flagged_question_saying_why(client, paper):
+def test_the_owner_teacher_may_keep_a_flagged_question_saying_why(client, paper):
     doc_id, (q1, _q2, q3) = paper
     call(client, OP, "POST", f"/intake/questions/{q3}/flag", json={"repeat_of": q1})
     _with_teachers(client, doc_id)
-    assert call(client, T2, "POST", f"/intake/questions/{q3}/keep", json={"note": ""}).status_code == 422
-    kept = call(client, T2, "POST", f"/intake/questions/{q3}/keep",
+    assert call(client, T1, "POST", f"/intake/questions/{q3}/keep", json={"note": ""}).status_code == 422
+    kept = call(client, T1, "POST", f"/intake/questions/{q3}/keep",
                 json={"note": "Asked again on purpose, in Part II."}).json()
     assert kept["repeat"]["status"] == "kept" and kept["text"] == "Define the term system."
     assert kept["revisions"] == 0
+
+
+def test_the_owner_settles_repeats_and_the_syllabus_checker_only_checks(client, paper):
+    """Asked for: the paper's owner teacher (the first assigned) answers the
+    repeats; the overall checking teacher checks the syllabus and comments."""
+    doc_id, (q1, _q2, q3) = paper
+    call(client, OP, "POST", f"/intake/questions/{q3}/flag", json={"repeat_of": q1})
+    _with_teachers(client, doc_id)
+    doc = call(client, ADMIN, "GET", f"/intake/documents/{doc_id}").json()
+    assert doc["teacher_owner"] == T1 and doc["teachers"] == [T1, T2]
+
+    for action, body in (("replace", {"text": "Explain feedback."}), ("keep", {"note": "On purpose."})):
+        refused = call(client, T2, "POST", f"/intake/questions/{q3}/{action}", json=body)
+        assert refused.status_code == 403 and "owner teacher" in refused.json()["detail"]
+    assert call(client, T2, "POST", f"/intake/questions/{q3}/comments",
+                json={"comment": "Out of the Grade 12 syllabus."}).status_code in (200, 201)
+
+    # The checker's sign-off does not wait on the repeat; the owner's does.
+    assert call(client, T2, "POST", f"/intake/documents/{doc_id}/finish",
+                json={"status": "review_done"}).status_code == 200
+    assert call(client, T1, "POST", f"/intake/documents/{doc_id}/finish",
+                json={"status": "review_done"}).status_code == 409
+    call(client, T1, "POST", f"/intake/questions/{q3}/keep", json={"note": "Asked again on purpose."})
+    done = call(client, T1, "POST", f"/intake/documents/{doc_id}/finish", json={"status": "review_done"})
+    assert done.json()["status"] == "ready_to_publish"
+
+
+def test_reassigning_swaps_owner_and_checker(client, paper):
+    doc_id, _ids = paper
+    _with_teachers(client, doc_id)
+    call(client, ADMIN, "POST", f"/intake/documents/{doc_id}/assign",
+         json={"teacher_identities": [T2, T1]})
+    doc = call(client, ADMIN, "GET", f"/intake/documents/{doc_id}").json()
+    assert (doc["teacher_owner"], doc["teachers"]) == (T2, [T2, T1])
 
 
 def test_only_data_entry_flags_and_only_a_teacher_replaces(client, paper):

@@ -54,6 +54,30 @@ function PictureSettings({ im, slots, onSave, disabled }) {
   )
 }
 
+// The pictures that belong in one place on the card - under the question,
+// inside an option, under the answer - shown there, as the student will see
+// them, each with its label, where it belongs, and Remove.
+function SlotPictures({ items, alt, slots, onSave, onRemove, disabled, className = '' }) {
+  const { Button } = window.EdSider
+  if (!items.length) return null
+  return (
+    <div className={`pi-imgs ${className}`}>
+      {items.map((im) => (
+        <figure className="pi-img" key={im.id}>
+          {im.label ? <figcaption className="pi-img__slot">{im.label}</figcaption> : null}
+          <div className="pi-img__pic">
+            <AuthImg path={api.imagePath(im.id)} alt={alt} />
+          </div>
+          <PictureSettings im={im} slots={slots} onSave={onSave} disabled={disabled} />
+          <Button variant="ghost" size="sm" onClick={() => onRemove(im.id)} disabled={disabled}>
+            Remove picture
+          </Button>
+        </figure>
+      ))}
+    </div>
+  )
+}
+
 // Every label an answer names - "1, 3" -> ["1", "3"], "A/C" -> ["a", "c"] -
 // each read the same way bareLabel() reads one.
 function answerLabels(answer) {
@@ -480,7 +504,6 @@ export default function PaperIntakeQuestion({
   }
 
   const label = q.question_number ? `Question ${q.question_number}` : `Question ${q.seq}`
-  const imgCount = (images || []).length
   const answerImages = (images || []).filter((i) => i.slot === 'answer')
   const detectedOptions = q.mcq?.options || []
   // Every option a student could see as correct, read from the stored answer.
@@ -497,6 +520,20 @@ export default function PaperIntakeQuestion({
       ? detectedOptions.map((o) => `option:${o.label}`)
       : Array.from({ length: manualOptionCount }, (_, i) => `option:${i + 1}`)
   const slotChoices = ['question', 'answer', ...optionSlots]
+  const inSlot = (s) => (images || []).filter((i) => i.slot === s)
+  const questionImages = inSlot('question')
+  // An option picture shows inside its option; one naming an option the
+  // card does not show (options not split yet) has no place, so it is
+  // listed under "Add a picture" until it is moved.
+  const shownOptionSlots = new Set(
+    draftOptions.length > 0
+      ? draftOptions.filter((o) => o.label).map((o) => `option:${o.label}`)
+      : manualLabels.map((n) => `option:${n}`),
+  )
+  const unplaced = (images || []).filter(
+    (i) => i.slot !== 'question' && i.slot !== 'answer' && !shownOptionSlots.has(i.slot),
+  )
+  const picProps = { slots: slotChoices, onSave: handleImageEdit, onRemove: handleRemoveImage, disabled: imgBusy }
 
   return (
     <article
@@ -598,6 +635,8 @@ export default function PaperIntakeQuestion({
           ariaLabel={`${label} text`}
         />
       )}
+      {/* A table or figure of the question shows straight after its text. */}
+      <SlotPictures items={questionImages} alt={`Picture for ${label}`} {...picProps} />
 
       {draftOptions.length > 0 ? (
         <div className="es-field">
@@ -646,6 +685,10 @@ export default function PaperIntakeQuestion({
                   >
                     Remove
                   </button>
+                  {o.label ? (
+                    <SlotPictures items={inSlot(`option:${o.label}`)} alt={`${label} option ${key}`}
+                      className="pi-mcq__pics" {...picProps} />
+                  ) : null}
                 </div>
               )
             })}
@@ -693,7 +736,7 @@ export default function PaperIntakeQuestion({
           {manualOptionCount > 0 ? (
             <>
               <p className="es-caption" style={{ marginTop: 10 }}>
-                Attach each option's picture below under Images, then mark the correct one here.
+                Attach each option's picture below under "Add a picture" - it shows inside its option - then mark the correct one here.
               </p>
               <div className="es-mcq pi-mcq">
                 {manualLabels.map((n) => {
@@ -714,6 +757,8 @@ export default function PaperIntakeQuestion({
                       >
                         {isCorrect ? 'Unmark' : 'Mark correct'}
                       </button>
+                      <SlotPictures items={inSlot(`option:${n}`)} alt={`${label} option ${n}`}
+                        className="pi-mcq__pics" {...picProps} />
                     </div>
                   )
                 })}
@@ -788,22 +833,7 @@ export default function PaperIntakeQuestion({
           />
           {/* A table or a picture of the answer - shown here too, so the
               reviewer sees exactly what the student's marking scheme will hold. */}
-          {answerImages.length > 0 ? (
-            <div className="pi-imgs">
-              {answerImages.map((im) => (
-                <figure className="pi-img" key={im.id}>
-                  <figcaption className="pi-img__slot">Answer picture</figcaption>
-                  <div className="pi-img__pic">
-                    <AuthImg path={api.imagePath(im.id)} alt={`Answer picture for ${label}`} />
-                  </div>
-                  <PictureSettings im={im} slots={slotChoices} onSave={handleImageEdit} disabled={imgBusy} />
-                  <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
-                    Remove picture
-                  </Button>
-                </figure>
-              ))}
-            </div>
-          ) : null}
+          <SlotPictures items={answerImages} alt={`Answer picture for ${label}`} {...picProps} />
         </div>
       ) : null}
 
@@ -813,26 +843,18 @@ export default function PaperIntakeQuestion({
         aria-expanded={imagesOpen}
         onClick={() => setImagesOpen((v) => !v)}
       >
-        {`Images (${imgCount})`}
+        {unplaced.length ? `Add a picture - ${unplaced.length} not placed` : 'Add a picture'}
         <span className="pi-exp__chev">{imagesOpen ? 'Hide' : 'Show'}</span>
       </button>
       {imagesOpen ? (
         <div className="pi-panel" style={{ marginTop: -16 }}>
-          {imgCount > 0 ? (
-            <div className="pi-imgs">
-              {images.map((im) => (
-                <figure className="pi-img" key={im.id}>
-                  <figcaption className="pi-img__slot">{slotLabel(im.slot)}</figcaption>
-                  <div className="pi-img__pic">
-                    <AuthImg path={api.imagePath(im.id)} alt={`${slotLabel(im.slot)} for ${label}`} />
-                  </div>
-                  <PictureSettings im={im} slots={slotChoices} onSave={handleImageEdit} disabled={imgBusy} />
-                  <Button variant="ghost" size="sm" onClick={() => handleRemoveImage(im.id)} disabled={imgBusy}>
-                    Remove image
-                  </Button>
-                </figure>
-              ))}
-            </div>
+          {unplaced.length ? (
+            <>
+              <p className="es-caption" style={{ margin: 0 }}>
+                These pictures name an option this card does not show - choose where each belongs.
+              </p>
+              <SlotPictures items={unplaced} alt={`Picture for ${label}`} {...picProps} />
+            </>
           ) : null}
 
           {detectedOptions.length === 0 && manualOptionCount === 0 && !isStem ? (

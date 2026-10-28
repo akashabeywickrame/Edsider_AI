@@ -55,6 +55,9 @@
    so clicking into the text to fix it and marking it correct are never
    the same click target. */
 .pi-mcq__opt { transition: border-color .15s ease; }
+/* An option's own picture sits under its text, the width of the option. */
+.pi-mcq__opt { flex-wrap: wrap; }
+.pi-mcq__pics { flex-basis: 100%; grid-template-columns: minmax(0, 1fr); }
 .pi-mcq__opt:focus-within { border-color: var(--primary); }
 .pi-mcq { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 /* width:0 stops an input's own default width (about 20 characters) from

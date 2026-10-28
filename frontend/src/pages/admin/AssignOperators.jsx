@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
+import UploadPaper from './UploadPaper.jsx'
 import StatusPill, { STATUS_LABEL, statusLabel } from '../../components/StatusPill.jsx'
 import './PaperAssignment.css'
 
@@ -171,13 +172,21 @@ export default function AssignOperators() {
       <PageHeader
         accent="Assign"
         title="papers to data entry"
-        subtitle="Give each uploaded paper to a Data Entry Operator. Only that person can open and correct it; once they run its duplicate check it comes back here, ready for a teacher."
+        subtitle="Upload a paper, then give it to a Data Entry Operator. Only that person can open and correct it; once they finish data entry it goes on for its teachers."
+      />
+
+      {/* Papers are added here only - data entry works on what it is given. */}
+      <UploadPaper
+        onUploaded={() => {
+          setWho('none')
+          setStatus('')
+          setText('')
+          setPage(0)
+          setVersion((v) => v + 1)
+        }}
       />
 
       <div className="es-row" style={{ gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-        <Link className="es-btn es-btn--secondary es-btn--sm" to="/app/data-entry/paper-intake">
-          Upload papers
-        </Link>
         <span className="es-caption">
           {operatorsBusy
             ? 'Loading Data Entry Operators from EdSider...'

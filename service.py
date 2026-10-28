@@ -464,6 +464,19 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
 
 PAPER = Depends(paper_access)
 
+# Both teachers have signed the paper off: there is nothing left for a
+# duplicate check or a repeat flag to change.
+_REVIEW_FINISHED = {"review_done", "ready_to_publish", "published", "archived"}
+
+
+def _refuse_once_reviewed(doc):
+    """Closes the duplicate checks and repeat flags on a paper whose
+    teachers have finished - admins could still run and flag one, and a
+    flag then would ask for a review that is already over."""
+    if doc.get("archived_at") or doc["status"] in _REVIEW_FINISHED:
+        raise HTTPException(409, "Both teachers have finished reviewing this paper - its "
+                                 "duplicate check and repeat flags are closed.")
+
 
 def _actor(identity):
     """Who to log an action against - None when a route is called directly
@@ -633,6 +646,9 @@ class IntakeDocumentOut(BaseModel):
     assigned_to: Optional[str] = None
     teachers: List[str] = []
     teachers_done: List[str] = []
+    # The paper's owner teacher - the one who settles flagged repeats; the
+    # other is its syllabus checker. Always teachers[0].
+    teacher_owner: Optional[str] = None
     # Set once the paper's questions are in the question bank: they are read
     # from there, and the paper can no longer change.
     archived_at: Optional[str] = None
@@ -1075,6 +1091,7 @@ def _document_out(doc, detail=False):
         status=doc["status"], operator=doc["operator"], assigned_to=doc["assigned_to"],
         teachers=list(doc.get("teachers") or []),
         teachers_done=list(doc.get("teachers_done") or []),
+        teacher_owner=doc.get("teacher_owner"),
         archived_at=doc["archived_at"].isoformat() if doc.get("archived_at") else None,
         sections=store.intake_sections(doc), notes=doc["notes"],
         assessment_settings=store.intake_assessment_settings(doc),
@@ -1519,7 +1536,7 @@ def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
     it is informational only, never a gate.
     """
     with store.connect() as conn:
-        _require_document(conn, doc_id)
+        _refuse_once_reviewed(_require_document(conn, doc_id))
         everything = [dict(q) for q in store.intake_questions(conn, doc_id)]
     if not everything:
         raise HTTPException(400, "This paper has no questions yet.")
@@ -1587,7 +1604,7 @@ def check_document_duplicates(doc_id: int,
     assign" list (see list_documents(status="checked")).
     """
     with store.connect() as conn:
-        _require_document(conn, doc_id)
+        _refuse_once_reviewed(_require_document(conn, doc_id))
         everything = [dict(q) for q in store.intake_questions(conn, doc_id)]
     if not everything:
         raise HTTPException(400, "This paper has no questions yet.")
@@ -1883,8 +1900,11 @@ def finish_review(doc_id: int, body: FinishIn,
         who = _actor(identity)
         teachers = store.paper_teachers(conn, doc_id)
         mine = who if who in {t["assigned_to"] for t in teachers} else None
+        owner = teachers[0]["assigned_to"] if teachers else None
         if body.status == "review_done":
-            if store.open_flags(conn, doc_id):
+            # The owner settles repeats; the syllabus checker's sign-off
+            # does not wait on them.
+            if (mine is None or mine == owner) and store.open_flags(conn, doc_id):
                 raise HTTPException(
                     409, "Some questions are flagged as repeats on this paper - replace each "
                          "with a new question, or keep it saying why, before finishing.")
@@ -1996,6 +2016,19 @@ def update_question(q_id: int, body: QuestionUpdate,
     return _question_out(q, has_parts=has_parts)
 
 
+def _require_owner(q_id, user):
+    """Repeats are settled by the paper's owner teacher only; its syllabus
+    checker reads and comments. Admins and a local run are not teachers
+    here and pass."""
+    if not _is_teacher(user):
+        return
+    with store.connect() as conn:
+        held = store.paper_holders(conn, q_id=q_id)
+    if held and held["owner"] != user["identity"]:
+        raise HTTPException(403, f"Repeats on this paper are settled by its owner teacher "
+                                 f"({held['owner']}). You check it and comment.")
+
+
 def _one_question_out(conn, q_id, user=None):
     q = store.get_intake_question(conn, q_id)
     if _is_teacher(user):
@@ -2012,7 +2045,8 @@ def flag_repeated_question(q_id: int, body: FlagRepeatIn,
     """Data entry, from the duplicate check: this question repeats another
     on the same paper. The teacher sees it and replaces it or keeps it."""
     with store.connect() as conn:
-        _require_question(conn, q_id)
+        q = _require_question(conn, q_id)
+        _refuse_once_reviewed(_require_document(conn, q["document_id"]))
         try:
             store.flag_repeat(conn, q_id, body.repeat_of, flagged_by=_actor(identity),
                               note=body.note)
@@ -2025,7 +2059,8 @@ def flag_repeated_question(q_id: int, body: FlagRepeatIn,
             dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def unflag_repeated_question(q_id: int, identity: str = Depends(current_identity)):
     with store.connect() as conn:
-        _require_question(conn, q_id)
+        q = _require_question(conn, q_id)
+        _refuse_once_reviewed(_require_document(conn, q["document_id"]))
         store.unflag_repeat(conn, q_id, actor=_actor(identity))
         return _one_question_out(conn, q_id)
 
@@ -2035,9 +2070,10 @@ def unflag_repeated_question(q_id: int, identity: str = Depends(current_identity
 def replace_repeated_question(q_id: int, body: ReplaceQuestionIn,
                               identity: str = Depends(current_identity),
                               user: dict = Depends(current_user)):
-    """The teacher puts a new question in place of a repeated one. The old
-    question - text, answer, marks - is kept in its history, and its repeat
-    flag is resolved as replaced."""
+    """The paper's owner teacher puts a new question in place of a repeated
+    one. The old question - text, answer, marks - is kept in its history,
+    and its repeat flag is resolved as replaced."""
+    _require_owner(q_id, user)
     with store.connect() as conn:
         _require_question(conn, q_id)
         store.replace_question(conn, q_id, body.text, answer=body.answer, marks=body.marks,
@@ -2051,7 +2087,9 @@ def replace_repeated_question(q_id: int, body: ReplaceQuestionIn,
 def keep_flagged_question(q_id: int, body: KeepQuestionIn,
                           identity: str = Depends(current_identity),
                           user: dict = Depends(current_user)):
-    """The teacher keeps a flagged question - it is not a repeat - saying why."""
+    """The paper's owner teacher keeps a flagged question - it is not a
+    repeat - saying why."""
+    _require_owner(q_id, user)
     with store.connect() as conn:
         _require_question(conn, q_id)
         try:

@@ -118,12 +118,16 @@ export default function TeacherReview() {
   const iFinished = Boolean(doc && myId && (doc.teachers_done || []).includes(myId))
   const reviewable = doc?.status === 'teacher_review' && !iFinished
   const otherTeacher = (doc?.teachers || []).find((t) => t !== myId)
+  // The owner teacher settles repeats; the syllabus checker reads, ticks and
+  // comments. A paper from before owners were kept counts its first teacher.
+  const owner = doc?.teacher_owner || (doc?.teachers || [])[0] || null
+  const iAmOwner = !myId || !owner || owner === myId
   const done = questions.filter((q) => q.teacher_reviewed).length
   const pct = questions.length ? Math.round((done / questions.length) * 100) : 0
   const allReviewed = questions.length > 0 && done === questions.length
   // Repeats data entry flagged that no teacher has resolved yet - the paper
   // cannot be marked Review done until each is replaced or kept.
-  const openRepeats = questions.filter((q) => q.repeat?.status === 'open').length
+  const openRepeats = iAmOwner ? questions.filter((q) => q.repeat?.status === 'open').length : 0
   const byId = Object.fromEntries(questions.map((x) => [x.id, x]))
 
   // A question replaced or kept: its card updates; if its pictures went with
@@ -296,6 +300,14 @@ export default function TeacherReview() {
 
       {doc ? <PaperSummary doc={doc} questions={questions} /> : null}
 
+      {doc && (doc.teachers || []).length > 1 ? (
+        <Notice tone="info" title={iAmOwner ? 'You are the owner teacher of this paper' : 'You are the syllabus checker for this paper'}>
+          {iAmOwner
+            ? 'Check every question, add comments, and settle any question data entry flagged as a repeat - write a new question in its place or keep it.'
+            : `Check every question against the syllabus and add comments where something is wrong. Repeats are settled by the owner teacher${owner ? ` (${owner})` : ''}.`}
+        </Notice>
+      ) : null}
+
       {doc && iFinished && doc.status === 'teacher_review' ? (
         <Notice tone="info" title="Your review is done">
           The paper is ready to publish once {otherTeacher ? `the other teacher (${otherTeacher})` : 'the other teacher'}{' '}
@@ -368,7 +380,8 @@ export default function TeacherReview() {
                 key={`${q.id}-${q.repeat?.status}`}
                 q={q}
                 original={q.repeat ? byId[q.repeat.repeat_of] : null}
-                editable={reviewable}
+                editable={reviewable && iAmOwner}
+                owner={iAmOwner ? null : owner}
                 onChanged={handleRepeatChanged}
               />
 

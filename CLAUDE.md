@@ -2076,6 +2076,36 @@ finished cannot change it (`paper_access`). Refer Back from either sends
 it to data entry; when data entry finishes again the paper goes straight
 back to both teachers, both reopened - both sign off the final version.
 
+**The two teachers have different jobs.** Asked for: the paper's own
+teacher answers the repeats, the overall checking teacher checks it
+against the syllabus and comments. The first teacher assigned is the
+**owner**, the second the **syllabus checker** (`intake.review.duty`, a
+migration; Admin -> Paper assignment labels the two dropdowns so). Only
+the owner may replace or keep a flagged repeat (`_require_owner`, 403 for
+the checker); only the owner's Review Done waits for open repeats - the
+checker's does not. Both tick, comment, refer back and sign off. Lists
+put the owner first (`store._TEACHER_ORDER`), and the paper carries
+`teacher_owner`; a paper assigned before duties were kept counts its first
+teacher as owner. Reassigning in the other order swaps them.
+
+**A paper referred back waits at the top of its operator's page** ("N
+papers sent back to you by a teacher", a button per paper) - it always
+went back to the same operator (`reopen_stage`), but nothing pointed them
+at it.
+
+**Data entry sees each picture where it belongs.** The card showed every
+picture inside a closed "Images (N)" panel, apart from answer pictures,
+so a question's table was nowhere near the question. Now (`SlotPictures`
+in `PaperIntakeQuestion.jsx`) a question's pictures sit straight under its
+text, an option's inside that option, the answer's under the answer -
+each with its label, where it belongs and Remove. The panel became "Add a
+picture", plus any picture naming an option the card does not show.
+
+**Papers are added on Admin -> Data entry only.** The upload and paste
+form (`pages/admin/UploadPaper.jsx`) sits above the list where each paper
+is given to an operator; data entry's page no longer has it, for admins
+either. The routes were already admin-only.
+
 **A question repeated on its own paper - flagged, replaced, its history
 kept.** The duplicate check's results were shown once and saved nowhere,
 so a teacher never saw them. Now:
@@ -2145,7 +2175,11 @@ It set 'checked' whatever the status, so an admin running it from data
 entry on a paper in teacher review (paper #90) put it back to 'checked':
 both teachers' ticks were refused ("Your review of this paper is
 finished") and "Finish data entry" showed again. It now sets 'checked'
-only while data entry has the paper (`_PASSED_ON`).
+only while data entry has the paper (`_PASSED_ON`). And once both
+teachers have finished ('ready_to_publish', 'published', archived), the
+check, the early check and repeat flags are closed altogether
+(`_refuse_once_reviewed`, 409; the page hides them and says why) - admins
+could still run them, and a flag then asked for a review already over.
 
 **Then sent for real into the pre-prod copy, and read back as EdSider
 reads it** (2026-10-27; the production database and the real pre-prod are

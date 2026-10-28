@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import { joinSoftBreaks } from '../../lib/text.js'
 
-// A question data entry flagged as repeated on this paper. The teacher
-// writes a new question in its place - the old one is kept in its history -
+// A question data entry flagged as repeated on this paper. The paper's
+// owner teacher writes a new question in its place - the old one is kept in its history -
 // or keeps it, saying why it is not a repeat. Once resolved, says what was
 // done, so the paper's other teacher sees it too.
 function when(iso) {
@@ -12,7 +12,7 @@ function when(iso) {
   return Number.isNaN(d.getTime()) ? String(iso).slice(0, 10) : d.toLocaleDateString()
 }
 
-export default function RepeatPanel({ q, original, editable, onChanged }) {
+export default function RepeatPanel({ q, original, editable, owner, onChanged }) {
   const { Button, Notice } = window.EdSider
   const repeat = q.repeat
   const [mode, setMode] = useState(null) // 'replace' | 'keep'
@@ -72,8 +72,10 @@ export default function RepeatPanel({ q, original, editable, onChanged }) {
       <p className="tr-repeat__title">Repeated in this paper - the same as {of}</p>
       <p className="es-caption" style={{ margin: 0 }}>
         Flagged by data entry{repeat.flagged_by ? ` (${repeat.flagged_by})` : ''} on{' '}
-        {when(repeat.flagged_at)}.{repeat.note ? ` "${repeat.note}"` : ''} Write a new question to
-        take its place, or keep it if it is not really a repeat.
+        {when(repeat.flagged_at)}.{repeat.note ? ` "${repeat.note}"` : ''}{' '}
+        {owner
+          ? `The paper's owner teacher (${owner}) writes a new question to take its place, or keeps it if it is not really a repeat.`
+          : 'Write a new question to take its place, or keep it if it is not really a repeat.'}
       </p>
       {original ? (
         <div className="tr-repeat__original">

@@ -175,7 +175,7 @@ export default function PaperAssignment() {
       <PageHeader
         accent="Assign"
         title="papers to teachers"
-        subtitle="Papers data entry has finished, waiting for two teachers to review each one. A paper is ready to publish once both have finished."
+        subtitle="Papers data entry has finished, each waiting for its owner teacher and a syllabus checker. A paper is ready to publish once both have finished."
       />
 
       {error ? (
@@ -219,8 +219,13 @@ export default function PaperAssignment() {
             {[0, 1].map((slot) => (
               <div className="es-field" key={slot}>
                 <label className="es-field__label" htmlFor={`pa-teacher-${d.id}-${slot}`}>
-                  {slot === 0 ? 'First teacher' : 'Second teacher'}
+                  {slot === 0 ? 'Owner teacher' : 'Syllabus checker'}
                 </label>
+                <p className="es-caption" style={{ margin: '0 0 4px' }}>
+                  {slot === 0
+                    ? 'Whose paper it is - checks it and settles any repeats data entry flagged.'
+                    : 'Checks the paper against the syllabus and comments.'}
+                </p>
                 <select
                   id={`pa-teacher-${d.id}-${slot}`}
                   className="es-input"
@@ -284,6 +289,7 @@ export default function PaperAssignment() {
                             <div key={t}>
                               {nameOf(t)}{' '}
                               <span className="es-caption">
+                                {(a.teachers || []).length > 1 ? (t === (a.teacher_owner || a.teachers[0]) ? '(owner) ' : '(syllabus checker) ') : ''}
                                 {(a.teachers_done || []).includes(t) ? '- review done' : '- reviewing'}
                               </span>
                             </div>

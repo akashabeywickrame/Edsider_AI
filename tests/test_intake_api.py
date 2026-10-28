@@ -352,6 +352,23 @@ def test_check_duplicates_marks_the_document_checked(document):
     assert doc.id in {d.id for d in list_documents(status="checked")}
 
 
+def test_a_paper_both_teachers_finished_is_not_checked_or_flagged_again(document):
+    """Asked for: once a paper is ready to publish its review is over, so a
+    duplicate check or a repeat flag has nothing left to change."""
+    q1, q2 = [q.id for q in list_questions(document.id)][:2]
+    for status in ("ready_to_publish", "published"):
+        with store.connect() as conn:
+            store.set_document_status(conn, document.id, status)
+        for attempt in (lambda: check_document_duplicates(document.id),
+                        lambda: precheck_document_duplicates(document.id),
+                        lambda: service.flag_repeated_question(
+                            q2, service.FlagRepeatIn(repeat_of=q1), identity="op"),
+                        lambda: service.unflag_repeated_question(q2, identity="op")):
+            with pytest.raises(HTTPException) as err:
+                attempt()
+            assert err.value.status_code == 409 and "finished reviewing" in err.value.detail
+
+
 def test_check_duplicates_leaves_a_paper_with_its_teachers(document):
     """Paper #90: an admin ran the check from data entry while two teachers
     had the paper; it went back to 'checked', and neither teacher could tick

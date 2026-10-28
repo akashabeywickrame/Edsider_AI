@@ -12,19 +12,10 @@ import AddQuestion from './AddQuestion.jsx'
 import PaperFinder from './PaperFinder.jsx'
 import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
+import { SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
 
-const OCR_LANGS = [
-  { key: 'eng', label: 'English' },
-  { key: 'sin', label: 'Sinhala' },
-  { key: 'tam', label: 'Tamil' },
-]
-const SPLIT_STYLES = [
-  { key: 'number', label: 'Numbered at the left margin (1.  2.  01.  Q1  (1))' },
-  { key: 'question_word', label: "Lines containing the word 'Question'" },
-]
 const RAIL = [
-  { id: 'upload', icon: 'upload', label: 'Upload' },
   { id: 'paper', icon: 'paper', label: 'Questions' },
   { id: 'dup', icon: 'copy', label: 'Duplicate check' },
   { id: 'status', icon: 'check', label: 'Review status' },
@@ -95,21 +86,11 @@ export default function PaperIntake() {
   // EdSider's ids, so its grade and subject are always ones EdSider has.
   const [lists, setLists] = useState({ grade: [], subject: [] })
 
-  const [file, setFile] = useState(null)
-  const [lang, setLang] = useState('eng')
-  // 'file' - uploaded and read here; 'text' - already read elsewhere (the
-  // local OCR tool on a data-entry computer) and pasted in.
-  const [source, setSource] = useState('file')
-  const [pasted, setPasted] = useState('')
-  const [pastedTitle, setPastedTitle] = useState('')
-  // A PDF typed in a legacy Sinhala font has a text layer of font codes, not
-  // Sinhala - reading each page as a picture is the only reliable text for it.
-  const [forceOcr, setForceOcr] = useState(false)
-  const [uploadStyle, setUploadStyle] = useState('number')
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState(null)
 
   const [listVersion, setListVersion] = useState(0)
+  // Papers a teacher referred back - they return to the operator who did
+  // them, and wait at the top of that person's page until finished again.
+  const [sentBack, setSentBack] = useState([])
 
   const [doc, setDoc] = useState(null)
   const [questions, setQuestions] = useState(null)
@@ -161,6 +142,18 @@ export default function PaperIntake() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    if (canUpload) return
+    let live = true
+    api
+      .searchIntakeDocuments({ status: 'refer_back', limit: 25 })
+      .then((r) => live && setSentBack(r.items || []))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [canUpload, listVersion])
+
   // The paper finder reads its own page of papers; bumping this makes it
   // read again after something here changed a paper's status or title.
   function refreshList() {
@@ -208,30 +201,6 @@ export default function PaperIntake() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
 
-  async function handleUpload(e) {
-    e.preventDefault()
-    if (source === 'file' ? !file : !pasted.trim()) return
-    setUploading(true)
-    setUploadError(null)
-    try {
-      const d =
-        source === 'file'
-          ? await api.uploadIntakeDocument(file, lang, uploadStyle, forceOcr)
-          : await api.createDocumentFromText(pasted, pastedTitle.trim(), uploadStyle)
-      e.target.reset()
-      setFile(null)
-      setPasted('')
-      setPastedTitle('')
-      refreshList()
-      setSearchParams({ doc: String(d.id) })
-      toast.success(`${d.filename} added - its questions have been extracted.`)
-    } catch (err) {
-      setUploadError(err.message)
-      toast.error(`Upload failed: ${err.message}`)
-    } finally {
-      setUploading(false)
-    }
-  }
 
   async function saveMeta(fields) {
     try {
@@ -409,6 +378,10 @@ export default function PaperIntake() {
   // duplicate check run (which sets the status to 'checked' or later).
   const DUPLICATES_CHECKED = ['checked', 'data_entry_done', 'teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
   const duplicatesChecked = !!doc && DUPLICATES_CHECKED.includes(doc.status)
+  // Both teachers have signed it off: the check and repeat flags are closed
+  // (the API refuses them too).
+  const reviewFinished = !!doc && (Boolean(doc.archived_at)
+    || ['review_done', 'ready_to_publish', 'published', 'archived'].includes(doc.status))
   const previewReady = !!doc && !!questions && pending === 0 && duplicatesChecked
   const previewBlocker = !questions
     ? ''
@@ -447,7 +420,7 @@ export default function PaperIntake() {
     return flagged ? (
       <span className="es-caption">Q{n(repeat)} is flagged as a repeat of Q{n(original)} for the teacher.</span>
     ) : (
-      <Button variant="secondary" size="sm" disabled={Boolean(doc.archived_at)}
+      <Button variant="secondary" size="sm" disabled={reviewFinished}
         onClick={() => flagAsRepeat(repeat.id, original.id)}>
         Flag Q{n(repeat)} as a repeat of Q{n(original)}
       </Button>
@@ -470,7 +443,7 @@ export default function PaperIntake() {
     <div className="pi-page">
       <nav className="pi-rail-col" aria-label="Paper intake sections">
         <ul className="es-rail">
-          {RAIL.filter((r) => canUpload || r.id !== 'upload').map((r) => (
+          {RAIL.map((r) => (
             <li key={r.id}>
               <a href={`#${r.id}`} aria-label={r.label} title={r.label}>
                 <Icon name={r.icon} />
@@ -486,149 +459,25 @@ export default function PaperIntake() {
           title="intake"
           subtitle={
             canUpload
-              ? 'Upload a question paper - PDF, Word, or an image of one - then give it to a Data Entry Operator on the Data entry page. Its questions are pulled out, corrected, and checked for repeats against themselves before any of it joins the bank.'
+              ? 'Every uploaded paper. Papers are uploaded and given to a Data Entry Operator on Admin - Data entry; open one here to see or correct it.'
               : 'The papers an administrator has given you. Correct each question the extractor read, tick it reviewed, then run the duplicate check to pass the paper on to a teacher.'
           }
         />
 
-        {canUpload ? (
-        <>
-        <div className="es-row" role="radiogroup" aria-label="How to add the paper" style={{ marginBottom: 8 }}>
-          <label className="scr-radio">
-            <input type="radio" name="src" checked={source === 'file'} onChange={() => setSource('file')} />
-            Upload a file
-          </label>
-          <label className="scr-radio">
-            <input type="radio" name="src" checked={source === 'text'} onChange={() => setSource('text')} />
-            Paste text
-          </label>
-        </div>
 
-        <section id="upload" className="es-card pi-upload__grid" aria-label="Add a paper">
-          {source === 'file' ? (
-            <label className="pi-dropzone">
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-              />
-              <span className="es-stat__icon es-accent--primary">
-                <Icon name="upload" />
-              </span>
-              <p className="scr-h3">{file ? file.name : 'Drop the question paper here'}</p>
-              <p className="es-caption">PDF, Word (.docx, .doc), or an image of the paper - PNG, JPG, TIFF or BMP</p>
-              <span className="es-btn es-btn--secondary es-btn--sm">Choose a file</span>
-            </label>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div className="es-field">
-                <label className="es-field__label" htmlFor="pi-paste-title">
-                  Name of the paper
-                </label>
-                <input
-                  id="pi-paste-title"
-                  className="es-input"
-                  value={pastedTitle}
-                  placeholder="e.g. Grade 12 Business Statistics - Term 1"
-                  onChange={(e) => setPastedTitle(e.target.value)}
-                />
-              </div>
-              <div className="es-field">
-                <label className="es-field__label" htmlFor="pi-paste-text">
-                  The paper's text
-                </label>
-                <textarea
-                  id="pi-paste-text"
-                  className="es-input"
-                  rows={14}
-                  value={pasted}
-                  placeholder="Paste the text the reading tool gave you - the whole paper, questions and answers."
-                  onChange={(e) => setPasted(e.target.value)}
-                />
-              </div>
-              <p className="es-caption" style={{ margin: 0 }}>
-                For a scanned paper read on your own computer. Keep each question, choice and part on
-                its own line, starting with its number or letter - that is how the questions are
-                found.
-              </p>
+        {sentBack.length ? (
+          <Notice tone="warning" title={`${sentBack.length} paper${sentBack.length === 1 ? '' : 's'} sent back to you by a teacher`}>
+            Correct what the teacher commented on, mark each question reviewed, run the duplicate check,
+            then finish data entry - the paper goes straight back to both of its teachers.
+            <div className="es-row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+              {sentBack.map((d) => (
+                <Button key={d.id} variant={String(d.id) === String(selectedId) ? 'primary' : 'secondary'} size="sm"
+                  onClick={() => setSearchParams({ doc: String(d.id) })}>
+                  #{d.id} {d.paper_title || d.filename}
+                </Button>
+              ))}
             </div>
-          )}
-
-          <form className="pi-upload__opts" onSubmit={handleUpload}>
-            {source === 'file' ? (
-            <>
-            <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
-              <legend className="es-field__label" style={{ marginBottom: 8 }}>
-                Language of the paper
-              </legend>
-              <div className="es-row">
-                {OCR_LANGS.map((l) => (
-                  <label className="scr-radio" key={l.key}>
-                    <input type="radio" name="ul" checked={lang === l.key} onChange={() => setLang(l.key)} />
-                    {l.label}
-                  </label>
-                ))}
-              </div>
-              <p className="es-caption" style={{ marginTop: 6 }}>
-                Used to read scanned pages and questions pasted in as pictures. Typed text is read
-                directly whatever this says.
-              </p>
-            </fieldset>
-
-            <label className="scr-radio" style={{ alignItems: 'flex-start' }}>
-              <input type="checkbox" checked={forceOcr} onChange={(e) => setForceOcr(e.target.checked)} />
-              <span>
-                Read every page as a picture
-                <span className="es-caption" style={{ display: 'block' }}>
-                  Use for a PDF whose Sinhala or Tamil text looks like wrong letters after upload - the page is
-                  read from its picture instead. Slower.
-                </span>
-              </span>
-            </label>
-            </>
-            ) : null}
-
-            <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
-              <legend className="es-field__label" style={{ marginBottom: 8 }}>
-                Where does a new question start in this paper?
-              </legend>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
-                {SPLIT_STYLES.map((s) => (
-                  <label className="scr-radio" key={s.key}>
-                    <input
-                      type="radio"
-                      name="us"
-                      checked={uploadStyle === s.key}
-                      onChange={() => setUploadStyle(s.key)}
-                    />
-                    {s.label}
-                  </label>
-                ))}
-              </div>
-              <p className="es-caption" style={{ marginTop: 6 }}>
-                Pick "Question" for a worked-solutions or marking-scheme document, where the
-                numbered lists are answer steps rather than questions.
-              </p>
-            </fieldset>
-
-            <div>
-              <Button
-                variant="primary"
-                arrow
-                type="submit"
-                disabled={(source === 'file' ? !file : !pasted.trim()) || uploading}
-              >
-                {uploading ? 'Extracting...' : 'Extract questions'}
-              </Button>
-            </div>
-            {uploadError ? (
-              <Notice tone="error" title="Could not upload this paper">
-                {uploadError}
-              </Notice>
-            ) : null}
-          </form>
-        </section>
-        </>
+          </Notice>
         ) : null}
 
         <section id="paper" className="es-card" aria-label="Paper details" style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -650,8 +499,8 @@ export default function PaperIntake() {
           {doc && doc.status === 'refer_back' ? (
             <Notice tone="warning" title="Referred back by the teacher">
               This paper was sent back for correction. The teacher's comments are shown on
-              the questions they apply to, below - fix what they flagged, then run the
-              duplicate check again to send it back to assignment.
+              the questions they apply to, below - fix what they flagged, run the duplicate
+              check again, then finish data entry: it goes straight back to both teachers.
             </Notice>
           ) : null}
 
@@ -665,7 +514,7 @@ export default function PaperIntake() {
           {!loading && !doc ? (
             <Notice tone="info">
               {canUpload
-                ? 'No paper is open. Choose one from the list above, or upload a new paper.'
+                ? 'No paper is open. Choose one from the list above - new papers are uploaded on Admin - Data entry.'
                 : 'No paper is open. Choose one of the papers given to you from the list above.'}
             </Notice>
           ) : null}
@@ -836,7 +685,7 @@ export default function PaperIntake() {
           ) : null}
         </section>
 
-        {doc && questions ? (
+        {doc && questions && !reviewFinished ? (
           <EarlyDuplicateCheck key={`precheck-${doc.id}`} doc={doc} questions={questions} />
         ) : null}
 
@@ -1097,7 +946,12 @@ export default function PaperIntake() {
                 question is marked reviewed, because it is meaningless on text that has not been
                 corrected yet.
               </p>
-              {pending > 0 ? (
+              {reviewFinished ? (
+                <Notice tone="info">
+                  Both teachers have finished reviewing this paper, so it is no longer checked for
+                  repeats - a flag now would ask for a review that is already done.
+                </Notice>
+              ) : pending > 0 ? (
                 <Notice tone="info">{pending} question(s) still not marked reviewed.</Notice>
               ) : null}
               {checkError ? (
@@ -1109,7 +963,7 @@ export default function PaperIntake() {
                 <Button
                   variant="primary"
                   onClick={handleCheckDuplicates}
-                  disabled={pending > 0 || checkBusy || Boolean(doc.archived_at)}
+                  disabled={pending > 0 || checkBusy || reviewFinished}
                 >
                   {checkBusy ? 'Checking...' : 'Check for duplicates'}
                 </Button>

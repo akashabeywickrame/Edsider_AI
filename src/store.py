@@ -590,7 +590,11 @@ CREATE TABLE IF NOT EXISTS intake.review (
     assigned_by  TEXT,
     assigned_at  TIMESTAMPTZ DEFAULT now(),
     finished_at  TIMESTAMPTZ,
-    active       BOOLEAN NOT NULL DEFAULT TRUE
+    active       BOOLEAN NOT NULL DEFAULT TRUE,
+    -- A paper's two teachers do different jobs: 'owner' (the teacher whose
+    -- paper it is - corrects it and settles the repeats data entry flagged)
+    -- and 'checker' (checks it against the syllabus, comments only).
+    duty         TEXT
 );
 
 -- One operator a paper, but two teachers: each teacher once.
@@ -1077,7 +1081,13 @@ MIGRATIONS = [
     # its bank copy.
     ("intake.question_image", "label", "TEXT"),
     ("question_files", "label", "TEXT"),
+    # A teacher's job on the paper - owner or syllabus checker.
+    ("intake.review", "duty", "TEXT"),
 ]
+
+# A paper's teachers, owner first. Papers assigned before duties were kept
+# have none: the first teacher given the paper is its owner.
+_TEACHER_ORDER = "CASE {a}.duty WHEN 'owner' THEN 0 WHEN 'checker' THEN 2 ELSE 1 END, {a}.id"
 
 # A question can only be compared on its text when the text IS the whole
 # question. That rules out two groups, both measured on the real bank:
@@ -2003,6 +2013,7 @@ SELECT d.id, d.filename, d.file_type, d.title AS paper_title,
        d.notes, d.split_style, d.status, d.uploaded_by, d.uploaded_at, d.archived_at,
        f.extractor, {raw_text} AS raw_text,
        t.assigned_to AS assigned_to, t.teachers, t.teachers_done,
+       t.teachers[1] AS teacher_owner,
        o.assigned_to AS operator
   FROM intake.document d
   LEFT JOIN common.grade g    ON g.id = d.grade_id
@@ -2011,9 +2022,9 @@ SELECT d.id, d.filename, d.file_type, d.title AS paper_title,
   LEFT JOIN intake.document_file f ON f.document_id = d.id
   -- A paper has two teachers: both, and which have finished their review.
   LEFT JOIN LATERAL (
-       SELECT string_agg(r.assigned_to, ', ' ORDER BY r.id) AS assigned_to,
-              array_agg(r.assigned_to ORDER BY r.id) AS teachers,
-              coalesce(array_agg(r.assigned_to ORDER BY r.id)
+       SELECT string_agg(r.assigned_to, ', ' ORDER BY CASE r.duty WHEN 'owner' THEN 0 WHEN 'checker' THEN 2 ELSE 1 END, r.id) AS assigned_to,
+              array_agg(r.assigned_to ORDER BY CASE r.duty WHEN 'owner' THEN 0 WHEN 'checker' THEN 2 ELSE 1 END, r.id) AS teachers,
+              coalesce(array_agg(r.assigned_to ORDER BY CASE r.duty WHEN 'owner' THEN 0 WHEN 'checker' THEN 2 ELSE 1 END, r.id)
                        FILTER (WHERE r.finished_at IS NOT NULL), '{{}}') AS teachers_done
          FROM intake.review r
         WHERE r.document_id = d.id AND r.stage = 'teacher' AND r.active) t ON TRUE
@@ -2647,10 +2658,12 @@ def assign_document(conn, doc_id, teacher_identity, assigned_by=None):
 
 def assign_teachers(conn, doc_id, identities, assigned_by=None):
     """Hand a paper to its teachers - two, as the administrator assigns -
-    and move it straight into 'teacher_review'. A teacher already on it
-    keeps their review (and its ticks); one no longer named is taken off,
-    their part kept in the history."""
+    and move it straight into 'teacher_review'. The first named is the
+    paper's owner, the second its syllabus checker. A teacher already on it
+    keeps their review (and its ticks), in the job named now; one no longer
+    named is taken off, their part kept in the history."""
     wanted = list(dict.fromkeys(i for i in identities if i))
+    duty = {who: "owner" if n == 0 else "checker" for n, who in enumerate(wanted)}
     current = {r["assigned_to"] for r in conn.execute(
         "SELECT assigned_to FROM intake.review WHERE document_id = ? AND stage = 'teacher' "
         "AND active", (doc_id,)).fetchall()}
@@ -2660,10 +2673,13 @@ def assign_teachers(conn, doc_id, identities, assigned_by=None):
         _log(conn, doc_id, "unassigned", stage="teacher", actor=assigned_by, assigned_to=gone)
     for who in wanted:
         if who in current:
+            conn.execute("UPDATE intake.review SET duty = ? WHERE document_id = ? "
+                         "AND stage = 'teacher' AND active AND assigned_to = ?",
+                         (duty[who], doc_id, who))
             continue
         conn.execute(
-            "INSERT INTO intake.review (document_id, stage, assigned_to, assigned_by) "
-            "VALUES (?,?,?,?)", (doc_id, "teacher", who, assigned_by))
+            "INSERT INTO intake.review (document_id, stage, assigned_to, assigned_by, duty) "
+            "VALUES (?,?,?,?,?)", (doc_id, "teacher", who, assigned_by, duty[who]))
         _log(conn, doc_id, "assigned", stage="teacher", actor=assigned_by, assigned_to=who)
     set_document_status(conn, doc_id, "teacher_review", actor=assigned_by)
 
@@ -2687,11 +2703,12 @@ def teacher_checks(conn, doc_id, teacher):
 
 
 def paper_teachers(conn, doc_id):
-    """[{assigned_to, finished_at}] - the paper's teachers now, in the
-    order they were given it."""
+    """[{assigned_to, finished_at}] - the paper's teachers now, its owner
+    first (see _TEACHER_ORDER)."""
     return conn.execute(
-        "SELECT assigned_to, finished_at FROM intake.review WHERE document_id = ? "
-        "AND stage = 'teacher' AND active ORDER BY id", (doc_id,)).fetchall()
+        "SELECT assigned_to, finished_at FROM intake.review r WHERE document_id = ? "
+        f"AND stage = 'teacher' AND active ORDER BY {_TEACHER_ORDER.format(a='r')}",
+        (doc_id,)).fetchall()
 
 
 def documents_assigned_to(conn, identity, stage="teacher"):
@@ -2706,7 +2723,7 @@ def documents_assigned_to(conn, identity, stage="teacher"):
 
 
 def paper_holders(conn, doc_id=None, q_id=None, image_id=None):
-    """{document_id, status, operator, teachers, teachers_done} for the paper a request
+    """{document_id, status, operator, teachers, teachers_done, owner} for the paper a request
     names - directly, by one of its questions, or by one of its pictures -
     or None when there is no such paper. One query: every guarded request
     asks it."""
@@ -2728,6 +2745,7 @@ def paper_holders(conn, doc_id=None, q_id=None, image_id=None):
 
 
 def _holders(conn, source, params):
+    order = _TEACHER_ORDER.format(a="t")
     return conn.execute(
         f"""SELECT d.id AS document_id, d.status, d.archived_at, o.assigned_to AS operator,
                    coalesce((SELECT array_agg(t.assigned_to) FROM intake.review t
@@ -2735,7 +2753,10 @@ def _holders(conn, source, params):
                             '{{}}') AS teachers,
                    coalesce((SELECT array_agg(t.assigned_to) FROM intake.review t
                               WHERE t.document_id = d.id AND t.stage = 'teacher' AND t.active
-                                AND t.finished_at IS NOT NULL), '{{}}') AS teachers_done
+                                AND t.finished_at IS NOT NULL), '{{}}') AS teachers_done,
+                   (SELECT t.assigned_to FROM intake.review t
+                     WHERE t.document_id = d.id AND t.stage = 'teacher' AND t.active
+                     ORDER BY {order} LIMIT 1) AS owner
               FROM ({source}) x
               JOIN intake.document d ON d.id = x.id
               LEFT JOIN intake.review o ON o.document_id = d.id
