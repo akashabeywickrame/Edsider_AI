@@ -115,7 +115,9 @@ def test_a_google_account_a_superadmin_added_gets_in_with_its_role(client):
     add_staff_member(StaffIn(email="emp@gmail.com", name="Emp One", role="employee"), user=SUPER)
     r = client.get("/me", headers={HEADER: _token(email="emp@gmail.com")})
     assert r.status_code == 200
-    assert r.json() == {"identity": "emp@gmail.com", "name": "Emp One", "role": "employee"}
+    me = r.json()
+    assert {k: me[k] for k in ("identity", "name", "role", "masad")} == {
+        "identity": "emp@gmail.com", "name": "Emp One", "role": "employee", "masad": False}
 
 
 def test_an_expired_or_forged_token_is_a_401_so_the_page_signs_in_again(client):

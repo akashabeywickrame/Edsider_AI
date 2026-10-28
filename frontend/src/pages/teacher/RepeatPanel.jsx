@@ -99,7 +99,7 @@ export default function RepeatPanel({ q, original, editable, owner, onChanged })
             onChange={(e) => setAnswer(e.target.value)} />
           <div className="tr-repeat__row">
             <label className="es-field__label" htmlFor={`rp-marks-${q.id}`}>Marks</label>
-            <input id={`rp-marks-${q.id}`} className="es-input" type="number" min="0" style={{ width: 90 }}
+            <input id={`rp-marks-${q.id}`} className="es-input" type="number" min="0" step="any" style={{ width: 90 }}
               value={marks} onChange={(e) => setMarks(e.target.value)} />
             <label className="es-check">
               <input type="checkbox" checked={dropPictures} onChange={(e) => setDropPictures(e.target.checked)} />{' '}

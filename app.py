@@ -1473,8 +1473,8 @@ elif page == "Paper intake":
                     if d["seq"] in parents_of else "",
                 )
                 st.number_input(
-                    "Marks", min_value=0, max_value=100, step=1,
-                    value=int(d["marks"]) if d["marks"] else 0,
+                    "Marks", min_value=0.0, max_value=1000.0, step=0.5,
+                    value=float(d["marks"]) if d["marks"] else 0.0,
                     key=f"iq_{d['id']}_marks",
                 )
                 st.checkbox(
@@ -1575,7 +1575,7 @@ elif page == "Paper intake":
                 store.update_intake_question(
                     conn, d["id"],
                     text=quill_to_text(st.session_state[f"iq_{d['id']}_text"]),
-                    marks=int(m) if m else None,
+                    marks=intake_extract.mark_value(m) if m else None,
                     answer=quill_to_text(
                         st.session_state[f"iq_{d['id']}_answer"]) or None,
                     reviewed=1 if st.session_state[f"iq_{d['id']}_reviewed"]
@@ -1609,7 +1609,7 @@ elif page == "Paper intake":
                  "under the question it belongs to.")
         st.text_input("Number (optional)", key="iq_new_number")
         st.text_area("Question text", key="iq_new_text", height=120)
-        st.number_input("Marks", min_value=0, max_value=100, step=1, value=0,
+        st.number_input("Marks", min_value=0.0, max_value=1000.0, step=0.5, value=0.0,
                         key="iq_new_marks")
         if st.button("Add question"):
             new_text = st.session_state["iq_new_text"].strip()
@@ -1632,7 +1632,7 @@ elif page == "Paper intake":
                         conn, doc_id, seq, new_text,
                         question_number=number,
                         grade=doc["paper_grade"], subject=doc["paper_subject"],
-                        marks=int(m) if m else None,
+                        marks=intake_extract.mark_value(m) if m else None,
                         section=(parent["section"] if parent else
                                  (st.session_state["iq_new_section"]
                                   if part_labels else None)),

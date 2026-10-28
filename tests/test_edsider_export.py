@@ -99,6 +99,19 @@ def test_a_pictures_label_is_a_line_under_it():
     assert [b["entityRanges"][0]["key"] for b in doc["blocks"] if b["type"] == "atomic"] == [0, 1]
 
 
+def test_a_lead_ins_picture_stays_between_it_and_the_part():
+    """A scenario's table ("Pavan works for...") belongs under the scenario,
+    above the first part it leads into - not after that part's own text."""
+    doc = export.draft_pieces([("(1) Pavan uses a spreadsheet.", ["data:table"]),
+                               ("(a) Write the formula for F2.", ["data:chart"]),
+                               ("", [])], "s")
+    assert [(b["type"], b["text"]) for b in doc["blocks"]] == [
+        ("unstyled", "(1) Pavan uses a spreadsheet."), ("atomic", " "),
+        ("unstyled", "(a) Write the formula for F2."), ("atomic", " ")]
+    keys = [b["entityRanges"][0]["key"] for b in doc["blocks"] if b["type"] == "atomic"]
+    assert [doc["entityMap"][str(k)]["data"]["src"] for k in keys] == ["data:table", "data:chart"]
+
+
 def test_mcq_answers_are_weights_adding_to_100():
     assert export.mcq_weights(4, [1]) == "0,100,0,0"
     assert export.mcq_weights(4, [0, 2]) == "50,0,50,0"
@@ -136,20 +149,26 @@ def test_a_finished_paper_becomes_edsiders_rows():
     assert mcq["title"] == "G12-GIT-EM-T2-EX02-P1-Q01"
 
     # Question 01: its parts are written before it, the parent lists them.
+    # EdSider has one level of parts, so (1)'s own (a) and (b) are sent in
+    # its place - each its own answer box and marks - with (1)'s text first.
     order = [r["key"] for r in pkg["questions"]]
-    assert order.index("q4") < order.index("q3") and order.index("q7") < order.index("q3")
-    assert rows["q3"]["sub_question_keys"] == ["q4", "q7"]
+    assert "q4" not in rows
+    assert all(order.index(k) < order.index("q3") for k in ("q5", "q6", "q7"))
+    assert rows["q3"]["sub_question_keys"] == ["q5", "q6", "q7"]
     assert (rows["q3"]["qtype"], rows["q3"]["answer"]) == (5, "0")
-    assert rows["q4"]["is_subquestion"] == "true"
-    # (a) and (b) become lines inside (1), their marks its marks.
-    lines = [b["text"] for b in json.loads(rows["q4"]["content"])[0]["blocks"]]
-    assert lines == ["Answer the following about the system:",
-                     "(a) Define the term system. (2 marks)", "(b) Draw a block diagram. [3]"]
+    assert rows["q5"]["is_subquestion"] == "true"
+
+    def lines(key, field="content"):
+        return [b["text"] for b in json.loads(rows[key][field])[0]["blocks"]]
+    assert lines("q5") == ["(1) Answer the following about the system:",
+                           "(a) Define the term system."]
+    assert lines("q5", "answer") == ["(a) An organized collection of parts."]
+    assert lines("q6") == ["(b) Draw a block diagram. [3]"]
+    assert lines("q7") == ["Name two input devices used at the counter."]
 
     links = {l["question_key"]: l["row"] for l in pkg["links"]}
-    assert (links["q3"]["mark_allocation"], links["q4"]["mark_allocation"],
-            links["q7"]["mark_allocation"]) == (0.0, 5.0, 4.0)
-    assert {links[k]["question_number"] for k in ("q3", "q4", "q7")} == {1}
+    assert [links[k]["mark_allocation"] for k in ("q3", "q5", "q6", "q7")] == [0.0, 2.0, 3.0, 4.0]
+    assert {links[k]["question_number"] for k in ("q3", "q5", "q6", "q7")} == {1}
     assert links["q8"]["question_number"] == 2
     assert links["q1"]["mark_allocation"] == 1.0                # MCQ: 1 mark each
     assert all(l["added_by"] == "CASS314" for l in links.values())
@@ -197,5 +216,5 @@ def test_the_preview_route_names_the_sender_and_reads_the_stored_paper(local_db)
         store.add_extracted_questions(conn, doc_id, [dict(x) for x in QUESTIONS])
     out = service.edsider_preview(doc_id, as_email="admin@gmail.com")
     assert out.package["assessment"]["created_by"] == "314"
-    assert out.summary["questions"] == 4 and out.summary["rows"] == 6
+    assert out.summary["questions"] == 4 and out.summary["rows"] == 7
     assert any("medium" in p["message"] for p in out.problems)

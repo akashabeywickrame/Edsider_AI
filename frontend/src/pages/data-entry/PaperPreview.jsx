@@ -5,7 +5,7 @@ import { AuthImg } from '../../lib/useFileUrl.jsx'
 import Pictures from '../../components/Pictures.jsx'
 import RichEditor from '../../components/RichEditor.jsx'
 import { joinSoftBreaks } from '../../lib/text.js'
-import { shownNumber } from '../../lib/numbers.js'
+import { roundMarks, shownNumber } from '../../lib/numbers.js'
 import PaperSummary from '../../components/PaperSummary.jsx'
 import { groupsStartingAt } from './GroupInstructions.jsx'
 import './PaperIntake.css'
@@ -151,7 +151,7 @@ export default function PaperPreview() {
     const kids = childrenOf[q.seq] || []
     if (!kids.length) return null
     const parts = kids.map(totalOf).filter((m) => m != null)
-    return parts.length ? parts.reduce((a, b) => a + b, 0) : null
+    return parts.length ? roundMarks(parts.reduce((a, b) => a + b, 0)) : null
   }
 
   // A part that states "each question carries N marks" makes every top-level

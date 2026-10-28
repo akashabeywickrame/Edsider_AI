@@ -446,7 +446,7 @@ CREATE TABLE IF NOT EXISTS intake.question (
     parent_seq             INTEGER,
     question_number        TEXT,      -- as printed ("31", "12(a)")
     text                   TEXT,
-    marks                  INTEGER,
+    marks                  DOUBLE PRECISION,  -- half marks are real: 2.5
     topic                  TEXT,
     answer                 TEXT,
     -- A reviewer's correction of the detected type; NULL = as detected.
@@ -543,7 +543,7 @@ CREATE TABLE IF NOT EXISTS intake.question_revision (
     question_number TEXT,
     text            TEXT,
     answer          TEXT,
-    marks           INTEGER,
+    marks           DOUBLE PRECISION,
     question_type   TEXT,
     replaced_by     TEXT,
     replaced_at     TIMESTAMPTZ DEFAULT now(),
@@ -986,6 +986,10 @@ def _schema_is_current(conn):
     optional = {(r["table_schema"], r["table_name"], r["column_name"]) for r in conn.execute(
         """SELECT table_schema, table_name, column_name FROM information_schema.columns
             WHERE table_schema = ANY(?) AND is_nullable = 'YES'""", ([intake],))}
+    typed = {(r["table_schema"], r["table_name"], r["column_name"], r["data_type"])
+             for r in conn.execute(
+        """SELECT table_schema, table_name, column_name, data_type
+             FROM information_schema.columns WHERE table_schema = ANY(?)""", ([intake],))}
     statuses = ({r["code"] for r in conn.execute("SELECT code FROM intake.status")}
                 if (intake, "status") in tables else set())
     # An index change ADD COLUMN cannot express: one teacher a paper became two.
@@ -994,7 +998,8 @@ def _schema_is_current(conn):
         "('idx_intake_review_active', 'idx_intake_review_teacher')", (intake,))}
     return wanted <= tables and all(
         _migration_key(table, column) in have for table, column, _ in MIGRATIONS) and all(
-        _migration_key(table, column) in optional for table, column in MADE_OPTIONAL) and (
+        _migration_key(table, column) in optional for table, column in MADE_OPTIONAL) and all(
+        (*_migration_key(table, column), kind) in typed for table, column, kind in RETYPED) and (
         {code for code, _ in INTAKE_STATUSES} <= statuses) and (
         indexes == {"idx_intake_review_teacher"})
 
@@ -1083,6 +1088,21 @@ MIGRATIONS = [
     ("question_files", "label", "TEXT"),
     # A teacher's job on the paper - owner or syllabus checker.
     ("intake.review", "duty", "TEXT"),
+    # The marks a paper gives a question, parents included, as entered -
+    # 2.5 too. questions.marks is a whole number and stays one (see RETYPED).
+    ("question_assessments", "marks", "DOUBLE PRECISION"),
+]
+
+# Columns whose type changed - ALTER ... TYPE, which ADD COLUMN cannot
+# express. Marks were whole numbers until papers with half marks (2.5,
+# 1.5) arrived. Only small tables go here: a type change rewrites the
+# table under an exclusive lock, and `questions` (the 690 MB bank, read
+# by every deployed app) would be locked for the whole rewrite - its own
+# `marks` stays INTEGER, and a paper's exact marks are on its link,
+# question_assessments.marks, instead.
+RETYPED = [
+    ("intake.question", "marks", "double precision"),
+    ("intake.question_revision", "marks", "double precision"),
 ]
 
 # A paper's teachers, owner first. Papers assigned before duties were kept
@@ -1193,6 +1213,15 @@ def _apply_schema(conn):
         for table, column, decl in MIGRATIONS) + "".join(
         f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL;\n"
         for table, column in MADE_OPTIONAL))
+    # Only when the type differs - an ALTER TYPE rewrites the table even
+    # when it already has that type.
+    intake = schema_names()[0]
+    have = {(r["table_name"], r["column_name"]): r["data_type"] for r in conn.execute(
+        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema = ?", (intake,))}
+    for table, column, kind in RETYPED:
+        if have.get((table.split(".", 1)[1], column)) != kind:
+            conn.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE {kind}")
     _merge_old_people_tables(conn)
 
 
@@ -2529,6 +2558,8 @@ def _with_depth(rows, skeleton=None):
     out = []
     for r in rows:
         d = dict(r)
+        if "marks" in d:
+            d["marks"] = _num(d["marks"])
         depth, at, seen = 0, d["parent_seq"], set()
         while at is not None and at not in seen and depth < 10:
             seen.add(at)
@@ -2574,7 +2605,8 @@ def bank_paper_questions(conn, doc_id):
     places, numbers, parts and marks the paper had."""
     rows = conn.execute(
         """SELECT qa.link_id, qa.position, qa.printed_number, qa.question_number,
-                  qa.section_id, q.id AS bank_id, q.parent_id, q.text, q.marks, q.topic,
+                  qa.section_id, q.id AS bank_id, q.parent_id, q.text,
+                  coalesce(qa.marks, q.marks) AS marks, q.topic,
                   q.answer, q.grade, q.subject
              FROM question_assessments qa
              JOIN questions q ON q.id = qa.question_id
@@ -3178,7 +3210,10 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
             "grade": doc["paper_grade"],
             "subject": doc["paper_subject"],
             "topic": d["topic"],
-            "marks": d["marks"],
+            # The bank's column is a whole number (see RETYPED); a half
+            # mark is kept exactly on the paper's link below instead.
+            "marks": (int(d["marks"]) if d["marks"] is not None
+                      and float(d["marks"]).is_integer() else None),
             "answer": d["answer"],
             "is_answer_blob": False,
             "contributor": doc["uploaded_by"] or "paper intake",
@@ -3196,8 +3231,9 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
             question_number=int(number.group()) if number else None,
             mark_allocation=0 if kids else d["marks"],
             section_id=d["section"], added_by=actor)
-        conn.execute("UPDATE question_assessments SET printed_number = ?, position = ? "
-                     "WHERE link_id = ?", (d["question_number"], d["seq"], -d["id"]))
+        conn.execute("UPDATE question_assessments SET printed_number = ?, position = ?, "
+                     "marks = ? WHERE link_id = ?",
+                     (d["question_number"], d["seq"], d["marks"], -d["id"]))
         kept[d["id"]] = ids[d["seq"]]
 
     # Whatever left the paper since the last copy leaves the bank too
@@ -3378,6 +3414,7 @@ def question_history(conn, question_id):
         "WHERE question_id = ?)",
         (question_id, _bank_id(revisions[0]["document_id"], question_id), question_id)).fetchall()
     for rev in revisions:
+        rev["marks"] = _num(rev["marks"])
         mark = f"earlier:{rev['id']}:"
         rev["pictures"] = [dict(p, slot=p["slot"][len(mark):]) for p in pictures
                            if p["slot"].startswith(mark)]

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
+import { roundMarks } from '../../lib/numbers.js'
 
 // Marks for a paper, set part by part. Each question's own marks are the
 // figures that count; the part's total is what a student can earn from it -
@@ -18,7 +19,7 @@ export function partQuestions(questions, sec) {
 // What a student can earn from a part: the largest `answerCount` marks.
 export function partTotal(qs, answerCount) {
   const marks = qs.map((q) => (q.marks == null ? 0 : Number(q.marks))).sort((a, b) => b - a)
-  return marks.slice(0, answerCount).reduce((sum, m) => sum + m, 0)
+  return roundMarks(marks.slice(0, answerCount).reduce((sum, m) => sum + m, 0))
 }
 
 function explain(label, n, answerCount, total) {
@@ -106,12 +107,12 @@ export default function MarksSection({ doc, questions, onQuestionChanged, onSave
     // own marks cannot be trusted - the total comes from marks per question.
     const countMismatch = count !== qs.length
     const total = countMismatch
-      ? answerCount * (Number(p.marks_each) || 0)
+      ? roundMarks(answerCount * (Number(p.marks_each) || 0))
       : partTotal(qs, answerCount)
     const unmarked = qs.filter((q) => q.marks == null).length
     return { sec, qs, count, answerCount, total, unmarked, countMismatch }
   })
-  const grandTotal = rows.reduce((sum, r) => sum + r.total, 0)
+  const grandTotal = roundMarks(rows.reduce((sum, r) => sum + r.total, 0))
   // The paper's own total is the sum of its marks. A target scales every
   // mark by the same factor; the questions keep the paper's own marks.
   const targetNumber = Number(target)
@@ -197,6 +198,7 @@ export default function MarksSection({ doc, questions, onQuestionChanged, onSave
                   className="es-input"
                   type="number"
                   min="0"
+                  step="any"
                   value={each}
                   onChange={(e) => setPart(sec, { marks_each: e.target.value })}
                 />
@@ -259,6 +261,7 @@ export default function MarksSection({ doc, questions, onQuestionChanged, onSave
                       className="es-input"
                       type="number"
                       min="0"
+                      step="any"
                       defaultValue={q.marks ?? ''}
                       key={`${q.id}-${q.marks ?? ''}`}
                       onBlur={(e) => setOneQuestion(q, e.target.value)}
@@ -294,6 +297,7 @@ export default function MarksSection({ doc, questions, onQuestionChanged, onSave
               className="es-input"
               type="number"
               min="1"
+              step="any"
               placeholder={`${grandTotal} - the paper's own total`}
               value={target}
               onChange={(e) => setTarget(e.target.value)}

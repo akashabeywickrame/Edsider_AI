@@ -97,7 +97,8 @@ def test_a_paper_is_written_in_edsiders_order_with_edsiders_ids():
     parent = next(r for r in questions if r["qtype"] == 5 and r.get("sub_questions"))
     kids = [int(i) for i in parent["sub_questions"].split(",")]
     assert all(k in result["questions"].values() for k in kids)
-    assert set(result["questions"]) == {1, 2, 3, 4, 7, 8}
+    # Part (1)'s own (a) and (b) go in its place - EdSider has one level.
+    assert set(result["questions"]) == {1, 2, 3, 5, 6, 7, 8}
     assert not any(k in r for r in questions for k in ("key", "sub_question_keys", "passage_key"))
 
     # Both teachers are recorded as having reviewed it.

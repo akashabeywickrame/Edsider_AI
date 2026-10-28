@@ -14,3 +14,9 @@ export function shownNumber(q) {
   const whole = /^\(?\s*0*(\d+)\s*\)?$/.exec(raw)
   return whole ? whole[1] : raw
 }
+
+// Marks can be halves (2.5, 1.5). Added up they are kept to two places, as
+// the server stores them, so 0.1 + 0.2 shows as 0.3 and not 0.30000000000000004.
+export function roundMarks(x) {
+  return Math.round(x * 100) / 100
+}

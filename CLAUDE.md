@@ -621,9 +621,27 @@ script that makes up 30%+ of the letters (Sinhala papers 98-100%, Tamil
 "term"/"1st": file names write "TechnologyTerm02", "_1st term"); year only
 from the file name, title and first 300 characters, since further in it
 is question content (an MCQ option "E. 2012", a date in a question).
-Decimal marks were left for later on purpose: changing `marks` from
-INTEGER rewrites and locks the live, shared table, and the deployed
-version would fail on a half mark.
+Decimal marks were left for later at first (see "Half marks" below).
+
+**Half marks - 2.5, 1.5.** Asked for: marks entered as decimals. A
+paper's questions and their earlier versions (`intake.question.marks`,
+`intake.question_revision.marks`) became `DOUBLE PRECISION` through
+`store.RETYPED` - an `ALTER ... TYPE`, run only when the type differs,
+since it rewrites the table under an exclusive lock even when nothing
+changes. Both are small (3.8 MB); the question bank (`questions`, 692 MB,
+read by every deployed app) is not, so its `marks` stays INTEGER and
+holds only a whole mark - a paper's exact marks are on its link,
+`question_assessments.marks` (a new column, instant to add), which is
+where an archived paper's marks are read back from. The API takes any
+mark 0-1000, kept to two places (`service.Marks`); stored marks come
+back as 2, not 2.0 (`store._num`). The extractor reads "(2.5 marks)",
+"[1.5]", "2.5 marks" - read as whole numbers only, that last one was 5,
+the "5" after the point being a number followed by "marks" - and sums
+part marks with `extract.mark_total()` (2.5 + 1.5 is 4, 0.1 + 0.2 is
+0.3), as do the converter and the pages (`roundMarks`). Marks boxes take
+`step="any"`. EdSider's `mark_allocation` was already a float. A
+deployed older version reads a whole mark from the new column fine, but
+fails on a half mark - deploy this before anyone enters one.
 
 `tests/test_sync.py` fakes psycopg2's connection and cursor rather than
 requiring a real server - same reasoning as everywhere else in this
@@ -2065,8 +2083,13 @@ a person to check). Pure, so the preview and the send are the same rows.
 Text becomes compact Draft.js JSON as EdSider's editor saves it (a block
 per line, pictures as atomic IMAGE blocks with data: URLs); an MCQ's
 correct labels become weights ("0,100,0,0", an uneven split's remainder
-to the first); a question's own parts' parts become lines inside the part,
-their marks the part's (a part whose stored mark disagrees is reported);
+to the first); a part's own parts are sent as the question's parts in its
+place, each with its own answer box and marks, the part's text and pictures
+leading the first of them and each keeping its printed label (`(a)`) since
+EdSider numbers parts by position (`_answerable_parts`) - EdSider has one
+level of parts, and as lines inside one part five questions shared one
+answer box, seen in EdSider's Student View (a part whose stored mark
+disagrees with its parts' is reported);
 "Part II - A" / "- B" become two sections of one part; the paper's general
 instructions go on the first part. Marks per question and "answer N of M"
 come from the saved marks plan, else what the paper says

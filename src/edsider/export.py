@@ -22,7 +22,7 @@ GIT, 40 MCQs and 5 essays) rather than guessed:
 - A question with parts is a qtype 5 parent (answer "0", sub_questions
   listing its parts' ids) plus one qtype 5 row per part
   (is_subquestion "true"); EdSider has one level of parts, so a part's own
-  parts become numbered lines inside it.
+  parts are sent as parts in its place, its text leading the first.
 - Marks are on the link row: 0 on a parent's, each part's own on its
   link, and every link of one question carries that question's number.
 - People are named two ways: the paper, schedule, assessor and links by
@@ -54,8 +54,6 @@ KIND_TITLE = {"mcq": "Multiple Choice Questions", "structured": "Structured Ques
 # "Part II - A" / "Part II-B": two sections of one EdSider part.
 _SUB_PART = re.compile(r"^(?P<base>.+?)\s*[-–—]\s*(?P<sub>[A-Z])$")
 _FIRST_NUMBER = re.compile(r"\d+")
-# A part's text that already prints its marks - "[2]", "(4 marks)".
-_PRINTED_MARKS = re.compile(r"\[\s*\d+\s*\]|\bmarks?\b", re.IGNORECASE)
 _LAST_LABEL = re.compile(r"(\([^()]*\))\s*$")
 
 
@@ -103,6 +101,25 @@ def draft_doc(text, seed, images=()):
     return {"blocks": blocks, "entityMap": entity_map}
 
 
+def draft_pieces(pieces, seed):
+    """One Draft.js document from several (text, pictures) pieces in order -
+    a part's lead-in and its table, then the part itself and its own
+    pictures - so each picture stays under the text it belongs to."""
+    blocks, entity_map = [], {}
+    for n, (text, images) in enumerate(pieces):
+        if not (text or "").strip() and not images:
+            continue
+        doc = draft_doc(text, f"{seed}.{n}", images)
+        shift = len(entity_map)
+        for block in doc["blocks"]:
+            block["entityRanges"] = [dict(r, key=r["key"] + shift)
+                                     for r in block["entityRanges"]]
+            blocks.append(block)
+        for k, entity in doc["entityMap"].items():
+            entity_map[str(int(k) + shift)] = entity
+    return {"blocks": blocks or [_block("", _key(seed, "e"))], "entityMap": entity_map}
+
+
 def draft_json(docs):
     """The stored form: compact JSON of a list of documents."""
     return json.dumps(docs, ensure_ascii=False, separators=(",", ":"))
@@ -134,8 +151,8 @@ def _question_no(question_number):
 
 
 def _part_label(question_number):
-    """"01(1)(a)" -> "(a)": a part's own printed label, kept on the line it
-    becomes once flattened into its parent part."""
+    """"01(1)(a)" -> "(a)": a part's own printed label, kept at the start of
+    its text - EdSider numbers sub-questions by position, not as printed."""
     m = _LAST_LABEL.search(question_number or "")
     return m.group(1) if m else ""
 
@@ -412,14 +429,15 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
 
         child_keys = []
         child_marks_total = 0
-        for child in kids:
-            row, marks = _part_row(child, by_parent, code, common, pictures, problem)
+        for child, lead, labelled in _answerable_parts(kids, by_parent, problem):
+            row, marks = _part_row(child, code, common, pictures, problem,
+                                   lead=lead, labelled=labelled)
             rows.append(row)
             child_keys.append(row["key"])
             if marks is None:
                 problem("error", "No marks on this part.", child)
             else:
-                child_marks_total += marks
+                child_marks_total = extract.mark_total([child_marks_total, marks])
             links.append(_link(row["key"], sec_key, number, marks, uid_text))
         if q.get("marks") is not None and child_marks_total and q["marks"] != child_marks_total:
             problem("warning", f"The question says {q['marks']} marks but its parts add up to "
@@ -483,8 +501,8 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
 
     marks_by_section = {}
     for link in links:
-        marks_by_section[link["section_key"]] = (marks_by_section.get(link["section_key"], 0)
-                                                 + (link["row"]["mark_allocation"] or 0))
+        marks_by_section[link["section_key"]] = extract.mark_total(
+            [marks_by_section.get(link["section_key"], 0), link["row"]["mark_allocation"] or 0])
     for part in parts:
         for sec in part["sections"]:
             sec["marks"] = marks_by_section.get(sec["key"], 0)
@@ -497,7 +515,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
             "title": title, "arrival_state": arrival_state, "parts": len(parts),
             "sections": sum(len(p["sections"]) for p in parts),
             "questions": len(top), "rows": len(rows), "links": len(links),
-            "passages": len(passages), "marks": sum(marks_by_section.values()),
+            "passages": len(passages), "marks": extract.mark_total(marks_by_section.values()),
             "errors": sum(1 for p in problems if p["level"] == "error"),
             "warnings": sum(1 for p in problems if p["level"] == "warning"),
         },
@@ -541,48 +559,56 @@ def _single_question(q, code, common, pictures, problem):
                 answer_type_id=None)
 
 
-def _part_row(child, by_parent, code, common, pictures, problem):
-    """One part of a question, as an EdSider sub-question. Its own parts
-    ((i), (ii) ...) become numbered lines inside it - EdSider has one level
-    - with their marks added up to the part's. Returns (row, marks)."""
+def _answerable_parts(kids, by_parent, problem):
+    """A question's parts as EdSider's sub-questions - one answer box each.
+
+    EdSider has one level of parts: its Student View and Setup screen read a
+    sub-question's own sub-questions nowhere. So a part with parts of its own
+    ("(1)" holding "(a)" to "(e)") is not sent as one sub-question with its
+    parts as lines inside it - that gave five questions one answer box, seen
+    in EdSider's Student View. Its parts are sent instead, each answered and
+    marked on its own; the part's own text (the scenario, its table) leads
+    the first of them. Yields (part, lead, labelled): `lead` is the part
+    whose text goes first, `labelled` whether to print the part's label,
+    since EdSider numbers sub-questions by position, not as the paper does."""
+    for child in kids:
+        grand = by_parent.get(child["seq"], [])
+        if not grand:
+            yield child, None, False
+            continue
+        total = [g.get("marks") for g in grand]
+        if child.get("marks") is not None and None not in total \
+                and child["marks"] != extract.mark_total(total):
+            problem("warning", f"This part says {child['marks']} marks but its parts add up to "
+                               f"{extract.mark_total(total)}; the parts' marks are sent.", child)
+        for n, g in enumerate(grand):
+            yield g, (child if n == 0 else None), True
+
+
+def _part_row(child, code, common, pictures, problem, lead=None, labelled=False):
+    """One part of a question, as an EdSider sub-question with its own
+    answer box. `lead` - the part it sits under - goes first, with its
+    pictures, labelled as the paper prints it. Returns (row, marks)."""
     seed = f"q{child['id']}"
-    text_lines = [child.get("text") or ""]
-    answer_lines = [child.get("answer") or ""]
-    marks = child.get("marks")
-    grand = by_parent.get(child["seq"], [])
-    if grand:
-        problem("warning", "This part has parts of its own; EdSider keeps one level, so they "
-                           "become numbered lines inside it.", child)
-        sub_total, missing = 0, False
-        for g in grand:
-            lead = _part_label(g.get("question_number"))
-            text = g.get("text") or ""
-            # Each line keeps its own marks visible once they are added up
-            # into the part's, unless the paper's text already prints them.
-            if g.get("marks") is not None and not _PRINTED_MARKS.search(text):
-                text += f" ({g['marks']} marks)"
-            text_lines.append(f"{lead} {text}".strip())
-            if g.get("answer"):
-                answer_lines.append(f"{lead} {g['answer']}".strip())
-            if g.get("marks") is None:
-                missing = True
-            else:
-                sub_total += g["marks"]
-        if not missing:
-            # What a teacher marks is the lines, so their total is the part's.
-            if marks is not None and marks != sub_total:
-                problem("warning", f"This part says {marks} marks but its lines add up to "
-                                   f"{sub_total}; {sub_total} is sent.", child)
-            marks = sub_total
-    if (child.get("question_type") or extract.detect_question_type(child.get("text"), bool(grand))) \
+
+    def labelled_text(q, field):
+        text = q.get(field) or ""
+        tag = _part_label(q.get("question_number")) if labelled else ""
+        return f"{tag} {text}".strip() if text and tag else text
+
+    content, answer = [], []
+    if lead is not None:
+        content.append((labelled_text(lead, "text"), pictures(lead, "question")))
+        answer.append((labelled_text(lead, "answer"), pictures(lead, "answer")))
+    content.append((labelled_text(child, "text"), pictures(child, "question")))
+    answer.append((labelled_text(child, "answer"), pictures(child, "answer")))
+    if (child.get("question_type") or extract.detect_question_type(child.get("text"), False)) \
             == "mcq":
         problem("warning", "An MCQ inside a question's parts goes to EdSider as text - its "
                            "parts cannot be MCQs.", child)
     row = dict(common, key=seed, source_question_id=child["id"], title=code, qtype=5,
-               content=draft_json([draft_doc("\n".join(text_lines), seed,
-                                             pictures(child, "question"))]),
-               answer=draft_json([draft_doc("\n".join(a for a in answer_lines if a), seed + "a",
-                                            pictures(child, "answer"))]),
+               content=draft_json([draft_pieces(content, seed)]),
+               answer=draft_json([draft_pieces(answer, seed + "a")]),
                answer_type_id=None, is_subquestion="true", sub_question_keys=None,
                passage_key=None)
-    return row, marks
+    return row, child.get("marks")

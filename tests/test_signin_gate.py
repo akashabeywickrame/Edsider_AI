@@ -65,7 +65,9 @@ def test_a_listed_person_gets_in_and_is_named(client, monkeypatch):
     add_staff_member(StaffIn(email="emp@example.com", name="Emp One", role="employee"), user=SUPER)
     r = client.get("/me", headers={WHO: "Emp@Example.com"})
     assert r.status_code == 200
-    assert r.json() == {"identity": "emp@example.com", "name": "Emp One", "role": "employee"}
+    me = r.json()
+    assert {k: me[k] for k in ("identity", "name", "role", "masad")} == {
+        "identity": "emp@example.com", "name": "Emp One", "role": "employee", "masad": False}
 
 
 def test_a_refusal_still_carries_cors_headers(client):

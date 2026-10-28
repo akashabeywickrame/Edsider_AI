@@ -38,9 +38,14 @@ from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+from typing_extensions import Annotated
 
 log = logging.getLogger("edsiderai")
+
+# A question's marks: half marks are real (2.5, 1.5). Kept to two places,
+# so 0.1 + 0.2 typed into a box is stored as 0.3.
+Marks = Annotated[float, Field(ge=0, le=1000), AfterValidator(lambda v: round(v, 2))]
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
@@ -724,7 +729,7 @@ class IntakeQuestionOut(BaseModel):
     text: Optional[str] = None
     grade: Optional[str] = None
     subject: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
     topic: Optional[str] = None
     answer: Optional[str] = None
     extraction_confidence: Optional[str] = None
@@ -787,7 +792,7 @@ class FlagRepeatIn(BaseModel):
 class ReplaceQuestionIn(BaseModel):
     text: str = Field(..., min_length=1)
     answer: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
     # Why - kept with the earlier version ("repeated Q05 on this paper").
     reason: Optional[str] = None
     # False: the question's pictures belong to the earlier version.
@@ -803,7 +808,7 @@ class QuestionVersionOut(BaseModel):
     question_number: Optional[str] = None
     text: Optional[str] = None
     answer: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
     question_type: Optional[str] = None
     replaced_by: Optional[str] = None
     replaced_at: Optional[str] = None
@@ -823,7 +828,7 @@ class QuestionUpdate(BaseModel):
     so a PATCH never resets a column the caller did not mean to touch."""
     question_number: Optional[str] = None
     text: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
     topic: Optional[str] = None
     answer: Optional[str] = None
     extraction_confidence: Optional[str] = None
@@ -836,7 +841,7 @@ class QuestionUpdate(BaseModel):
 
 class MarkItemIn(BaseModel):
     question_id: int
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
 
 
 class MarksBulkIn(BaseModel):
@@ -872,7 +877,7 @@ class QuestionCreate(BaseModel):
     part of an existing one when parent_seq names it."""
     text: str = Field(..., min_length=1)
     question_number: Optional[str] = None
-    marks: Optional[int] = None
+    marks: Optional[Marks] = None
     section: Optional[str] = None
     parent_seq: Optional[int] = Field(
         None, description="The seq of the question this is a part of, "

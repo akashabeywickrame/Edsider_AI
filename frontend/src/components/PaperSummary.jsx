@@ -1,4 +1,5 @@
 import { joinSoftBreaks } from '../lib/text.js'
+import { roundMarks } from '../lib/numbers.js'
 import '../pages/data-entry/PaperIntake.css'
 
 // The paper's title, facts and instructions - the same header on the final
@@ -18,9 +19,9 @@ export function durationText(settings) {
 // with parts is worth what its parts add up to.
 export function totalMarks(questions) {
   const parents = new Set(questions.map((q) => q.parent_seq).filter((x) => x != null))
-  return questions
+  return roundMarks(questions
     .filter((q) => !parents.has(q.seq) && q.marks != null)
-    .reduce((sum, q) => sum + Number(q.marks), 0)
+    .reduce((sum, q) => sum + Number(q.marks), 0))
 }
 
 // The paper's total: the figure the paper states (questions to answer x marks

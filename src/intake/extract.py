@@ -82,19 +82,24 @@ _Q_START = re.compile(
 # with the same "12 cm" / "in 1948" problem the bare-number rule above
 # was written to avoid - an in-sentence parenthetical reference number
 # essentially never sits at the exact end of its line.
-_MARKS_PATTERNS = [
-    re.compile(r"\(\s*(\d{1,3})\s*mark[s]?\s*\)", re.IGNORECASE),
-    re.compile(r"\(\s*(\d{1,3})\s*mks?\s*\)", re.IGNORECASE),
-    re.compile(r"\[\s*(\d{1,3})\s*mark[s]?\s*\]", re.IGNORECASE),
-    re.compile(r"\bmark[s]?\s*[:\-]?\s*(\d{1,3})\b", re.IGNORECASE),
-    re.compile(r"\b(\d{1,3})\s*mark[s]?\b", re.IGNORECASE),
-    re.compile(r"\[\s*(\d{1,3})\s*\]"),
-    re.compile(r"\(\s*(\d{1,3})\s*\)[ \t]*$", re.MULTILINE),
+#
+# Half marks are real ("(2.5 marks)", "[1.5]"), so a mark may carry up to
+# two decimal places. Read as whole numbers only, "2.5 marks" came back as
+# 5: the "5" after the point is itself a number followed by "marks".
+_MARK_NUMBER = r"(?<![\d.])\b(\d{1,3}(?:\.\d{1,2})?)(?![\d.]*\d)"
+_MARKS_PATTERNS = [re.compile(p.replace("N", _MARK_NUMBER), flags) for p, flags in [
+    (r"\(\s*N\s*mark[s]?\s*\)", re.IGNORECASE),
+    (r"\(\s*N\s*mks?\s*\)", re.IGNORECASE),
+    (r"\[\s*N\s*mark[s]?\s*\]", re.IGNORECASE),
+    (r"\bmark[s]?\s*[:\-]?\s*N", re.IGNORECASE),
+    (r"N\s*mark[s]?\b", re.IGNORECASE),
+    (r"\[\s*N\s*\]", 0),
+    (r"\(\s*N\s*\)[ \t]*$", re.MULTILINE),
     # Sinhala: "(ලකුණු 60 යි)" - "60 marks" - after every part of a real
     # A/L Chemistry paper. OCR also read one as "(ලකුණ 60 යි)", the final
     # vowel sign lost, so it is optional.
-    re.compile(r"\(\s*ලකුණු?\s*(\d{1,3})\s*(?:යි|ක්)?\s*\)"),
-]
+    (r"\(\s*ලකුණු?\s*N\s*(?:යි|ක්)?\s*\)", 0),
+]]
 # Patterns that name the word "marks" next to the number. Only these may
 # read a value over 100 - an A/L structured question carries 150 - since
 # with the word written there is no "12 cm" / "in 1948" to mistake.
@@ -244,6 +249,18 @@ def grade_label(code):
     return f"Grade {int(m.group(1))}" if m else (code or "")
 
 
+def mark_value(text):
+    """A mark as written - "15" as 15, "2.5" as 2.5, "2.0" as 2."""
+    value = round(float(text), 2)
+    return int(value) if value.is_integer() else value
+
+
+def mark_total(marks):
+    """Marks added up as a person would: 2.5 + 1.5 is 4, and 0.1 + 0.2 is
+    0.3 - not floating point's 0.30000000000000004."""
+    return mark_value(sum(marks))
+
+
 def _marks_matches(body):
     """Every (start, end, value) _MARKS_PATTERNS finds in body, already
     parsed and range-checked - the shared search _find_marks() and
@@ -253,8 +270,8 @@ def _marks_matches(body):
     for n, pat in enumerate(_MARKS_PATTERNS):
         top = 300 if n in _WORDED_MARKS else 100
         for m in pat.finditer(body):
-            value = int(m.group(1))
-            if 1 <= value <= top:
+            value = mark_value(m.group(1))
+            if 0 < value <= top:
                 hits.append((m.start(), m.end(), value))
     return hits
 
@@ -1054,7 +1071,7 @@ def part_marks(sections):
         if each is None and _ONE_MARK.search(sec.get("instructions") or ""):
             each = 1
         count = _answer_count(sec.get("instructions"), sec.get("questions") or 0)
-        total = count * each if count and each is not None else None
+        total = mark_total([count * each]) if count and each is not None else None
         out.append({"label": sec.get("label"), "questions": sec.get("questions"),
                     "answer_count": count, "marks_each": each,
                     "assumed_marks": assumed, "total": total})
@@ -1074,7 +1091,8 @@ def suggest_settings(raw_text, sections):
     breakdown = part_marks(sections)
     totals = [b["total"] for b in breakdown]
     out["parts_marks"] = breakdown
-    out["total_marks"] = sum(totals) if breakdown and all(t is not None for t in totals) else None
+    out["total_marks"] = (mark_total(totals) if breakdown and all(t is not None for t in totals)
+                          else None)
     m = _DURATION.search(raw_text or "")
     if m:
         value = float(m.group(1))
@@ -1211,7 +1229,7 @@ def _own_marks(piece, stem, inner_parts):
         return explicit
     child_marks = [p["marks"] for p in inner_parts]
     if all(m is not None for m in child_marks):
-        return sum(child_marks)
+        return mark_total(child_marks)
     # Some child has no mark of its own yet (still being corrected, or
     # the paper genuinely does not print one there) - an incomplete sum
     # would look like a real total when it understates one, so this
@@ -1278,7 +1296,7 @@ _MCQ_HINT = re.compile(
 )
 _STRUCTURED_HINT = re.compile(r"structured|essay", re.IGNORECASE)
 _MARKS_EACH = re.compile(
-    r"(?:each|every)[ \t]+question[ \t]+carries[ \t]+(\d{1,3})[ \t]+marks?"
+    r"(?:each|every)[ \t]+question[ \t]+carries[ \t]+(\d{1,3}(?:\.\d{1,2})?)[ \t]+marks?"
     # Sinhala, from the real A/L Chemistry paper: "එක් එක් ප්‍රශ්නයට ලකුණු
     # 150 බැගින්" - "150 marks for each question".
     r"|එක්[ \t]+එක්[ \t]+ප්‍?රශ්නයට[ \t]+ලකුණු[ \t]+(\d{1,3})[ \t]+බැගින්",
@@ -2264,7 +2282,7 @@ def _structure(text, style=DEFAULT_SPLIT_STYLE):
         first = sp["starts"][0][0] if sp["starts"] else sp["end"]
         intro = text[sp["intro_start"]:first].strip()
         each = _MARKS_EACH.search(intro)
-        each = int(each.group(1) or each.group(2)) if each else None
+        each = mark_value(each.group(1) or each.group(2)) if each else None
 
         pieces = []
         for i, (pos, _n, raw) in enumerate(sp["starts"]):

@@ -149,6 +149,7 @@ export default function AddQuestion({ docId, tree, parts, onAdded }) {
             className="es-input"
             type="number"
             min="0"
+            step="any"
             value={marks}
             onChange={(e) => setMarks(e.target.value)}
           />
