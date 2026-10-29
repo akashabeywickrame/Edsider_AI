@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 import { STATUS_LABEL } from './StatusPill.jsx'
 import { loadLists } from '../pages/data-entry/EdsiderLabels.jsx'
+import './PaperFilters.css'
 
 // Finding papers among hundreds, a page at a time from the server (GET
 // /intake/documents/search): the filters EdSider's assessment library has -
@@ -201,6 +202,10 @@ export default function PaperFilters({ search, idPrefix = 'pf', label = 'Find a 
             onChange={(e) => setFilter('uploaded_to', e.target.value)}
           />
         </div>
+        {/* Always there, as EdSider's library has it; nothing to clear, it rests. */}
+        <Button variant="secondary" size="sm" className="pf-clear" onClick={clear} disabled={!filtered}>
+          Clear filters
+        </Button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 10, alignItems: 'end' }}>
@@ -224,11 +229,6 @@ export default function PaperFilters({ search, idPrefix = 'pf', label = 'Find a 
             </select>
           </div>
         ))}
-        {filtered ? (
-          <Button variant="ghost" size="sm" onClick={clear}>
-            Clear filters
-          </Button>
-        ) : null}
       </div>
     </>
   )

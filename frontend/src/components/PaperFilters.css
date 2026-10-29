@@ -1,0 +1,2 @@
+/* The filter bar shared by the paper finder and Paper assignment. */
+.es-btn.pf-clear { align-self: flex-end; white-space: nowrap; min-height: 47px; /* an .es-input's height */ }
