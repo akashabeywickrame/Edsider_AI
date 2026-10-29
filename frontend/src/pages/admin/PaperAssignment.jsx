@@ -415,8 +415,9 @@ export default function PaperAssignment() {
                           </div>
                         ) : (
                           <Button
-                            variant="ghost"
+                            variant="secondary"
                             size="sm"
+                            className="pa-btn-gap"
                             onClick={() => {
                               choose(a.id, '')
                               setChanging(a.id)
@@ -454,15 +455,14 @@ export default function PaperAssignment() {
                       )}
                     </td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch' }}>
                         {UNASSIGNABLE.includes(a.status) && !a.archived_at ? (
-                          <Button variant="ghost" size="sm" onClick={() => unassign(a)} disabled={busy[a.id]}>
+                          <Button variant="secondary" size="sm" className="pa-btn-theme" onClick={() => unassign(a)} disabled={busy[a.id]}>
                             Unassign
                           </Button>
                         ) : null}
                         {DELETABLE.includes(a.status) && !a.archived_at ? (
-                          <Button variant="ghost" size="sm" onClick={() => removePaper(a)} disabled={busy[a.id]}
-                            aria-label={`Delete paper ${a.id}`}>
+                          <Button variant="danger" size="sm" onClick={() => removePaper(a)} disabled={busy[a.id]}>
                             Delete
                           </Button>
                         ) : (

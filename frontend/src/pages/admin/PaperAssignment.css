@@ -12,6 +12,11 @@
 .pa-tools--foot { padding-top: 12px; }
 .pa-tools--foot:empty { display: none; }
 .pa-bold { font-weight: 600; }
+/* Unassign: an outlined button in the theme's own colour, beside Delete's
+   red (es-btn--danger). */
+.es-btn.pa-btn-theme { color: var(--primary); border-color: var(--primary); }
+.es-btn.pa-btn-theme:hover { background: var(--primary-soft); }
+.pa-btn-gap { margin-top: 8px; }
 .pa-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .pa-grid { grid-template-columns: 1fr; }
