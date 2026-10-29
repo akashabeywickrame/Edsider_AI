@@ -16,10 +16,9 @@ import './PaperAssignment.css'
 // does not want to review it.
 
 const WITH_TEACHER = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
-// Where an administrator may take a paper off its teacher, and where one
-// may delete it - never once it is in EdSider or archived (the API agrees).
+// Where an administrator may take a paper off its teacher (not once sent or
+// archived). Any paper here may be deleted - one sent to EdSider stays there.
 const UNASSIGNABLE = ['teacher_review', 'review_done', 'ready_to_publish']
-const DELETABLE = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish']
 const ASSIGNED_MENUS = [...MENUS, TEACHER_MENU]
 
 function gradeText(code) {
@@ -216,7 +215,10 @@ export default function PaperAssignment() {
   // and history.
   async function removePaper(doc) {
     const name = doc.paper_title || doc.paper_subject || doc.filename
-    if (!window.confirm(`Delete #${doc.id} ${name}? Its questions, its copy in the question bank, pictures, file and history are deleted. This cannot be undone.`)) return
+    const sent = doc.status === 'published'
+      ? "\n\nIt has been sent to EdSider: it stays there, untouched - only EdsiderAI's copy and its record of sending it are deleted."
+      : ''
+    if (!window.confirm(`Delete #${doc.id} ${name}? Its questions, its copy in the question bank, pictures, file and history are deleted. This cannot be undone.${sent}`)) return
     setBusy((b) => ({ ...b, [doc.id]: true }))
     setError(null)
     setMessage(null)
@@ -461,13 +463,9 @@ export default function PaperAssignment() {
                             Unassign
                           </Button>
                         ) : null}
-                        {DELETABLE.includes(a.status) && !a.archived_at ? (
-                          <Button variant="danger" size="sm" onClick={() => removePaper(a)} disabled={busy[a.id]}>
-                            Delete
-                          </Button>
-                        ) : (
-                          <span className="es-caption">{UNASSIGNABLE.includes(a.status) ? '' : '-'}</span>
-                        )}
+                        <Button variant="danger" size="sm" onClick={() => removePaper(a)} disabled={busy[a.id]}>
+                          Delete
+                        </Button>
                       </div>
                     </td>
                   </tr>

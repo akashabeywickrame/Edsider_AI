@@ -445,7 +445,10 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
         held = store.paper_holders(conn, **{key: int(params[key])})
     if held is None:
         return user                    # the route itself answers 404
-    if writing and held["archived_at"]:
+    # An administrator deleting a whole paper - archived and sent ones too.
+    deleting_paper = (request.method == "DELETE" and key == "doc_id"
+                      and role in (None, "admin", "superadmin"))
+    if writing and held["archived_at"] and not deleting_paper:
         # Its questions live in the question bank now - for everyone.
         raise HTTPException(409, "This paper is in the question bank and archived - "
                                  "it can no longer be changed.")
@@ -2184,8 +2187,8 @@ def remove_document(doc_id: int, user: dict = Depends(current_user)):
     (store.delete_intake_document). Data entry removes one uploaded by
     mistake, only while it is still 'extracted'; an administrator, from
     Paper assignment, one at any later stage too, with its question-bank
-    copy. One sent to EdSider, or one that has moved on for data entry, is a
-    409."""
+    copy - one sent to EdSider too, which keeps its own. One that has moved
+    on, for data entry, is a 409."""
     # Called without a request (a test), it acts as data entry.
     admin = isinstance(user, dict) and user.get("role") in (None, "admin", "superadmin")
     with store.connect() as conn:

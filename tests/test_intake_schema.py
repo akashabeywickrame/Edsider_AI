@@ -313,13 +313,22 @@ def test_an_assigned_paper_can_be_unassigned_or_deleted_from_paper_assignment(cl
     assert left == 0
 
 
-def test_a_paper_sent_to_edsider_cannot_be_deleted(client):
+def test_a_paper_sent_to_edsider_is_deleted_only_by_an_administrator(client):
+    """Asked for: ready-to-publish and published papers deleted from our
+    end too - archived, and with its record of sending - by an
+    administrator; data entry cannot."""
     doc = call(client, OP1, "POST", "/intake/documents/from-text",
                json={"text": PAPER_TEXT, "title": "GIT Gr12"}).json()
+    path = f"/intake/documents/{doc['id']}"
     with store.connect() as conn:
         store.update_intake_document(conn, doc["id"], status="published")
-    refused = call(client, ADMIN, "DELETE", f"/intake/documents/{doc['id']}")
-    assert refused.status_code == 409 and "sent to EdSider" in refused.json()["detail"]
+        conn.execute("UPDATE intake.document SET archived_at = now() WHERE id = ?", (doc["id"],))
+        conn.execute("INSERT INTO intake.edsider_send (document_id, target, ok) VALUES (?, 'copy', TRUE)",
+                     (doc["id"],))
+    assert call(client, OP1, "DELETE", path).status_code == 409
+    assert call(client, ADMIN, "PATCH", path, json={"paper_title": "x"}).status_code == 409
+    assert call(client, ADMIN, "DELETE", path).status_code == 204
+    assert call(client, ADMIN, "GET", path).status_code == 404
 
 
 # ----------------------------------------- the copy from the old tables

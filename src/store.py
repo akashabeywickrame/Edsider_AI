@@ -3185,8 +3185,9 @@ def delete_intake_document(conn, doc_id, moved_on=False):
     it is still 'extracted': once data entry has checked it, a copy is in
     the question bank and a teacher may have it. With `moved_on` (an
     administrator, from Paper assignment) a paper at any later stage goes
-    too, its question-bank copy with it. A paper sent to EdSider never
-    does: it is in EdSider, and this is its record of that.
+    too, its question-bank copy with it - a paper sent to EdSider and
+    archived as well (asked for): only our copy and our record of sending
+    it go; EdSider keeps its own.
     Every row of it goes (each table names the paper ON DELETE CASCADE).
     Returns the stored files it held, for delete_stored_files() once this
     has committed - files first and a failed commit would leave rows
@@ -3195,9 +3196,8 @@ def delete_intake_document(conn, doc_id, moved_on=False):
                        (doc_id,)).fetchone()
     if doc is None:
         raise KeyError(doc_id)
-    if last_send(conn, doc_id) or doc["status"] == "published":
-        raise ValueError("This paper has been sent to EdSider, so it cannot be removed here.")
-    if not moved_on and (doc["status"] != "extracted" or doc["archived_at"]):
+    if not moved_on and (doc["status"] != "extracted" or doc["archived_at"]
+                         or last_send(conn, doc_id)):
         raise ValueError("Only a paper still at Extracted can be removed - this one has "
                          "moved on.")
     bank = f"intake-{doc_id}"
