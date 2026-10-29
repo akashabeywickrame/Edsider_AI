@@ -6,6 +6,11 @@
 .pa-card__meta { border-top: 1px solid var(--border-soft); padding-top: 12px; margin: 0; }
 .pa-section { margin-top: 12px; }
 .pa-table-card { padding: 0; overflow: hidden; }
+/* The table runs to the card's edges; the filters above it and the pages
+   under it do not. */
+.pa-tools { display: grid; gap: 10px; padding: 20px 24px 16px; }
+.pa-tools--foot { padding-top: 12px; }
+.pa-tools--foot:empty { display: none; }
 .pa-bold { font-weight: 600; }
 .pa-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 @media (max-width: 1100px) {

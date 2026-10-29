@@ -339,19 +339,22 @@ export default function PaperAssignment() {
       </section>
 
       <h2 className="scr-h2 pa-section">Already assigned</h2>
-      <section className="es-card pa-table-card" aria-label="Already assigned" style={{ display: 'grid', gap: 10 }}>
-        <PaperFilters search={assignedSearch} idPrefix="pa-f" />
-        {assignedSearch.error ? (
-          <Notice tone="error" title="Could not load the assigned papers">
-            {assignedSearch.error}
-          </Notice>
-        ) : null}
-        <PaperCount search={assignedSearch} />
-        {assigned.length === 0 ? (
-          <p className="es-caption" style={{ margin: 0 }}>
-            {assignedSearch.filtered ? 'No assigned papers match these filters.' : 'No papers have been handed to a teacher yet.'}
-          </p>
-        ) : (
+      <section className="es-card pa-table-card" aria-label="Already assigned">
+        <div className="pa-tools">
+          <PaperFilters search={assignedSearch} idPrefix="pa-f" />
+          {assignedSearch.error ? (
+            <Notice tone="error" title="Could not load the assigned papers">
+              {assignedSearch.error}
+            </Notice>
+          ) : null}
+          <PaperCount search={assignedSearch} />
+          {assigned.length === 0 ? (
+            <p className="es-caption" style={{ margin: 0 }}>
+              {assignedSearch.filtered ? 'No assigned papers match these filters.' : 'No papers have been handed to a teacher yet.'}
+            </p>
+          ) : null}
+        </div>
+        {assigned.length === 0 ? null : (
           <table className="scr-table">
             <thead>
               <tr>
@@ -523,7 +526,9 @@ export default function PaperAssignment() {
             </tbody>
           </table>
         )}
-        <Pager search={assignedSearch} />
+        <div className="pa-tools pa-tools--foot">
+          <Pager search={assignedSearch} />
+        </div>
       </section>
     </>
   )
