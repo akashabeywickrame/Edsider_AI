@@ -198,17 +198,31 @@ export default function PaperIntake() {
         setAddOpen(false)
         setPreviewMode('file')
       })
-      .catch((err) => {
-        setLoadError(err.message)
-        setLoadGone(Boolean(err.paperDeleted))
-        // Deleted: nothing of it stays on screen, and it leaves the list.
-        if (err.paperDeleted) {
-          setDoc(null)
-          setQuestions(null)
-          refreshList()
-        }
-      })
+      .catch((err) => showPaperError(err, id))
       .finally(() => setLoading(false))
+  }
+
+  // Whatever went wrong with the open paper, first ask whether it is still
+  // there: one an administrator deleted says so, rather than showing the
+  // error the deletion caused. Only a paper that still exists shows it.
+  async function showPaperError(err, id = selectedId) {
+    let gone = Boolean(err.paperDeleted)
+    if (!gone && id) {
+      try {
+        await api.getIntakeDocument(id)
+      } catch (check) {
+        // Not found: the paper itself is gone, whatever the first error was.
+        gone = Boolean(check.paperDeleted) || check.status === 404
+      }
+    }
+    if (gone) {
+      // Nothing of it stays on screen, and it leaves the list.
+      setDoc(null)
+      setQuestions(null)
+      refreshList()
+    }
+    setLoadGone(gone)
+    setLoadError(gone ? 'This paper has been deleted.' : err.message)
   }
   useEffect(() => {
     loadSelected(selectedId)
@@ -222,7 +236,7 @@ export default function PaperIntake() {
       setDoc(d)
       refreshList()
     } catch (err) {
-      setLoadError(err.message)
+      showPaperError(err)
     }
   }
 
