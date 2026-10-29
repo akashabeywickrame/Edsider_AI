@@ -43,6 +43,8 @@ export default function TeacherReview() {
   const toast = useToast()
   const [papers, setPapers] = useState(null)
   const [docId, setDocId] = useState(null)
+  // The paper that was open has been deleted.
+  const [paperGone, setPaperGone] = useState(false)
   const [doc, setDoc] = useState(null)
   const [questions, setQuestions] = useState([])
   const [comments, setComments] = useState({})
@@ -109,7 +111,15 @@ export default function TeacherReview() {
         setDecision(null)
       })
       .catch((err) => {
-        if (live) setLoadError(err.message)
+        if (!live) return
+        if (err.paperDeleted) {
+          // Deleted by an administrator: off the screen, and the list is
+          // read again without it.
+          setDoc(null)
+          setDocId(null)
+          setPaperGone(true)
+          setReloadKey((k) => k + 1)
+        } else setLoadError(err.message)
       })
     return () => {
       live = false
@@ -242,6 +252,11 @@ export default function TeacherReview() {
 
       <div className={`tr-split${doc ? ' tr-split--with-original' : ''}`}>
       <div className="tr-main">
+      {paperGone ? (
+        <Notice tone="warning" title="This paper has been deleted">
+          It is no longer in EdsiderAI.
+        </Notice>
+      ) : null}
       {isDevAuth ? (
         <form className="es-card tr-viewas" onSubmit={applyViewAs}>
           <label className="es-field__label" htmlFor="tr-viewas">
@@ -279,7 +294,10 @@ export default function TeacherReview() {
               id="tr-paper"
               className="es-input"
               value={docId || ''}
-              onChange={(e) => setDocId(Number(e.target.value))}
+              onChange={(e) => {
+                setPaperGone(false)
+                setDocId(Number(e.target.value))
+              }}
             >
               {papers.map((p) => (
                 <option key={p.id} value={p.id}>

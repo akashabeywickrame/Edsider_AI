@@ -15,6 +15,7 @@ import EdsiderLabels, { loadLists } from './EdsiderLabels.jsx'
 import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from './GroupInstructions.jsx'
 import { SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
+import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 
 const RAIL = [
   { id: 'upload', icon: 'upload', label: 'Upload' },
@@ -106,6 +107,8 @@ export default function PaperIntake() {
   const [comments, setComments] = useState({})
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState(null)
+  // The open paper was deleted (by an administrator, say) - not a fault.
+  const [loadGone, setLoadGone] = useState(false)
 
   const [title, setTitle] = useState('')
   const [grade, setGrade] = useState('')
@@ -195,7 +198,16 @@ export default function PaperIntake() {
         setAddOpen(false)
         setPreviewMode('file')
       })
-      .catch((err) => setLoadError(err.message))
+      .catch((err) => {
+        setLoadError(err.message)
+        setLoadGone(Boolean(err.paperDeleted))
+        // Deleted: nothing of it stays on screen, and it leaves the list.
+        if (err.paperDeleted) {
+          setDoc(null)
+          setQuestions(null)
+          refreshList()
+        }
+      })
       .finally(() => setLoading(false))
   }
   useEffect(() => {
@@ -276,10 +288,7 @@ export default function PaperIntake() {
   // Reads the uploaded file again - tables come back as pictures on their
   // questions - and replaces the questions, as a re-split does.
   async function handleReread() {
-    const ok = window.confirm(
-      'Read the uploaded file again? Its tables are attached to their questions as pictures. This REPLACES the questions below, including any edits already made to them.',
-    )
-    if (!ok) return
+    if (!(await confirmDialog('Read the file again and replace these questions?', { danger: true }))) return
     setResplitBusy(true)
     setResplitError(null)
     try {
@@ -332,10 +341,7 @@ export default function PaperIntake() {
   // Data entry's last step: the questions are copied to the question bank and
   // the paper goes on for a teacher's review.
   async function handleFinish() {
-    const ok = window.confirm(
-      `Finish data entry? This paper's ${questions?.length ?? 0} question(s) are copied to the question bank and it goes on for a teacher's review.`,
-    )
-    if (!ok) return
+    if (!(await confirmDialog('Finish data entry for this paper?'))) return
     setFinishBusy(true)
     setFinishError(null)
     try {
@@ -517,7 +523,11 @@ export default function PaperIntake() {
             </Notice>
           ) : null}
 
-          {loadError ? (
+          {loadError && loadGone ? (
+            <Notice tone="warning" title="This paper has been deleted">
+              It is no longer in EdsiderAI. Choose another paper from the list.
+            </Notice>
+          ) : loadError ? (
             <Notice tone="error" title="Could not load this paper">
               {loadError}
             </Notice>

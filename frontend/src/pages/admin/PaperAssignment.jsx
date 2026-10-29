@@ -6,6 +6,7 @@ import StatusPill from '../../components/StatusPill.jsx'
 import { loadLists } from '../data-entry/EdsiderLabels.jsx'
 import PaperFilters, { MENUS, PaperCount, Pager, TEACHER_MENU, usePaperSearch } from '../../components/PaperFilters.jsx'
 import './PaperAssignment.css'
+import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 
 // Papers data entry has checked for internal repeats, waiting to be handed to
 // a teacher - and the ones already with a teacher. Mirrors
@@ -169,10 +170,7 @@ export default function PaperAssignment() {
   // The question bank is refreshed one last time, the paper is written into
   // EdSider ready to publish there, and it is archived here as 'published'.
   async function sendToEdsider(doc) {
-    const ok = window.confirm(
-      `Send #${doc.id} ${doc.paper_subject || doc.filename} to EdSider? It is written into EdSider's database ready to publish and marked Published here - it can no longer be changed.`,
-    )
-    if (!ok) return
+    if (!(await confirmDialog('Send this paper to EdSider?'))) return
     setSending(doc.id)
     setError(null)
     setMessage(null)
@@ -193,7 +191,7 @@ export default function PaperAssignment() {
 
   // Back to "Ready to assign", its questions as they are.
   async function unassign(doc) {
-    if (!window.confirm(`Take #${doc.id} ${doc.paper_subject || doc.filename} off its teacher? It goes back to Ready to assign; its questions are kept.`)) return
+    if (!(await confirmDialog('Unassign this paper from its teacher?'))) return
     setBusy((b) => ({ ...b, [doc.id]: true }))
     setError(null)
     setMessage(null)
@@ -214,11 +212,7 @@ export default function PaperAssignment() {
   // Gone for good - its questions, its question-bank copy, pictures, file
   // and history.
   async function removePaper(doc) {
-    const name = doc.paper_title || doc.paper_subject || doc.filename
-    const sent = doc.status === 'published'
-      ? "\n\nIt has been sent to EdSider: it stays there, untouched - only EdsiderAI's copy and its record of sending it are deleted."
-      : ''
-    if (!window.confirm(`Delete #${doc.id} ${name}? Its questions, its copy in the question bank, pictures, file and history are deleted. This cannot be undone.${sent}`)) return
+    if (!(await confirmDialog('Delete this paper permanently?', { danger: true }))) return
     setBusy((b) => ({ ...b, [doc.id]: true }))
     setError(null)
     setMessage(null)

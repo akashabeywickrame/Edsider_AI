@@ -1,0 +1,21 @@
+/* The Yes / No confirmation (ConfirmDialog.jsx). */
+.cd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.cd-box {
+  width: 100%;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: var(--surface);
+}
+.cd-message { margin: 0; font-size: 18px; line-height: 27px; font-weight: 600; color: var(--text-dark); }
+.cd-actions { display: flex; justify-content: flex-end; gap: 10px; }

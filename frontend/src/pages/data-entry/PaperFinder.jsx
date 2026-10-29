@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import StatusPill from '../../components/StatusPill.jsx'
 import PaperFilters, { PaperCount, Pager, nameOn, usePaperSearch } from '../../components/PaperFilters.jsx'
+import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 
 // Finding one paper among hundreds - a dropdown of every paper stops working
 // long before 1,000 of them. The filters are EdSider's assessment library's
@@ -24,8 +25,7 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey, onRemove
   // An upload made by mistake goes while it is still Extracted - after
   // that it has moved on (the API refuses it too).
   async function remove(d) {
-    const name = d.paper_title || d.filename
-    if (!window.confirm(`Remove #${d.id} ${name}? Its questions, pictures and file are deleted. This cannot be undone.`)) return
+    if (!(await confirmDialog('Delete this paper permanently?', { danger: true }))) return
     setRemoving(d.id)
     setRemoveError(null)
     try {

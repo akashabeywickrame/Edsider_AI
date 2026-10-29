@@ -78,8 +78,12 @@ async function authHeaders() {
 function failure(res, detail) {
   // A detail may be {message, problems} - what stops a paper being sent to
   // EdSider, one problem per question - kept on the error for the page.
-  const text = typeof detail === 'string' ? detail : detail?.message
+  let text = typeof detail === 'string' ? detail : detail?.message
+  // A paper someone has deleted while another page still had it open.
+  const gone = res.status === 404 && /^No (intake document with id|paper #)/.test(text || '')
+  if (gone) text = 'This paper has been deleted.'
   const error = new Error(text || `${res.status} ${res.statusText}`)
+  error.paperDeleted = gone
   // Lets a caller tell "refused" (403) apart from "service down" or a
   // bug - RequireUser needs exactly that distinction.
   error.status = res.status

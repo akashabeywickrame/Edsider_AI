@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 import { roundMarks } from '../../lib/numbers.js'
+import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 
 // Marks for a paper, set part by part. Each question's own marks are the
 // figures that count; the part's total is what a student can earn from it -
@@ -272,7 +273,7 @@ export default function MarksSection({ doc, questions, onQuestionChanged, onSave
   }
 
   async function join(title) {
-    if (!window.confirm(`Join the sections of ${title} back into one part? Their marks plans are cleared.`)) return
+    if (!(await confirmDialog(`Join the sections of ${title} back into one part?`))) return
     setBusy(true)
     setError(null)
     try {

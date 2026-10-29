@@ -5,6 +5,7 @@ import { shownNumber } from '../../lib/numbers.js'
 import RichEditor from '../../components/RichEditor.jsx'
 import QuestionHistory from '../../components/QuestionHistory.jsx'
 import { useToast } from '../../components/Toast.jsx'
+import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 
 function slotLabel(slot) {
   if (slot === 'question') return 'Question'
@@ -391,7 +392,7 @@ export default function PaperIntakeQuestion({
   // many wrong pieces can be typed in again rather than repaired piece by
   // piece. The question keeps its number, place and marks.
   async function handleRecreate() {
-    if (!window.confirm("Clear this question's text, options and answer so it can be typed in again?")) {
+    if (!(await confirmDialog('Clear this question?', { danger: true }))) {
       return
     }
     setBusy(true)
