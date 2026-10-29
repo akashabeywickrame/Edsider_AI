@@ -57,7 +57,7 @@ def paper(local_db):
 def _with_teachers(client, doc_id):
     assert call(client, OP, "POST", f"/intake/documents/{doc_id}/finish-data-entry").status_code == 200
     call(client, ADMIN, "POST", f"/intake/documents/{doc_id}/assign",
-         json={"teacher_identities": [T1, T2]})
+         json={"teacher_identities": [T1]})
 
 
 def _questions(client, who, doc_id):
@@ -88,7 +88,7 @@ def test_a_flagged_repeat_is_replaced_and_its_old_version_kept(client, paper):
 
     # Its history: the earlier question, who replaced it, when and why, and
     # the picture that went with it - kept, not deleted.
-    history = call(client, T2, "GET", f"/intake/questions/{q3}/history").json()
+    history = call(client, ADMIN, "GET", f"/intake/questions/{q3}/history").json()
     assert history["current"]["text"] == "Explain the term feedback in a system."
     earlier, = history["earlier"]
     assert (earlier["text"], earlier["answer"], earlier["marks"]) == (
@@ -102,10 +102,10 @@ def test_a_flagged_repeat_is_replaced_and_its_old_version_kept(client, paper):
     # listed beside the paper's own.
     assert [i["slot"].split(":")[0] for i in shown] == ["earlier"]
 
-    # The other teacher sees what was done; both can now finish.
-    assert _questions(client, T2, doc_id)[q3]["repeat"]["status"] == "replaced"
-    assert call(client, T1, "POST", f"/intake/documents/{doc_id}/finish",
-                json={"status": "review_done"}).status_code == 200
+    # Settled, the teacher can finish: the paper is ready to publish.
+    done = call(client, T1, "POST", f"/intake/documents/{doc_id}/finish",
+                json={"status": "review_done"}).json()
+    assert done["status"] == "ready_to_publish"
 
     log = [h["action"] for h in call(client, ADMIN, "GET", f"/intake/documents/{doc_id}/history").json()]
     assert "Q3 flagged as a repeat of Q1" in log and "Q3 replaced with a new question" in log
@@ -123,11 +123,14 @@ def test_the_owner_teacher_may_keep_a_flagged_question_saying_why(client, paper)
 
 
 def test_the_owner_settles_repeats_and_the_syllabus_checker_only_checks(client, paper):
-    """Asked for: the paper's owner teacher (the first assigned) answers the
-    repeats; the overall checking teacher checks the syllabus and comments."""
+    """A paper given two teachers, as papers were before one became enough:
+    the owner (the first assigned) answers the repeats; the syllabus
+    checker checks and comments."""
     doc_id, (q1, _q2, q3) = paper
     call(client, OP, "POST", f"/intake/questions/{q3}/flag", json={"repeat_of": q1})
-    _with_teachers(client, doc_id)
+    assert call(client, OP, "POST", f"/intake/documents/{doc_id}/finish-data-entry").status_code == 200
+    with store.connect() as conn:
+        store.assign_teachers(conn, doc_id, [T1, T2], assigned_by=ADMIN)
     doc = call(client, ADMIN, "GET", f"/intake/documents/{doc_id}").json()
     assert doc["teacher_owner"] == T1 and doc["teachers"] == [T1, T2]
 
@@ -147,13 +150,13 @@ def test_the_owner_settles_repeats_and_the_syllabus_checker_only_checks(client, 
     assert done.json()["status"] == "ready_to_publish"
 
 
-def test_reassigning_swaps_owner_and_checker(client, paper):
+def test_reassigning_hands_the_paper_to_the_new_teacher(client, paper):
     doc_id, _ids = paper
     _with_teachers(client, doc_id)
     call(client, ADMIN, "POST", f"/intake/documents/{doc_id}/assign",
-         json={"teacher_identities": [T2, T1]})
+         json={"teacher_identities": [T2]})
     doc = call(client, ADMIN, "GET", f"/intake/documents/{doc_id}").json()
-    assert (doc["teacher_owner"], doc["teachers"]) == (T2, [T2, T1])
+    assert (doc["teacher_owner"], doc["teachers"]) == (T2, [T2])
 
 
 def test_only_data_entry_flags_and_only_a_teacher_replaces(client, paper):

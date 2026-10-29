@@ -70,13 +70,38 @@ def _block(text, key, kind="unstyled"):
             "inlineStyleRanges": [], "entityRanges": [], "data": {}}
 
 
+# A line that starts a list item - "(i)", "a)", "a.", "1.", "අ)", "-" -
+# breaks where the paper breaks it. Kept the same as joinSoftBreaks() in
+# frontend/src/lib/text.js, so EdSider shows what our preview shows.
+_LIST_START = re.compile(
+    r"^\s*(\(?[ivxIVX]{1,4}\)|\(?[a-zA-Z][.)]|\(?[අ-ඖ]\)|\(?\d{1,2}[.)]|[-•*])\s")
+
+
+def join_soft_breaks(text):
+    """The paper's own line wraps joined back into running text. The
+    extractor keeps every line as printed, so a sentence wrapped at the
+    paper's margin is several lines - and EdSider, a block per line, showed
+    it broken there rather than across its page (reported on a Biosystem
+    MCQ). A blank line, a list item, and a table row ("A | B") still break."""
+    out = []
+    for line in (text or "").split("\n"):
+        if (out and line.strip() and not _LIST_START.match(line) and " | " not in line
+                and out[-1].strip() and " | " not in out[-1]):
+            out[-1] = f"{out[-1].rstrip()} {line.lstrip()}"
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def draft_doc(text, seed, images=()):
-    """One Draft.js document: a block per line of `text` (blank lines at
-    either end dropped, runs of them kept as one), then each picture as
-    an atomic block - the shape EdSider's own editor saves. A picture is
-    its src, or (src, label): a label the paper prints under it ("A") is a
-    line of its own under the picture."""
-    lines = [line.rstrip() for line in (text or "").replace("\r\n", "\n").split("\n")]
+    """One Draft.js document: a block per paragraph of `text` - the
+    paper's line wraps joined (join_soft_breaks); blank lines at either end
+    dropped, runs of them kept as one - then each picture as an atomic
+    block - the shape EdSider's own editor saves. A picture is its src, or
+    (src, label): a label the paper prints under it ("A") is a line of its
+    own under the picture."""
+    text = join_soft_breaks((text or "").replace("\r\n", "\n"))
+    lines = [line.rstrip() for line in text.split("\n")]
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
@@ -245,7 +270,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     labels = doc.get("edsider_labels") or {}
     label = {k: labels.get(k) for k in ("medium_id", "term_id", "year_id", "exam_category_id",
                                        "difficulty_id", "source_id", "author_id",
-                                       "grading_method_id")}
+                                       "grading_method_id", "chapter_id")}
     if arrival_state not in ARRIVAL_STATES:
         raise ValueError(f"not a state a paper can arrive in: {arrival_state!r}")
 
@@ -279,7 +304,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
         "assessment_state": arrival_state, "status_id": ARRIVAL_STATES[arrival_state],
         "language_id": label["medium_id"], "difficulty_id": label["difficulty_id"],
         "category_id": None, "attempt_no_id": 1, "grade_id": doc.get("grade_id"),
-        "author_id": label["author_id"], "chapter_id": None,
+        "author_id": label["author_id"], "chapter_id": label["chapter_id"],
         "subject_id": doc.get("subject_id"), "term_id": label["term_id"],
         "year_id": label["year_id"], "privilege_id": 1,
         "exam_category_id": label["exam_category_id"], "source_id": label["source_id"],
@@ -355,6 +380,15 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
             "allow_instruction": False, "part_instruction": None}, "sections": []}
         if pi == 1 and notes:
             part["row"].update(allow_instruction=True, part_instruction=notes)
+        # "Answer 5 in all": each section's own count first, then the best of
+        # the rest from any of them (EdSider's optionalQuestionScoring.js).
+        # Kept on the first section's plan; left out of the row otherwise,
+        # as a database copied before EdSider added the columns lacks them.
+        first = group["sections"][0].get("label")
+        in_all = (plan.get(first if first is not None else "_") or {}).get("group_answer_count")
+        if in_all:
+            part["row"].update(allow_questions_to_answer=True, total_questions_to_answer=in_all)
+        counted = []
         for si, s in enumerate(group["sections"], 1):
             sec_key = f"sec{pi}_{si}"
             here = [q for q in top if (q.get("section") or None) == (s.get("label") or None)]
@@ -369,18 +403,33 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
                 if read.get("assumed_marks"):
                     problem("warning", f"{s.get('label') or 'The paper'}: no marks are printed for "
                                        "its MCQs, so 1 mark each is used.")
-            optional = to_answer is not None and 0 < to_answer < len(here)
+            # "None from this section unless chosen" is a count of 0 - only
+            # meaningful when the part's own total picks from it.
+            optional = to_answer is not None and to_answer < len(here) and (
+                to_answer > 0 or bool(in_all))
+            # "Question 1 must be answered, then any 3 of the rest": the
+            # compulsory ones always count, the student picks the others.
+            required = sum(1 for x in here if x.get("compulsory"))
+            if optional and required > to_answer:
+                problem("error", f"{s.get('label') or 'The paper'}: {required} compulsory questions "
+                                 f"but only {to_answer} to answer.")
             title_text = (s.get("label") if group["sub"]
                           else KIND_TITLE.get(s.get("kind")) or s.get("heading") or group["title"])
             part["sections"].append({"key": sec_key, "row": {
                 "section_title": title_text, "notation_id": None, "display_order": si,
                 "no_of_questions": len(here), "status_id": 1, "created_by": uid,
                 "allow_optional_questions": optional,
-                "no_of_required_questions": 0 if optional else None,
+                "no_of_required_questions": required if optional else None,
                 "no_of_questions_to_answer": to_answer if optional else None,
                 "allow_instruction": bool(s.get("instructions")),
                 "section_instruction": s.get("instructions")}})
             section_of_label[s.get("label") or None] = (sec_key, pi, each)
+            counted.append((to_answer if optional else len(here), len(here)))
+        if in_all:
+            least, most = sum(c for c, _ in counted), sum(n for _, n in counted)
+            if not least <= in_all <= most:
+                problem("warning", f"{group['title']}: {in_all} questions to answer in all, but its "
+                                   f"sections ask for {least} and hold {most}.")
         parts.append(part)
 
     first_section = parts[0]["sections"][0]["key"]
@@ -424,7 +473,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
             marks = q.get("marks") if q.get("marks") is not None else each
             if marks is None:
                 problem("error", "No marks - set them on the question or for its part.", q)
-            links.append(_link(row["key"], sec_key, number, marks, uid_text))
+            links.append(_link(row["key"], sec_key, number, marks, uid_text, q))
             continue
 
         child_keys = []
@@ -438,7 +487,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
                 problem("error", "No marks on this part.", child)
             else:
                 child_marks_total = extract.mark_total([child_marks_total, marks])
-            links.append(_link(row["key"], sec_key, number, marks, uid_text))
+            links.append(_link(row["key"], sec_key, number, marks, uid_text, q))
         if q.get("marks") is not None and child_marks_total and q["marks"] != child_marks_total:
             problem("warning", f"The question says {q['marks']} marks but its parts add up to "
                                f"{child_marks_total}; the parts' marks are sent.", q)
@@ -451,7 +500,7 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
                       sub_question_keys=child_keys, passage_key=None)
         rows.append(parent)
         # The parent's own link comes after its parts', as EdSider saves them.
-        links.append(_link(parent["key"], sec_key, number, 0, uid_text))
+        links.append(_link(parent["key"], sec_key, number, 0, uid_text, q))
 
     # ------------------------------------------------------- passages
     passages = []
@@ -499,6 +548,16 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     if not rows:
         problem("error", "The paper has no questions.")
 
+    # In a section where the student picks, EdSider counts a question not
+    # marked optional as compulsory - every one of them, so "answer 4 of 5"
+    # would have been marked out of all five. Its own papers mark them
+    # optional (8,289 links in the pre-prod copy).
+    picked_from = {sec["key"] for part in parts for sec in part["sections"]
+                   if sec["row"]["allow_optional_questions"]}
+    for link in links:
+        if link["section_key"] in picked_from and not link["compulsory"]:
+            link["row"]["is_optional"] = True
+
     marks_by_section = {}
     for link in links:
         marks_by_section[link["section_key"]] = extract.mark_total(
@@ -522,8 +581,10 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
     }
 
 
-def _link(question_key, section_key, number, marks, uid_text):
-    return {"question_key": question_key, "section_key": section_key, "row": {
+def _link(question_key, section_key, number, marks, uid_text, question):
+    # `compulsory` is the paper's question's own, for its parts' links too.
+    return {"question_key": question_key, "section_key": section_key,
+            "compulsory": bool(question.get("compulsory")), "row": {
         "added_by": f"CASS{uid_text}" if uid_text else None,
         "mark_allocation": float(marks) if marks is not None else None,
         "question_number": number, "is_optional": False}}

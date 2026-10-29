@@ -208,34 +208,26 @@ def test_a_paper_goes_operator_teacher_and_back(client):
     done = call(client, OP1, "POST", f"{path}/finish-data-entry")
     assert done.status_code == 200 and done.json()["status"] == "data_entry_done"
 
-    # With its two teachers: each may open it and tick it, the operator may
-    # only look.
+    # With its teacher - one: they may open it and tick it, the operator may
+    # only look, and another teacher may not open it.
     assert call(client, TEACHER, "GET", path).status_code == 403
     assert call(client, ADMIN, "POST", f"{path}/assign",
-                json={"teacher_identities": [TEACHER]}).status_code == 422   # two, not one
-    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER, TEACHER2]})
+                json={"teacher_identities": [TEACHER, TEACHER2]}).status_code == 422   # one, not two
+    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER]})
     q = f"/intake/questions/{qs[0]['id']}"
     assert call(client, OP1, "PATCH", q, json={"text": "changed"}).status_code == 409
     assert call(client, OP1, "GET", path).status_code == 200
-
-    # Each teacher's ticks are their own.
+    assert call(client, TEACHER2, "GET", path).status_code == 403
     assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": True}).json()["teacher_reviewed"]
-    ticks = {t: [x["teacher_reviewed"] for x in call(client, t, "GET", f"{path}/questions").json()]
-             for t in (TEACHER, TEACHER2)}
-    assert ticks[TEACHER][0] is True and ticks[TEACHER2][0] is False
 
-    # One finishes: still with the teachers, and that one can change nothing.
-    done = call(client, TEACHER, "POST", f"{path}/finish", json={"status": "review_done"}).json()
-    assert done["status"] == "teacher_review" and done["teachers_done"] == [TEACHER]
-    assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": False}).status_code == 409
-
-    # The other sends it back: the operator can change it again, no teacher can.
-    assert call(client, TEACHER2, "POST", f"{path}/finish",
+    # The teacher sends it back: the operator can change it again, the teacher cannot.
+    assert call(client, TEACHER, "POST", f"{path}/finish",
                 json={"status": "refer_back"}).status_code == 200
     assert call(client, OP1, "PATCH", q, json={"text": "fixed"}).status_code == 200
-    assert call(client, TEACHER2, "PATCH", q, json={"teacher_reviewed": True}).status_code == 409
+    assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": True}).status_code == 409
 
-    # Data entry finishes again: straight back to both teachers, both to review again.
+    # Data entry finishes again: straight back to the teacher, whose Review
+    # Done makes it ready to publish - nobody else to wait for.
     service.state["embedder"] = FakeEmbedder()
     try:
         call(client, OP1, "POST", f"{path}/check-duplicates")
@@ -243,21 +235,91 @@ def test_a_paper_goes_operator_teacher_and_back(client):
         service.state["embedder"] = None
     again = call(client, OP1, "POST", f"{path}/finish-data-entry").json()
     assert again["status"] == "teacher_review" and again["teachers_done"] == []
-    call(client, TEACHER, "POST", f"{path}/finish", json={"status": "review_done"})
-    assert call(client, ADMIN, "GET", path).json()["status"] == "teacher_review"
-    last = call(client, TEACHER2, "POST", f"{path}/finish", json={"status": "review_done"}).json()
-    assert last["status"] == "ready_to_publish"
+    last = call(client, TEACHER, "POST", f"{path}/finish", json={"status": "review_done"}).json()
+    assert last["status"] == "ready_to_publish" and last["teachers_done"] == [TEACHER]
+    assert call(client, TEACHER, "PATCH", q, json={"teacher_reviewed": False}).status_code == 409
 
     history = call(client, ADMIN, "GET", f"{path}/history").json()
     actions = [(h["action"], h.get("stage")) for h in history]
     # Whoever finished data entry is recorded as its operator.
-    assert actions[:9] == [
+    assert actions[:8] == [
         ("uploaded", None), ("status", None), ("assigned", "data_entry"),
         ("copied to the question bank", None), ("finished", "data_entry"), ("status", None),
-        ("assigned", "teacher"), ("assigned", "teacher"), ("status", None)]
+        ("assigned", "teacher"), ("status", None)]
     assert history[0]["actor"] == ADMIN and history[2]["assigned_to"] == OP1
     assert {h["assigned_to"] for h in history if h["action"] == "assigned"
-            and h.get("stage") == "teacher"} == {TEACHER, TEACHER2}
+            and h.get("stage") == "teacher"} == {TEACHER}
+
+
+def test_a_paper_goes_to_another_teacher_when_its_author_will_not_review_it(client):
+    """Asked for: one teacher a paper, normally its author; when the author
+    does not want to review it, it is given to someone else."""
+    doc = call(client, ADMIN, "POST", "/intake/documents/from-text",
+               json={"text": PAPER_TEXT, "title": "GIT Gr12"}).json()
+    path = f"/intake/documents/{doc['id']}"
+    with store.connect() as conn:
+        store.update_intake_document(conn, doc["id"], status="data_entry_done")
+    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER]})
+    moved = call(client, ADMIN, "POST", f"{path}/assign",
+                 json={"teacher_identities": [TEACHER2]}).json()
+    assert moved["teachers"] == [TEACHER2] and moved["status"] == "teacher_review"
+    assert call(client, TEACHER, "GET", path).status_code == 403
+    done = call(client, TEACHER2, "POST", f"{path}/finish", json={"status": "review_done"}).json()
+    assert done["status"] == "ready_to_publish"
+
+
+def test_an_assigned_paper_can_be_unassigned_or_deleted_from_paper_assignment(client):
+    """Asked for: Unassign (back to Ready to assign) and Delete (gone, its
+    question-bank copy too) on Paper assignment's table - and that table
+    searched a page at a time, by teacher among the rest."""
+    doc = call(client, OP1, "POST", "/intake/documents/from-text",
+               json={"text": PAPER_TEXT, "title": "GIT Gr12"}).json()
+    path = f"/intake/documents/{doc['id']}"
+    with store.connect() as conn:
+        store.update_intake_document(conn, doc["id"], status="checked")
+    assert call(client, OP1, "POST", f"{path}/finish-data-entry").status_code == 200
+    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER]})
+
+    scope = {"statuses": "teacher_review,ready_to_publish"}
+    found = call(client, ADMIN, "GET", "/intake/documents/search",
+                 params={**scope, "teacher": TEACHER}).json()
+    assert [d["id"] for d in found["items"]] == [doc["id"]]
+    assert found["facets"]["teacher"] == {TEACHER: 1}
+    assert call(client, ADMIN, "GET", "/intake/documents/search",
+                params={**scope, "teacher": TEACHER2}).json()["total"] == 0
+
+    # Unassign: only an administrator; back to Ready to assign, questions kept.
+    assert call(client, TEACHER, "POST", f"{path}/unassign").status_code == 403
+    back = call(client, ADMIN, "POST", f"{path}/unassign").json()
+    assert back["status"] == "data_entry_done" and back["teachers"] == []
+    assert call(client, TEACHER, "GET", path).status_code == 403
+    assert call(client, ADMIN, "POST", f"{path}/unassign").status_code == 409   # nobody has it
+
+    # Delete: data entry cannot, once it has moved on; an administrator can,
+    # and the question-bank copy goes with it.
+    call(client, ADMIN, "POST", f"{path}/assign", json={"teacher_identities": [TEACHER2]})
+    assert call(client, OP1, "DELETE", path).status_code == 409
+    with store.connect() as conn:
+        bank = conn.execute("SELECT count(*) AS n FROM questions WHERE id LIKE ?",
+                            (f"intake-{doc['id']}-%",)).fetchone()["n"]
+    assert bank > 0
+    assert call(client, ADMIN, "DELETE", path).status_code == 204
+    assert call(client, ADMIN, "GET", path).status_code == 404
+    with store.connect() as conn:
+        left = conn.execute(
+            "SELECT (SELECT count(*) FROM questions WHERE id LIKE ?) "
+            "     + (SELECT count(*) FROM question_assessments WHERE assessment_id = ?) AS n",
+            (f"intake-{doc['id']}-%", f"intake-{doc['id']}")).fetchone()["n"]
+    assert left == 0
+
+
+def test_a_paper_sent_to_edsider_cannot_be_deleted(client):
+    doc = call(client, OP1, "POST", "/intake/documents/from-text",
+               json={"text": PAPER_TEXT, "title": "GIT Gr12"}).json()
+    with store.connect() as conn:
+        store.update_intake_document(conn, doc["id"], status="published")
+    refused = call(client, ADMIN, "DELETE", f"/intake/documents/{doc['id']}")
+    assert refused.status_code == 409 and "sent to EdSider" in refused.json()["detail"]
 
 
 # ----------------------------------------- the copy from the old tables

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 
@@ -6,6 +6,8 @@ import { useToast } from '../../components/Toast.jsx'
 // from EdSider's own lists (copied by the sync) and saved as EdSider's ids.
 // Medium, term and year come pre-filled where the paper states them
 // (src/edsider/labels.py); they are saved once data entry saves.
+
+const byName = (a, b) => (a.name || '').trim().localeCompare((b.name || '').trim(), undefined, { sensitivity: 'base' })
 
 const FIELDS = [
   { key: 'medium_id', list: 'language', label: 'Medium', required: true },
@@ -15,7 +17,10 @@ const FIELDS = [
   { key: 'grading_method_id', list: 'grading_method', label: 'Grading method', required: true },
   { key: 'difficulty_id', list: 'difficulty', label: 'Difficulty' },
   { key: 'source_id', list: 'source', label: 'Source' },
-  { key: 'author_id', list: 'author', label: 'Author', search: true },
+  // A dropdown in alphabetical order - EdSider's own order is by when each
+  // author was added, which nobody can find a name in.
+  { key: 'author_id', list: 'author', label: 'Author', sort: true },
+  { key: 'chapter_id', list: 'chapter', label: 'Chapter / module / unit' },
 ]
 
 let listsPromise = null
@@ -49,7 +54,6 @@ export default function EdsiderLabels({ doc, onSaved }) {
   const [lists, setLists] = useState(null)
   const [listError, setListError] = useState(null)
   const [{ values, fromPaper }, setState] = useState(() => startingValues(doc))
-  const [authorText, setAuthorText] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -61,17 +65,6 @@ export default function EdsiderLabels({ doc, onSaved }) {
       live = false
     }
   }, [])
-
-  const authors = useMemo(() => lists?.author || [], [lists])
-  // The author box shows the chosen author's name - once the list has
-  // loaded, and again whenever the saved choice changes.
-  const authorKey = `${authors.length}:${values.author_id ?? ''}`
-  const [shownFor, setShownFor] = useState(null)
-  if (authors.length && authorKey !== shownFor) {
-    setShownFor(authorKey)
-    const a = authors.find((x) => x.id === values.author_id)
-    setAuthorText(a ? a.name : '')
-  }
 
   const unsaved = fromPaper.size > 0
   const missing = FIELDS.filter((f) => f.required && values[f.key] == null)
@@ -92,13 +85,6 @@ export default function EdsiderLabels({ doc, onSaved }) {
   function choose(key, raw) {
     const next = { ...values, [key]: raw === '' || raw == null ? null : Number(raw) }
     save(next)
-  }
-
-  function chooseAuthor(text) {
-    setAuthorText(text)
-    const a = authors.find((x) => x.name.toLowerCase() === text.trim().toLowerCase())
-    if (a && a.id !== values.author_id) choose('author_id', a.id)
-    if (!text.trim() && values.author_id != null) choose('author_id', null)
   }
 
   if (listError) {
@@ -131,39 +117,20 @@ export default function EdsiderLabels({ doc, onSaved }) {
               {f.label}
               {f.required ? ' *' : ''}
             </label>
-            {f.search ? (
-              <>
-                <input
-                  id={`ed-${f.key}`}
-                  className="es-input"
-                  list="ed-author-list"
-                  value={authorText}
-                  placeholder="Type to search"
-                  disabled={busy}
-                  onChange={(e) => chooseAuthor(e.target.value)}
-                />
-                <datalist id="ed-author-list">
-                  {authors.map((a) => (
-                    <option key={a.id} value={a.name} />
-                  ))}
-                </datalist>
-              </>
-            ) : (
-              <select
-                id={`ed-${f.key}`}
-                className="es-input"
-                value={values[f.key] ?? ''}
-                disabled={busy}
-                onChange={(e) => choose(f.key, e.target.value)}
-              >
-                <option value="">Not set</option>
-                {(lists[f.list] || []).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            )}
+            <select
+              id={`ed-${f.key}`}
+              className="es-input"
+              value={values[f.key] ?? ''}
+              disabled={busy}
+              onChange={(e) => choose(f.key, e.target.value)}
+            >
+              <option value="">Not set</option>
+              {(f.sort ? [...(lists[f.list] || [])].sort(byName) : lists[f.list] || []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {(item.name || '').trim()}
+                </option>
+              ))}
+            </select>
             {fromPaper.has(f.key) ? <span className="es-caption">Read from the paper - not saved yet</span> : null}
           </div>
         ))}

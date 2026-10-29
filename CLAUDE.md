@@ -1276,6 +1276,22 @@ columns only; `GET /intake/documents` uses the same light query now).
 Nothing opens by itself: a new session starts with no paper open until
 one is picked (the old picker opened the newest upload).
 
+**The finder filters as EdSider's assessment library does.** Asked for:
+every filter EdSider's library has - start and end date, grade, language
+(here "Medium"), subject, term, author (alphabetical), chapter,
+difficulty, status, exam category, source, created by, year - in its
+order. Each is a paper's own label, by EdSider id
+(`store.PAPER_FILTERS`; grade and subject too, now by id rather than
+name), plus `uploaded_by` and the upload day as Sri Lanka counts it
+(`Asia/Colombo` - 20:00 UTC is already the next day there). The menus list
+EdSider's whole list with each entry's count (one facet query, counted in
+Python, not one per menu), "Created by" shows names from `staff`.
+EdSider's papers carry a chapter ("Chapter/ Module/ Unit", optional) and
+ours had none, so a chapter filter would always have been empty:
+`intake.document.chapter_id` (a migration) is now a label under "For
+EdSider" and goes to EdSider's `assessment.chapter_id` on sending. Its list
+is "1" to "17" - the test copy of EdSider's lists gained it.
+
 **Marks set in the Marks section reach every question card.** "Apply to
 all questions" and the per-question boxes there always saved each
 question's marks, but a card's own Marks box read `q.marks` once when it
@@ -2161,6 +2177,99 @@ checker's does not. Both tick, comment, refer back and sign off. Lists
 put the owner first (`store._TEACHER_ORDER`), and the paper carries
 `teacher_owner`; a paper assigned before duties were kept counts its first
 teacher as owner. Reassigning in the other order swaps them.
+
+**Then one teacher became enough.** Asked for: a paper is normally
+reviewed by its own author; only when the author does not want to review
+it does it go to a different teacher - never two. `AssignIn` takes exactly
+one teacher (`POST .../assign`, 422 for two), the paper is ready to
+publish the moment that teacher's Review Done lands (the existing "every
+active teacher finished" rule, with one teacher), and the MASAD's "Send
+to EdSider" shows there as before. Assigning a different teacher takes the
+paper off the first - the Paper assignment page has "Change teacher" on a
+paper still in review, for an author who turns it down after being given
+it. The page picks the paper's author for it (the "For EdSider" author,
+matched to a teacher by name - EdSider keeps the two lists apart, and only
+18 of its 189 author names match a teacher's exactly), says so, and says
+when the author is not on the teacher list. The teacher list is
+alphabetical by the name shown, on the page and in
+`assignable_teachers()` (trimmed: EdSider's names carry leading spaces).
+Owner and syllabus checker stay in the code for a paper already given two
+(none was in review when this changed); a paper has one teacher, its
+owner, from now on.
+
+**Paper assignment's table: filters, pages, Unassign and Delete.** Asked
+for, with a thousand papers in mind: "Already assigned" is now searched a
+page at a time (25, First/Previous/Next/Last) with the paper finder's
+filters plus Teacher - the filter bar and the search moved into
+`components/PaperFilters.jsx` (`usePaperSearch`), which both pages use.
+`GET /intake/documents/search` takes `statuses` (comma-separated; its menus
+then count only those papers) and `teacher`; the facets count papers per
+teacher, and `uploaded_by_names` names teachers too. "Ready to assign"
+asks for `data_entry_done` papers only rather than every paper. Two
+buttons, both confirmed first: **Unassign** (`POST .../unassign`,
+`store.unassign_teachers()`, admin only) closes the teacher's review - kept
+in the history - and puts the paper back at "Ready to assign", questions
+and bank copy as they are, from teacher review, review done or ready to
+publish; **Delete** is the same `DELETE /intake/documents/{id}` as data
+entry's Remove, which for an administrator (`moved_on`) now takes a paper
+at any stage, with its question-bank copy (`questions` "intake-<id>-*",
+their `question_assessments` and `question_files`, and the stored files).
+Never a paper sent to EdSider (`last_send`, or 'published') - it is in
+EdSider, and this is our record of it - nor an archived one (the paper rule
+refuses every change to that).
+
+**"At least 2 from each section, 5 in all" - a part's sections and its
+own count.** Asked for: a part whose questions are in sections, each with
+its own number to answer, plus some to answer from either. EdSider already
+models it (read in its `optionalQuestionScoring.js`): a section's
+`no_of_questions_to_answer` counts its best N, then a part's
+`total_questions_to_answer` (with `allow_questions_to_answer`) adds the
+best of what is left in any of its sections. We sent the first and never
+the second. Now:
+- *The count in all* is `intake.part.plan_group_answer_count` (a
+  migration), kept on a part's first section, `group_answer_count` in the
+  marks plan; the converter puts it on EdSider's `assessment_part` - only
+  when set, since a database copied before EdSider added those columns
+  lacks them - and warns when it is below what the sections ask for or
+  above what they hold. A section may ask for none ("None required", sent
+  as optional with 0) when the part's count picks from it.
+- *Dividing a part* (`POST .../sections/split`, `store.split_part()`): for
+  a paper whose section headings were not read, data entry picks the
+  question each later section starts at; the part becomes "Part II - A",
+  "- B"..., the converter's own section naming, each question taking its
+  parts with it. "Join the sections" (`.../sections/join`) undoes it. A
+  paper in one piece divides as "Part I".
+- *The totals* on the Marks section (`groupTotal()`) follow EdSider's rule
+  exactly, so the paper's total is what EdSider will give it.
+- *Found on the way, and fixed:* EdSider counts a question in a picking
+  section as compulsory unless its link says `is_optional` - and we sent
+  every link `is_optional = false`, so "answer 4 of 5" would have been
+  marked out of all five there. Every question in a section the student
+  picks from is now sent optional, as EdSider's own papers are (8,289
+  links in the pre-prod copy).
+- *A particular question compulsory* ("Question 1 must be answered, then
+  any 3 of the rest"): `intake.question.compulsory` (a migration), ticked
+  under the question's marks box on the Marks section wherever the student
+  picks. Sent as EdSider does it: that question's link (and its parts')
+  not optional, the section's `no_of_required_questions` the number of
+  them, "questions to answer" still the whole count (4: Q1 and any 3). More
+  compulsory questions than there are to answer is an error. The totals
+  count them first (`groupTotal()`'s `required`). A re-split, which builds
+  the questions again, clears the ticks; so does archiving, whose bank copy
+  keeps no such column - neither matters once the paper is sent.
+
+**EdSider showed a question broken where the paper's margin broke it.**
+Reported with a Biosystem MCQ: the extractor keeps every printed line, the
+preview joins a wrapped sentence back together (`joinSoftBreaks`,
+`frontend/src/lib/text.js`), but the converter made a Draft.js block of
+every line - so EdSider showed the paper's line ends, half-empty lines
+across its page. `export.draft_doc()` now joins the same way first
+(`join_soft_breaks()`): a blank line, a list item and a table row
+("A | B") still break. Both rules gained "a." (a lettered statement,
+"a. Platty, Swordtail are...") and Sinhala "අ)" as list starts, so each
+statement stays its own line; a test keeps the two patterns identical.
+Papers already in EdSider keep their broken lines - only papers sent from
+now on are joined.
 
 **A paper referred back waits at the top of data entry's page** ("N
 papers sent back by a teacher", a button per paper) - nothing

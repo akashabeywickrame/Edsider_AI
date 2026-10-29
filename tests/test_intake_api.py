@@ -12,6 +12,7 @@ called this way, so every test passes `identity=` explicitly instead
 of relying on a header.
 """
 
+import datetime
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -226,6 +227,48 @@ def test_the_paper_finder_filters_and_pages(document, docx_bytes):
     # The filter menus' counts.
     assert first.facets["subject"] == {"Chemistry": 1, "Physics": 1}
     assert first.facets["status"]["refer_back"] == 1
+
+
+def test_the_paper_finder_filters_as_edsiders_library_does(document, docx_bytes):
+    """Asked for: every filter EdSider's assessment library has - the
+    paper's labels, who uploaded it and when."""
+    other = upload_document(file=_upload("physics term test.docx", docx_bytes),
+                            lang="eng", style="number", identity="data-entry-2")
+    update_document(document.id, DocumentUpdate(
+        paper_grade="G13", paper_subject="Chemistry",
+        edsider_labels={"medium_id": 1, "term_id": 2, "year_id": 6, "chapter_id": 3,
+                        "difficulty_id": 2, "exam_category_id": 1, "source_id": 1}))
+    update_document(other.id, DocumentUpdate(edsider_labels={"medium_id": 2, "term_id": 1}))
+    with service.store.connect() as conn:
+        row = conn.execute("SELECT grade_id, subject_id FROM intake.document WHERE id = ?",
+                           (document.id,)).fetchone()
+        grade_id, subject_id = row["grade_id"], row["subject_id"]
+        conn.execute("UPDATE intake.document SET uploaded_at = '2026-10-01 20:00+00' "
+                     "WHERE id = ?", (document.id,))
+
+    def ids(**filters):
+        return [d.id for d in service.search_documents(**filters).items]
+
+    for key, value in (("medium_id", 1), ("term_id", 2), ("year_id", 6), ("chapter_id", 3),
+                       ("difficulty_id", 2), ("exam_category_id", 1), ("source_id", 1),
+                       ("grade_id", grade_id), ("subject_id", subject_id)):
+        assert ids(**{key: value}) == [document.id], key
+    assert ids(medium_id=2, term_id=1) == [other.id]
+    assert ids(medium_id=2, term_id=2) == []
+    assert ids(uploaded_by="data-entry-2") == [other.id]
+    # Days as Sri Lanka counts them: 20:00 UTC on 1 October is 2 October there.
+    assert ids(uploaded_from=datetime.date(2026, 10, 2),
+               uploaded_to=datetime.date(2026, 10, 2)) == [document.id]
+    assert ids(uploaded_to=datetime.date(2026, 10, 1)) == []
+
+    found = service.search_documents()
+    assert found.facets["medium_id"] == {"1": 1, "2": 1}
+    assert found.facets["chapter_id"] == {"3": 1}
+    assert found.facets["uploaded_by"] == {"data-entry-1": 1, "data-entry-2": 1}
+    # The chapter goes to EdSider with the paper.
+    with service.store.connect() as conn:
+        doc = service.store.get_intake_document(conn, document.id)
+    assert doc["edsider_labels"]["chapter_id"] == 3
 
 
 def test_add_a_part_of_an_unknown_question_is_404(document):
@@ -478,33 +521,41 @@ def test_precheck_finds_a_match_against_the_whole_bank(document):
 
 # ------------------------------------------- assign, teacher, promote
 
-TWO = AssignIn(teacher_identities=["N. Perera", "s. kumar"])
+ONE = AssignIn(teacher_identities=["s. kumar"])
 
 
-def test_assign_requires_two_teachers_who_have_opened_the_app(document):
-    touch_teacher(identity="S. Kumar")
+def test_assign_requires_one_teacher_who_has_opened_the_app(document):
     with pytest.raises(HTTPException) as err:
-        assign_document(document.id, TWO)
+        assign_document(document.id, ONE)
     assert err.value.status_code == 404
 
-    teacher = touch_teacher(identity="N. Perera")
-    assert teacher.identity == "N. Perera"
-    assert any(t.identity == "N. Perera" for t in list_teachers())
-    with pytest.raises(HTTPException) as err:
-        assign_document(document.id, AssignIn(teacher_identities=["N. Perera", "n. perera"]))
-    assert err.value.status_code == 400
+    teacher = touch_teacher(identity="S. Kumar")
+    assert teacher.identity == "S. Kumar"
+    assert any(t.identity == "S. Kumar" for t in list_teachers())
+    with pytest.raises(Exception):
+        AssignIn(teacher_identities=["N. Perera", "S. Kumar"])
 
-    assigned = assign_document(document.id, TWO)
+    assigned = assign_document(document.id, ONE)
     assert assigned.status == "teacher_review"
-    assert assigned.teachers == ["N. Perera", "S. Kumar"]
-    assert assigned.assigned_to == "N. Perera, S. Kumar"
-    assert document.id in {d.id for d in my_documents(identity="N. Perera")}
+    assert assigned.teachers == ["S. Kumar"] and assigned.assigned_to == "S. Kumar"
+    assert document.id in {d.id for d in my_documents(identity="S. Kumar")}
+
+
+def test_the_teachers_are_listed_alphabetically(document):
+    people = ("zoe@example.com", "Anne@example.com", "bob@example.com")
+    for name in people:
+        touch_teacher(identity=name)
+    with store.connect() as conn:
+        conn.execute("UPDATE staff SET name = '  Zara Perera' WHERE email = 'bob@example.com'")
+    listed = [t.identity for t in list_teachers() if t.identity in people]
+    # By the name shown - a stray space in front does not put it first.
+    assert listed == ["Anne@example.com", "bob@example.com", "zoe@example.com"]
 
 
 def test_my_documents_only_shows_the_calling_identity(document):
     for name in ("N. Perera", "S. Kumar", "A. Silva"):
         touch_teacher(identity=name)
-    assign_document(document.id, TWO)
+    assign_document(document.id, ONE)
     assert document.id in {d.id for d in my_documents(identity="S. Kumar")}
     assert document.id not in {d.id for d in my_documents(identity="A. Silva")}
 
@@ -516,9 +567,8 @@ def test_finish_review_rejects_a_paper_not_with_a_teacher(document):
 
 
 def test_finish_review_refer_back_does_not_promote(document):
-    touch_teacher(identity="N. Perera")
     touch_teacher(identity="S. Kumar")
-    assign_document(document.id, TWO)
+    assign_document(document.id, ONE)
 
     finished = finish_review(document.id, FinishIn(status="refer_back"))
     assert finished.status == "refer_back"
@@ -530,9 +580,8 @@ def test_finish_review_refer_back_does_not_promote(document):
 
 def test_finish_review_done_promotes_every_question(document):
     qs = list_questions(document.id)
-    touch_teacher(identity="N. Perera")
     touch_teacher(identity="S. Kumar")
-    assign_document(document.id, TWO)
+    assign_document(document.id, ONE)
 
     finished = finish_review(document.id, FinishIn(status="review_done"))
     assert finished.status == "ready_to_publish" and not finished.archived_at
@@ -541,3 +590,51 @@ def test_finish_review_done_promotes_every_question(document):
         promoted = {r["id"] for r in store.all_questions(conn)
                    if r["id"].startswith(f"intake-{document.id}-")}
     assert promoted == {f"intake-{document.id}-{q.id}" for q in qs}
+
+
+def test_a_part_is_divided_into_sections_and_joined_back(local_db):
+    """Asked for: a part whose questions are in sections the extractor did
+    not read - divided by data entry, each section with its own count, and
+    the part's own "answer N in all"."""
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(
+            conn, "paper.pdf", sections=[{"label": "Part II", "heading": "Part II",
+                                          "kind": "structured", "instructions": None}])
+        ids = [store.add_intake_question(conn, doc_id, seq, f"Explain topic {seq}.",
+                                         question_number=f"0{seq}", section="Part II", marks=10)
+               for seq in (1, 2, 4, 5)]
+        part_of_3 = store.add_intake_question(conn, doc_id, 3, "(a) Define it.",
+                                              section="Part II", parent_seq=2, marks=5)
+
+    with pytest.raises(HTTPException) as err:
+        service.split_into_sections(doc_id, service.SplitPartIn(label="Part II", starts=[ids[0]]),
+                                    identity="data-entry-1")
+    assert err.value.status_code == 400             # not after the first question
+
+    doc = service.split_into_sections(
+        doc_id, service.SplitPartIn(label="Part II", starts=[ids[2]]), identity="data-entry-1")
+    assert [s["label"] for s in doc.sections] == ["Part II - A", "Part II - B"]
+    by_id = {q.id: q.section for q in list_questions(doc_id)}
+    assert [by_id[i] for i in ids] == ["Part II - A", "Part II - A", "Part II - B", "Part II - B"]
+    assert by_id[part_of_3] == "Part II - A"        # a question's own part goes with it
+
+    # The plan keeps the part's total on its first section.
+    marking = {"parts": {"Part II - A": {"answer_count": 1, "group_answer_count": 3},
+                         "Part II - B": {"answer_count": 1}}, "total": 30}
+    update_document(doc_id, DocumentUpdate(assessment_settings={"marking": marking}))
+    saved = get_document(doc_id).assessment_settings["marking"]["parts"]
+    assert saved["Part II - A"]["group_answer_count"] == 3
+    assert "group_answer_count" not in saved["Part II - B"]
+
+    doc = service.join_sections(doc_id, service.JoinSectionsIn(part="Part II"),
+                                identity="data-entry-1")
+    assert [s["label"] for s in doc.sections] == ["Part II"]
+    assert {q.section for q in list_questions(doc_id)} == {"Part II"}
+
+
+def test_a_question_is_marked_compulsory(document):
+    q = list_questions(document.id)[0]
+    assert q.compulsory is False
+    marked = update_question(q.id, QuestionUpdate(compulsory=True), identity="data-entry-1")
+    assert marked.compulsory is True
+    assert list_questions(document.id)[0].compulsory is True

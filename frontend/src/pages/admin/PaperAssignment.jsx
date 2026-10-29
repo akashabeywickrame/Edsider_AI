@@ -1,20 +1,39 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 import StatusPill from '../../components/StatusPill.jsx'
+import { loadLists } from '../data-entry/EdsiderLabels.jsx'
+import PaperFilters, { MENUS, PaperCount, Pager, TEACHER_MENU, usePaperSearch } from '../../components/PaperFilters.jsx'
 import './PaperAssignment.css'
 
 // Papers data entry has checked for internal repeats, waiting to be handed to
 // a teacher - and the ones already with a teacher. Mirrors
 // design-system/screens/project/AssignPapers.dc.html. Nothing here edits a
-// question; it decides who reviews a paper and, once both teachers have
+// question; it decides who reviews a paper and, once its teacher has
 // finished, a Main Assessment Administrator sends it to EdSider from here.
+// One teacher a paper: normally its author; another teacher when the author
+// does not want to review it.
 
 const WITH_TEACHER = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
+// Where an administrator may take a paper off its teacher, and where one
+// may delete it - never once it is in EdSider or archived (the API agrees).
+const UNASSIGNABLE = ['teacher_review', 'review_done', 'ready_to_publish']
+const DELETABLE = ['teacher_review', 'refer_back', 'review_done', 'ready_to_publish']
+const ASSIGNED_MENUS = [...MENUS, TEACHER_MENU]
 
 function gradeText(code) {
   return code ? code.replace(/^G0*/, 'Grade ') : ''
+}
+
+// EdSider's names carry stray and doubled spaces.
+function plain(name) {
+  return (name || '').trim().replace(/\s+/g, ' ')
+}
+
+function teacherLabel(t) {
+  const name = plain(t.display_name)
+  return name && name !== t.identity ? `${name} (${t.identity})` : t.identity
 }
 
 function when(iso) {
@@ -33,7 +52,10 @@ export default function PaperAssignment() {
   const sendingOn = !me || !me.role || Boolean(me.edsider_sending)
   const [sending, setSending] = useState(null)
   const [sendProblems, setSendProblems] = useState({})
+  // Papers waiting for a teacher; the assigned ones are searched a page at
+  // a time, with the paper finder's filters and a teacher's.
   const [docs, setDocs] = useState(null)
+  const assignedSearch = usePaperSearch({ menus: ASSIGNED_MENUS, statuses: WITH_TEACHER })
   const [teachers, setTeachers] = useState([])
   const [chosen, setChosen] = useState({})
   const [busy, setBusy] = useState({})
@@ -47,6 +69,16 @@ export default function PaperAssignment() {
 
   const [teachersBusy, setTeachersBusy] = useState(false)
   const [teachersNote, setTeachersNote] = useState(null)
+  // EdSider's author list - the paper's author is its usual teacher.
+  const [authors, setAuthors] = useState([])
+  // The paper whose teacher is being changed, in the assigned table.
+  const [changing, setChanging] = useState(null)
+
+  // Alphabetical by the name shown, so a teacher is easy to find.
+  const sortedTeachers = useMemo(
+    () => [...teachers].sort((a, b) => teacherLabel(a).localeCompare(teacherLabel(b), undefined, { sensitivity: 'base' })),
+    [teachers],
+  )
 
   // Pulls EdSider's current teacher list first, so someone added there a
   // minute ago is already in the dropdown. If EdSider cannot be reached,
@@ -71,47 +103,60 @@ export default function PaperAssignment() {
     }
   }
 
+  function loadReady() {
+    return api
+      .listIntakeDocuments('data_entry_done')
+      .then(setDocs)
+      .catch((err) => setError(err.message))
+  }
+
+  // After a paper moves: the waiting list and the table both change.
+  function refreshPapers() {
+    loadReady()
+    assignedSearch.reload()
+  }
+
   useEffect(() => {
     let live = true
-    api
-      .listIntakeDocuments()
-      .then((all) => {
-        if (live) setDocs(all)
-      })
-      .catch((err) => {
-        if (live) setError(err.message)
-      })
+    loadReady()
     refreshTeachers()
+    loadLists()
+      .then((r) => live && setAuthors(r.lists?.author || []))
+      .catch(() => {})
     return () => {
       live = false
     }
   }, [])
 
-  // Each paper goes to two different teachers; it is ready to publish once
-  // both have finished their review.
-  const pair = (docId) => chosen[docId] || ['', '']
-  const choose = (docId, slot, identity) =>
-    setChosen((c) => {
-      const next = [...pair(docId)]
-      next[slot] = identity
-      return { ...c, [docId]: next }
-    })
-  const canAssign = (docId) => {
-    const [a, b] = pair(docId)
-    return Boolean(a && b && a !== b)
+  // The paper's author (a "For EdSider" label) and the teacher of the same
+  // name, when there is one - EdSider keeps authors and teachers apart, so
+  // they are matched by name.
+  function authorOf(doc) {
+    const id = doc.edsider_labels?.author_id
+    const author = id != null ? authors.find((a) => a.id === id) : null
+    if (!author) return { name: null, teacher: null }
+    const name = plain(author.name)
+    const teacher = teachers.find((t) => plain(t.display_name).toLowerCase() === name.toLowerCase()) || null
+    return { name, teacher }
   }
 
+  // One teacher a paper; it is ready to publish once they have finished.
+  // Until someone chooses, the author's own teacher entry is chosen.
+  const chosenFor = (doc) => chosen[doc.id] ?? authorOf(doc).teacher?.identity ?? ''
+  const choose = (docId, identity) => setChosen((c) => ({ ...c, [docId]: identity }))
+
   async function assign(doc) {
-    if (!canAssign(doc.id)) return
-    const identities = pair(doc.id)
+    const identity = chosenFor(doc)
+    if (!identity) return
     setBusy((b) => ({ ...b, [doc.id]: true }))
     setError(null)
     setMessage(null)
     try {
-      const updated = await api.assignDocument(doc.id, identities)
-      setDocs((list) => list.map((d) => (d.id === updated.id ? updated : d)))
-      const names = identities.map((id) => teachers.find((t) => t.identity === id)?.display_name || id)
-      const text = `#${doc.id} ${doc.paper_subject || doc.filename} assigned to ${names.join(' and ')}.`
+      await api.assignDocument(doc.id, [identity])
+      refreshPapers()
+      setChanging(null)
+      const t = teachers.find((x) => x.identity === identity)
+      const text = `#${doc.id} ${doc.paper_subject || doc.filename} assigned to ${plain(t?.display_name) || identity}.`
       setMessage(text)
       toast.success(text)
     } catch (err) {
@@ -135,7 +180,7 @@ export default function PaperAssignment() {
     setSendProblems((p) => ({ ...p, [doc.id]: null }))
     try {
       const sent = await api.sendToEdsider(doc.id)
-      setDocs((list) => list.map((d) => (d.id === sent.id ? { ...d, ...sent } : d)))
+      assignedSearch.reload()
       const text = `#${doc.id} sent to EdSider as assessment #${sent.edsider_assessment_id}.`
       setMessage(text)
       toast.success(text)
@@ -144,6 +189,48 @@ export default function PaperAssignment() {
       toast.error(`Not sent: ${err.message}`)
     } finally {
       setSending(null)
+    }
+  }
+
+  // Back to "Ready to assign", its questions as they are.
+  async function unassign(doc) {
+    if (!window.confirm(`Take #${doc.id} ${doc.paper_subject || doc.filename} off its teacher? It goes back to Ready to assign; its questions are kept.`)) return
+    setBusy((b) => ({ ...b, [doc.id]: true }))
+    setError(null)
+    setMessage(null)
+    try {
+      await api.unassignDocument(doc.id)
+      refreshPapers()
+      const text = `#${doc.id} is back in Ready to assign.`
+      setMessage(text)
+      toast.success(text)
+    } catch (err) {
+      setError(err.message)
+      toast.error(`Not unassigned: ${err.message}`)
+    } finally {
+      setBusy((b) => ({ ...b, [doc.id]: false }))
+    }
+  }
+
+  // Gone for good - its questions, its question-bank copy, pictures, file
+  // and history.
+  async function removePaper(doc) {
+    const name = doc.paper_title || doc.paper_subject || doc.filename
+    if (!window.confirm(`Delete #${doc.id} ${name}? Its questions, its copy in the question bank, pictures, file and history are deleted. This cannot be undone.`)) return
+    setBusy((b) => ({ ...b, [doc.id]: true }))
+    setError(null)
+    setMessage(null)
+    try {
+      await api.deleteIntakeDocument(doc.id)
+      refreshPapers()
+      const text = `#${doc.id} deleted.`
+      setMessage(text)
+      toast.success(text)
+    } catch (err) {
+      setError(err.message)
+      toast.error(`Not deleted: ${err.message}`)
+    } finally {
+      setBusy((b) => ({ ...b, [doc.id]: false }))
     }
   }
 
@@ -167,15 +254,27 @@ export default function PaperAssignment() {
 
   // Data entry has finished it (and copied it to the question bank).
   const ready = (docs || []).filter((d) => d.status === 'data_entry_done')
-  const assigned = (docs || []).filter((d) => WITH_TEACHER.includes(d.status))
-  const nameOf = (identity) => teachers.find((t) => t.identity === identity)?.display_name || identity
+  const assigned = assignedSearch.result?.items || []
+  const nameOf = (identity) => plain(teachers.find((t) => t.identity === identity)?.display_name) || identity
+
+  // One teacher dropdown, alphabetical; `id` keeps each one's label unique.
+  const teacherSelect = (d, id) => (
+    <select id={id} className="es-input" value={chosenFor(d)} onChange={(e) => choose(d.id, e.target.value)}>
+      <option value="">Choose a teacher</option>
+      {sortedTeachers.map((t) => (
+        <option key={t.identity} value={t.identity}>
+          {teacherLabel(t)}
+        </option>
+      ))}
+    </select>
+  )
 
   return (
     <>
       <PageHeader
         accent="Assign"
         title="papers to teachers"
-        subtitle="Papers data entry has finished, each waiting for its owner teacher and a syllabus checker. A paper is ready to publish once both have finished."
+        subtitle="Papers data entry has finished, each waiting for a teacher - usually its author. A paper is ready to publish once its teacher has finished."
       />
 
       {error ? (
@@ -216,38 +315,23 @@ export default function PaperAssignment() {
               #{d.id} - {d.filename}
               {d.uploaded_at ? ` - uploaded ${when(d.uploaded_at)}` : ''}
             </p>
-            {[0, 1].map((slot) => (
-              <div className="es-field" key={slot}>
-                <label className="es-field__label" htmlFor={`pa-teacher-${d.id}-${slot}`}>
-                  {slot === 0 ? 'Owner teacher' : 'Syllabus checker'}
-                </label>
-                <p className="es-caption" style={{ margin: '0 0 4px' }}>
-                  {slot === 0
-                    ? 'Whose paper it is - checks it and settles any repeats data entry flagged.'
-                    : 'Checks the paper against the syllabus and comments.'}
-                </p>
-                <select
-                  id={`pa-teacher-${d.id}-${slot}`}
-                  className="es-input"
-                  value={pair(d.id)[slot]}
-                  onChange={(e) => choose(d.id, slot, e.target.value)}
-                >
-                  <option value="">Choose a teacher</option>
-                  {teachers
-                    .filter((t) => t.identity !== pair(d.id)[1 - slot])
-                    .map((t) => (
-                      <option key={t.identity} value={t.identity}>
-                        {t.display_name && t.display_name !== t.identity
-                          ? `${t.display_name} (${t.identity})`
-                          : t.identity}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            ))}
+            <div className="es-field">
+              <label className="es-field__label" htmlFor={`pa-teacher-${d.id}`}>
+                Teacher
+              </label>
+              <p className="es-caption" style={{ margin: '0 0 4px' }}>
+                {(() => {
+                  const { name, teacher } = authorOf(d)
+                  if (teacher) return `The paper's author, ${name}, is chosen. Choose another teacher if they do not want to review it.`
+                  if (name) return `The paper's author is ${name}, who is not on the teacher list - choose the teacher who reviews it.`
+                  return 'Usually the paper\'s author. Choose another teacher if the author does not want to review it.'
+                })()}
+              </p>
+              {teacherSelect(d, `pa-teacher-${d.id}`)}
+            </div>
             <div>
-              <Button variant="primary" size="sm" onClick={() => assign(d)} disabled={!canAssign(d.id) || busy[d.id]}>
-                {busy[d.id] ? 'Assigning...' : 'Assign to both'}
+              <Button variant="primary" size="sm" onClick={() => assign(d)} disabled={!chosenFor(d) || busy[d.id]}>
+                {busy[d.id] ? 'Assigning...' : 'Assign'}
               </Button>
             </div>
           </article>
@@ -255,18 +339,28 @@ export default function PaperAssignment() {
       </section>
 
       <h2 className="scr-h2 pa-section">Already assigned</h2>
-      <section className="es-card pa-table-card" aria-label="Already assigned">
+      <section className="es-card pa-table-card" aria-label="Already assigned" style={{ display: 'grid', gap: 10 }}>
+        <PaperFilters search={assignedSearch} idPrefix="pa-f" />
+        {assignedSearch.error ? (
+          <Notice tone="error" title="Could not load the assigned papers">
+            {assignedSearch.error}
+          </Notice>
+        ) : null}
+        <PaperCount search={assignedSearch} />
         {assigned.length === 0 ? (
-          <p className="es-caption" style={{ margin: 0 }}>No papers have been handed to a teacher yet.</p>
+          <p className="es-caption" style={{ margin: 0 }}>
+            {assignedSearch.filtered ? 'No assigned papers match these filters.' : 'No papers have been handed to a teacher yet.'}
+          </p>
         ) : (
           <table className="scr-table">
             <thead>
               <tr>
                 <th>Paper</th>
-                <th>Teachers</th>
+                <th>Teacher</th>
                 <th>Status</th>
                 <th>Uploaded</th>
                 <th>Comments</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -294,6 +388,41 @@ export default function PaperAssignment() {
                               </span>
                             </div>
                           ))}
+                      {/* The author may turn the review down once it is theirs. */}
+                      {a.status === 'teacher_review' ? (
+                        changing === a.id ? (
+                          <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>
+                            <label className="es-field__label" htmlFor={`pa-change-${a.id}`}>
+                              Give it to
+                            </label>
+                            {teacherSelect(a, `pa-change-${a.id}`)}
+                            <div className="es-row" style={{ gap: 6 }}>
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                onClick={() => assign(a)}
+                                disabled={!chosen[a.id] || (a.teachers || []).includes(chosen[a.id]) || busy[a.id]}
+                              >
+                                {busy[a.id] ? 'Assigning...' : 'Assign'}
+                              </Button>
+                              <Button variant="ghost" size="sm" onClick={() => setChanging(null)}>
+                                Cancel
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              choose(a.id, '')
+                              setChanging(a.id)
+                            }}
+                          >
+                            Change teacher
+                          </Button>
+                        )
+                      ) : null}
                     </td>
                     <td>
                       <div className="pa-status">
@@ -321,10 +450,27 @@ export default function PaperAssignment() {
                         <span className="es-caption">-</span>
                       )}
                     </td>
+                    <td>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
+                        {UNASSIGNABLE.includes(a.status) && !a.archived_at ? (
+                          <Button variant="ghost" size="sm" onClick={() => unassign(a)} disabled={busy[a.id]}>
+                            Unassign
+                          </Button>
+                        ) : null}
+                        {DELETABLE.includes(a.status) && !a.archived_at ? (
+                          <Button variant="ghost" size="sm" onClick={() => removePaper(a)} disabled={busy[a.id]}
+                            aria-label={`Delete paper ${a.id}`}>
+                            Delete
+                          </Button>
+                        ) : (
+                          <span className="es-caption">{UNASSIGNABLE.includes(a.status) ? '' : '-'}</span>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                   {sendProblems[a.id] ? (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <Notice tone="error" title="Not sent to EdSider">
                           {sendProblems[a.id].message}
                           {sendProblems[a.id].problems.length > 0 ? (
@@ -343,7 +489,7 @@ export default function PaperAssignment() {
                   ) : null}
                   {openComments === a.id ? (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         {commentsBusy && !commentsByDoc[a.id] ? (
                           <p className="es-caption" style={{ margin: 0 }}>
                             Loading comments...
@@ -377,6 +523,7 @@ export default function PaperAssignment() {
             </tbody>
           </table>
         )}
+        <Pager search={assignedSearch} />
       </section>
     </>
   )

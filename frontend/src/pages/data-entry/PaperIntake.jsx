@@ -380,7 +380,7 @@ export default function PaperIntake() {
   // duplicate check run (which sets the status to 'checked' or later).
   const DUPLICATES_CHECKED = ['checked', 'data_entry_done', 'teacher_review', 'refer_back', 'review_done', 'ready_to_publish', 'published', 'archived']
   const duplicatesChecked = !!doc && DUPLICATES_CHECKED.includes(doc.status)
-  // Both teachers have signed it off: the check and repeat flags are closed
+  // Its teacher has signed it off: the check and repeat flags are closed
   // (the API refuses them too).
   const reviewFinished = !!doc && (Boolean(doc.archived_at)
     || ['review_done', 'ready_to_publish', 'published', 'archived'].includes(doc.status))
@@ -513,7 +513,7 @@ export default function PaperIntake() {
             <Notice tone="warning" title="Referred back by the teacher">
               This paper was sent back for correction. The teacher's comments are shown on
               the questions they apply to, below - fix what they flagged, run the duplicate
-              check again, then finish data entry: it goes straight back to both teachers.
+              check again, then finish data entry: it goes straight back to the teacher.
             </Notice>
           ) : null}
 
@@ -706,11 +706,17 @@ export default function PaperIntake() {
 
         {doc && questions ? (
           <MarksSection
-            key={`marks-${doc.id}`}
+            // Divided or joined, the paper's parts are different ones - the
+            // marks plan starts again from them.
+            key={`marks-${doc.id}-${(doc.sections || []).map((x) => x.label).join('|')}`}
             doc={doc}
             questions={questions}
             onQuestionChanged={handleQuestionChanged}
             onSaved={setDoc}
+            onSectionsChanged={async (d) => {
+              setDoc(d)
+              setQuestions(await api.listIntakeQuestions(d.id))
+            }}
           />
         ) : null}
 
@@ -961,7 +967,7 @@ export default function PaperIntake() {
               </p>
               {reviewFinished ? (
                 <Notice tone="info">
-                  Both teachers have finished reviewing this paper, so it is no longer checked for
+                  The teacher has finished reviewing this paper, so it is no longer checked for
                   repeats - a flag now would ask for a review that is already done.
                 </Notice>
               ) : pending > 0 ? (
@@ -1043,7 +1049,7 @@ export default function PaperIntake() {
                     : doc.archived_at
                     ? `Archived on ${doc.archived_at.slice(0, 10)}. Its questions are kept in the question bank.`
                     : doc.status === 'ready_to_publish'
-                      ? 'Both teachers have finished and the question bank has every correction. A Main Assessment Administrator sends it to EdSider from Admin - Paper assignment.'
+                      ? 'The teacher has finished and the question bank has every correction. A Main Assessment Administrator sends it to EdSider from Admin - Paper assignment.'
                       : doc.status === 'checked'
                         ? "The duplicate check has run on the corrected paper. Finishing copies every question to the question bank and passes the paper on for a teacher's review."
                         : DUPLICATES_CHECKED.includes(doc.status) && doc.status !== 'refer_back'

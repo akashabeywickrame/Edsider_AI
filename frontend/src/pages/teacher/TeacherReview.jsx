@@ -56,7 +56,7 @@ export default function TeacherReview() {
   const [finishing, setFinishing] = useState(false)
   const [message, setMessage] = useState(null)
   const [who, setWho] = useState(null)
-  // This teacher's own identity - a paper has two teachers, and whether
+  // This teacher's own identity - a paper may have had two teachers, and whether
   // it is still open to this one depends on whether they have finished.
   const [myId, setMyId] = useState(null)
   const [viewAs, setViewAs] = useState(devIdentity() || '')
@@ -192,7 +192,7 @@ export default function TeacherReview() {
         decision !== 'review_done'
           ? 'Referred back to data entry with your comments.'
           : bothDone
-            ? 'Review done - both teachers have finished, the question bank has your corrections and the paper is ready to publish.'
+            ? 'Review done - the question bank has your corrections and the paper is ready to publish.'
             : 'Review done - waiting for the other teacher to finish their review.',
       )
       setDecision(null)

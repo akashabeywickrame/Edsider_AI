@@ -298,7 +298,7 @@ def _common_sql():
 DOCUMENT_LABELS = {"medium_id": "language", "term_id": "term", "year_id": "year",
                    "exam_category_id": "exam_category", "difficulty_id": "difficulty",
                    "source_id": "source", "author_id": "author",
-                   "grading_method_id": "grading_method"}
+                   "grading_method_id": "grading_method", "chapter_id": "chapter"}
 
 # Where an uploaded paper is in its review - one row per status, so a
 # paper's status is a key into this table rather than free text.
@@ -348,6 +348,7 @@ CREATE TABLE IF NOT EXISTS intake.document (
     source_id         INTEGER REFERENCES common.source(id),
     author_id         INTEGER REFERENCES common.author(id),
     grading_method_id INTEGER REFERENCES common.grading_method(id),
+    chapter_id        INTEGER REFERENCES common.chapter(id),
     -- The paper's own general instructions ("Answer all questions").
     notes             TEXT,
     split_style       TEXT,
@@ -416,7 +417,12 @@ CREATE TABLE IF NOT EXISTS intake.part (
     -- student answers, and marks for each.
     plan_question_count  INTEGER,
     plan_answer_count    INTEGER,
-    plan_marks_each      DOUBLE PRECISION
+    plan_marks_each      DOUBLE PRECISION,
+    -- On the first section of a part divided into sections ("Part II - A",
+    -- "- B"): how many questions to answer across them all, the best of
+    -- the rest topping up each section's own count - EdSider's
+    -- total_questions_to_answer.
+    plan_group_answer_count INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_intake_part_doc ON intake.part(document_id);
@@ -455,6 +461,7 @@ CREATE TABLE IF NOT EXISTS intake.question (
     extraction_confidence  TEXT DEFAULT 'ok',
     reviewed               BOOLEAN NOT NULL DEFAULT FALSE,   -- data entry's tick
     teacher_reviewed       BOOLEAN NOT NULL DEFAULT FALSE,   -- the teacher's
+    compulsory             BOOLEAN NOT NULL DEFAULT FALSE,   -- must be answered
     last_edited_by         TEXT,
     last_edited_at         TIMESTAMPTZ,
     created_at             TIMESTAMPTZ DEFAULT now(),
@@ -1091,6 +1098,12 @@ MIGRATIONS = [
     # The marks a paper gives a question, parents included, as entered -
     # 2.5 too. questions.marks is a whole number and stays one (see RETYPED).
     ("question_assessments", "marks", "DOUBLE PRECISION"),
+    # EdSider's "Chapter/ Module/ Unit" on a paper - optional there too.
+    ("intake.document", "chapter_id", "INTEGER REFERENCES common.chapter(id)"),
+    # "Answer 5 in all, at least 2 from each section" (see intake.part).
+    ("intake.part", "plan_group_answer_count", "INTEGER"),
+    # "Question 1 must be answered, then any 3 of the rest."
+    ("intake.question", "compulsory", "BOOLEAN NOT NULL DEFAULT FALSE"),
 ]
 
 # Columns whose type changed - ALTER ... TYPE, which ADD COLUMN cannot
@@ -2038,7 +2051,7 @@ SELECT d.id, d.filename, d.file_type, d.title AS paper_title,
        d.grade_id, d.subject_id, coalesce(g.short_code, g.name) AS paper_grade,
        s.name AS paper_subject, m.name AS medium_name,
        d.medium_id, d.term_id, d.year_id, d.exam_category_id, d.difficulty_id,
-       d.source_id, d.author_id, d.grading_method_id,
+       d.source_id, d.author_id, d.grading_method_id, d.chapter_id,
        d.notes, d.split_style, d.status, d.uploaded_by, d.uploaded_at, d.archived_at,
        f.extractor, {raw_text} AS raw_text,
        t.assigned_to AS assigned_to, t.teachers, t.teachers_done,
@@ -2095,8 +2108,11 @@ def _settings_out(row, parts):
                 "question_count": p["plan_question_count"],
                 "answer_count": p["plan_answer_count"],
                 "marks_each": _num(p["plan_marks_each"]),
+                **({"group_answer_count": p["plan_group_answer_count"]}
+                   if p["plan_group_answer_count"] is not None else {}),
             } for p in parts if any(p[k] is not None for k in (
-                "plan_question_count", "plan_answer_count", "plan_marks_each"))},
+                "plan_question_count", "plan_answer_count", "plan_marks_each",
+                "plan_group_answer_count"))},
             "notes": row["marking_notes"] or "",
             "total": total,
             "target_total": target,
@@ -2312,6 +2328,100 @@ def _drop_unlisted_parts(conn, doc_id, keep):
         (doc_id, keep))
 
 
+# A section of a part, as the extractor and EdSider's converter name one -
+# "Part II - A" (the same rule as export._SUB_PART).
+_SECTION_LABEL = re.compile(r"^(?P<base>.+?)\s*[-–—]\s*(?P<sub>[A-Z])$")
+
+
+def split_part(conn, doc_id, label, starts, actor=None):
+    """Divide one part into sections - "Part II" becomes "Part II - A",
+    "Part II - B"... - for a paper whose section headings the extractor did
+    not find. `starts` are the ids of the questions that begin the second,
+    third... section; each question takes its own parts with it. A paper in
+    one piece is "Part I". The part's marks plan is cleared: its counts no
+    longer fit."""
+    label = label or None
+    if label and _SECTION_LABEL.match(label):
+        raise ValueError(f"{label} is already a section - join its sections first.")
+    parts = conn.execute("SELECT * FROM intake.part WHERE document_id = ? ORDER BY seq",
+                         (doc_id,)).fetchall()
+    target = next((p for p in parts if p["label"] == label), None)
+    if target is None and label is not None:
+        raise KeyError(label)
+    qs = conn.execute("SELECT id, seq, parent_seq, part_id FROM intake.question "
+                      "WHERE document_id = ? ORDER BY seq", (doc_id,)).fetchall()
+    in_part = [q for q in qs if q["part_id"] == (target["id"] if target else None)]
+    top = [q for q in in_part if q["parent_seq"] is None]
+    starts = set(starts or [])
+    if not starts or not starts <= {q["id"] for q in top[1:]}:
+        raise ValueError("Each new section must start at one of the part's questions, "
+                         "after its first.")
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if len(starts) + 1 > len(letters):
+        raise ValueError("Too many sections.")
+    children = {}
+    for q in in_part:
+        children.setdefault(q["parent_seq"], []).append(q)
+
+    def with_parts(q):
+        out, todo = [], [q]
+        while todo:
+            at = todo.pop()
+            out.append(at["id"])
+            todo.extend(children.get(at["seq"], []))
+        return out
+
+    sections, current = [], []
+    for q in top:
+        if q["id"] in starts:
+            sections.append(current)
+            current = []
+        current.extend(with_parts(q))
+    sections.append(current)
+
+    base = label or "Part I"
+    if target is None:
+        conn.execute("UPDATE intake.part SET seq = seq + 1 WHERE document_id = ?", (doc_id,))
+        target = conn.execute(
+            "INSERT INTO intake.part (document_id, seq, label) VALUES (?, 0, ?) RETURNING *",
+            (doc_id, base)).fetchone()
+    conn.execute("UPDATE intake.part SET seq = seq + ? WHERE document_id = ? AND seq > ?",
+                 (len(sections) - 1, doc_id, target["seq"]))
+    conn.execute("""UPDATE intake.part SET label = ?, plan_question_count = NULL,
+                           plan_answer_count = NULL, plan_marks_each = NULL,
+                           plan_group_answer_count = NULL WHERE id = ?""",
+                 (f"{base} - A", target["id"]))
+    conn.execute("UPDATE intake.question SET part_id = ? WHERE id = ANY(?)",
+                 (target["id"], sections[0]))
+    for n, ids in enumerate(sections[1:], 1):
+        part_id = conn.execute(
+            """INSERT INTO intake.part (document_id, seq, label, heading, kind, marks_each)
+               VALUES (?,?,?,?,?,?) RETURNING id""",
+            (doc_id, target["seq"] + n, f"{base} - {letters[n]}", target["heading"],
+             target["kind"], target["marks_each"])).fetchone()["id"]
+        conn.execute("UPDATE intake.question SET part_id = ? WHERE id = ANY(?)", (part_id, ids))
+    _log(conn, doc_id, f"{base} divided into {len(sections)} sections", actor=actor)
+
+
+def join_sections(conn, doc_id, base, actor=None):
+    """Undo split_part(): "Part II - A", "- B"... become "Part II" again,
+    every question and group instruction in it."""
+    parts = [p for p in conn.execute(
+        "SELECT id, label FROM intake.part WHERE document_id = ? ORDER BY seq",
+        (doc_id,)).fetchall()
+        if (m := _SECTION_LABEL.match(p["label"] or "")) and m.group("base").strip() == base]
+    if len(parts) < 2:
+        raise ValueError(f"{base} is not divided into sections.")
+    first, rest = parts[0]["id"], [p["id"] for p in parts[1:]]
+    for table in ("intake.question", "intake.instruction_group"):
+        conn.execute(f"UPDATE {table} SET part_id = ? WHERE part_id = ANY(?)", (first, rest))
+    conn.execute("DELETE FROM intake.part WHERE id = ANY(?)", (rest,))
+    conn.execute("""UPDATE intake.part SET label = ?, plan_question_count = NULL,
+                           plan_answer_count = NULL, plan_marks_each = NULL,
+                           plan_group_answer_count = NULL WHERE id = ?""", (base, first))
+    _log(conn, doc_id, f"{base}'s sections joined", actor=actor)
+
+
 def _replace_groups(conn, doc_id, groups):
     conn.execute("DELETE FROM intake.instruction_group WHERE document_id = ?", (doc_id,))
     known = _part_ids(conn, doc_id)
@@ -2349,15 +2459,18 @@ def _save_settings(conn, doc_id, settings):
         (doc_id, *values))
     conn.execute(
         """UPDATE intake.part SET plan_question_count = NULL,
-                  plan_answer_count = NULL, plan_marks_each = NULL
+                  plan_answer_count = NULL, plan_marks_each = NULL,
+                  plan_group_answer_count = NULL
             WHERE document_id = ?""", (doc_id,))
     for key, plan in ((marking or {}).get("parts") or {}).items():
         conn.execute(
             """UPDATE intake.part SET plan_question_count = ?,
-                      plan_answer_count = ?, plan_marks_each = ?
+                      plan_answer_count = ?, plan_marks_each = ?,
+                      plan_group_answer_count = ?
                 WHERE document_id = ? AND label IS NOT DISTINCT FROM ?""",
             (plan.get("question_count"), plan.get("answer_count"),
-             plan.get("marks_each"), doc_id, None if key == "_" else key))
+             plan.get("marks_each"), plan.get("group_answer_count"), doc_id,
+             None if key == "_" else key))
 
 
 def _insert_questions(conn, doc_id, drafts):
@@ -2472,19 +2585,42 @@ def _attach_tables(conn, doc_id, drafts):
                                row["content_type"] or "image/png", label=t.get("label"))
 
 
+# What the paper finder filters on, as EdSider's assessment library does:
+# filter name -> the paper's column, each an EdSider id (or, for
+# uploaded_by, who uploaded it).
+PAPER_FILTERS = {"grade_id": "d.grade_id", "subject_id": "d.subject_id",
+                 **{key: f"d.{key}" for key in DOCUMENT_LABELS if key != "grading_method_id"},
+                 "uploaded_by": "d.uploaded_by"}
+
+# The day a paper was uploaded, as the people uploading count days.
+_UPLOAD_DAY = "(d.uploaded_at AT TIME ZONE 'Asia/Colombo')::date"
+
+
 def search_intake_documents(conn, status=None, subject=None, grade=None, search=None,
-                            limit=50, offset=0, operator=None, teacher=None):
+                            limit=50, offset=0, operator=None, teacher=None,
+                            filters=None, uploaded_from=None, uploaded_to=None,
+                            statuses=None):
     """(total, rows) - one page of papers matching every filter given,
     newest first. `search` matches the file name or the paper's title, any
-    case; "" / None means no filter. `operator` keeps only the papers that
-    Data Entry Operator has now ("none": papers nobody has), `teacher` the
-    ones with that teacher. Rows carry no file and no read text."""
+    case; "" / None means no filter. `filters` is {PAPER_FILTERS key:
+    value}; `uploaded_from` / `uploaded_to` are days ("2026-10-29"), both
+    included; `statuses` keeps papers at any of these. `operator` keeps only the papers that Data Entry Operator has
+    now ("none": papers nobody has), `teacher` the ones with that teacher.
+    Rows carry no file and no read text."""
     where, params = [], []
     for column, value in (("d.status", status), ("s.name", subject),
-                          ("coalesce(g.short_code, g.name)", grade)):
-        if value:
+                          ("coalesce(g.short_code, g.name)", grade),
+                          *((PAPER_FILTERS[k], v) for k, v in (filters or {}).items())):
+        if value not in (None, ""):
             where.append(f"{column} = ?")
             params.append(value)
+    if statuses:
+        where.append("d.status = ANY(?)")
+        params.append(list(statuses))
+    for op, day in ((">=", uploaded_from), ("<=", uploaded_to)):
+        if day:
+            where.append(f"{_UPLOAD_DAY} {op} ?::date")
+            params.append(day)
     if operator == "none":
         where.append("o.id IS NULL")
     elif operator:
@@ -2510,23 +2646,44 @@ def intake_documents(conn):
     return search_intake_documents(conn, limit=None)[1]
 
 
-def intake_document_facets(conn, operator=None):
-    """How many papers there are per status, subject, grade and Data Entry
-    Operator ("none" for nobody yet) - the paper finder's filter menus,
-    each with its count. `operator` counts only that person's papers."""
+def intake_document_facets(conn, operator=None, statuses=None):
+    """How many papers there are per status, subject, grade, Data Entry
+    Operator ("none" for nobody yet) and per value of every PAPER_FILTERS
+    column, and per teacher - the paper finder's filter menus, each with
+    its count. `operator` counts only that person's papers, `statuses` only
+    papers at one of these."""
     select = _DOCUMENT_SELECT.format(raw_text="NULL")
-    where, params = "", []
+    where, params = [], []
     if operator:
-        where, params = "WHERE o.assigned_to = ?", [operator]
-    out = {}
-    for key, column in (("status", "x.status"), ("subject", "x.paper_subject"),
-                        ("grade", "x.paper_grade"),
-                        ("operator", "coalesce(x.operator, 'none')")):
-        out[key] = {r["v"]: r["n"] for r in conn.execute(
-            f"""SELECT {column} AS v, count(*) AS n FROM ({select} {where}) x
-                 WHERE {column} IS NOT NULL AND {column} <> ''
-                 GROUP BY 1 ORDER BY 1""", params).fetchall()}
-    return out
+        where.append("o.assigned_to = ?")
+        params.append(operator)
+    if statuses:
+        where.append("d.status = ANY(?)")
+        params.append(list(statuses))
+    where = f"WHERE {' AND '.join(where)}" if where else ""
+    keys = {"status": "status", "subject": "paper_subject", "grade": "paper_grade",
+            "operator": "operator", **{key: key for key in PAPER_FILTERS}}
+    # One query, counted here: one per menu was fourteen round trips.
+    rows = conn.execute(
+        f"SELECT {', '.join(sorted(set(keys.values())))}, teachers FROM ({select} {where}) x",
+        params).fetchall()
+    out = {key: {} for key in keys}
+    for r in rows:
+        for key, column in keys.items():
+            value = r[column] if key != "operator" else (r[column] or "none")
+            if value is not None and value != "":
+                out[key][str(value)] = out[key].get(str(value), 0) + 1
+        for who in r["teachers"] or []:
+            out.setdefault("teacher", {})[who] = out.get("teacher", {}).get(who, 0) + 1
+    out.setdefault("teacher", {})
+    return {key: dict(sorted(counts.items())) for key, counts in out.items()}
+
+
+def staff_names(conn, emails):
+    """{email: name} for the people on the staff list who have a name."""
+    return {r["email"]: r["name"] for r in conn.execute(
+        "SELECT email, name FROM staff WHERE email = ANY(?) AND coalesce(name, '') <> ''",
+        (list(emails),)).fetchall()}
 
 
 def get_intake_document(conn, doc_id):
@@ -2540,7 +2697,7 @@ _QUESTION_SELECT = """
 SELECT q.id, q.document_id, q.seq, q.parent_seq, q.question_number, q.text,
        q.marks, q.topic, q.answer, q.question_type, q.extraction_confidence,
        q.reviewed, q.teacher_reviewed, q.last_edited_by, q.last_edited_at,
-       q.created_at, p.label AS section,
+       q.compulsory, q.created_at, p.label AS section,
        coalesce(g.short_code, g.name) AS grade, s.name AS subject
   FROM intake.question q
   JOIN intake.document d ON d.id = q.document_id
@@ -2689,9 +2846,11 @@ def assign_document(conn, doc_id, teacher_identity, assigned_by=None):
 
 
 def assign_teachers(conn, doc_id, identities, assigned_by=None):
-    """Hand a paper to its teachers - two, as the administrator assigns -
-    and move it straight into 'teacher_review'. The first named is the
-    paper's owner, the second its syllabus checker. A teacher already on it
+    """Hand a paper to its teacher - one, as the administrator assigns now
+    (the paper's author, or another teacher when the author does not want
+    to review it) - and move it straight into 'teacher_review'. The first
+    named is the paper's owner; a second, as papers were once given two,
+    its syllabus checker. A teacher already on it
     keeps their review (and its ticks), in the job named now; one no longer
     named is taken off, their part kept in the history."""
     wanted = list(dict.fromkeys(i for i in identities if i))
@@ -2983,6 +3142,7 @@ def delete_question_image(conn, image_id):
 _INTAKE_Q_EDITABLE = {
     "question_number", "text", "marks", "topic", "answer", "reviewed",
     "extraction_confidence", "section", "teacher_reviewed", "question_type",
+    "compulsory",
 }
 
 
@@ -3007,7 +3167,7 @@ def update_intake_question(conn, q_id, **fields):
         raise ValueError(f"not an editable intake question field: {sorted(bad)}")
     if not fields:
         return
-    for key in ("reviewed", "teacher_reviewed"):
+    for key in ("reviewed", "teacher_reviewed", "compulsory"):
         if key in fields:
             fields[key] = bool(fields[key])
     if "section" in fields:
@@ -3020,10 +3180,13 @@ def update_intake_question(conn, q_id, **fields):
                  (*fields.values(), q_id))
 
 
-def delete_intake_document(conn, doc_id):
-    """An upload made by mistake, removed whole - only while it is still
-    'extracted': once data entry has checked it, a copy is in the question
-    bank, its teachers or EdSider may have it, and its history matters.
+def delete_intake_document(conn, doc_id, moved_on=False):
+    """An upload made by mistake, removed whole - by data entry only while
+    it is still 'extracted': once data entry has checked it, a copy is in
+    the question bank and a teacher may have it. With `moved_on` (an
+    administrator, from Paper assignment) a paper at any later stage goes
+    too, its question-bank copy with it. A paper sent to EdSider never
+    does: it is in EdSider, and this is its record of that.
     Every row of it goes (each table names the paper ON DELETE CASCADE).
     Returns the stored files it held, for delete_stored_files() once this
     has committed - files first and a failed commit would leave rows
@@ -3032,17 +3195,48 @@ def delete_intake_document(conn, doc_id):
                        (doc_id,)).fetchone()
     if doc is None:
         raise KeyError(doc_id)
-    if doc["status"] != "extracted" or doc["archived_at"] or last_send(conn, doc_id):
+    if last_send(conn, doc_id) or doc["status"] == "published":
+        raise ValueError("This paper has been sent to EdSider, so it cannot be removed here.")
+    if not moved_on and (doc["status"] != "extracted" or doc["archived_at"]):
         raise ValueError("Only a paper still at Extracted can be removed - this one has "
                          "moved on.")
+    bank = f"intake-{doc_id}"
     paths = [r["p"] for r in conn.execute(
         """SELECT file_path AS p FROM intake.document_file WHERE document_id = ?
-           UNION ALL SELECT i.image_path FROM intake.question_image i
-                       JOIN intake.question q ON q.id = i.question_id WHERE q.document_id = ?
-           UNION ALL SELECT image_path FROM intake.document_table WHERE document_id = ?""",
-        (doc_id, doc_id, doc_id)).fetchall() if r["p"]]
+           UNION SELECT i.image_path FROM intake.question_image i
+                   JOIN intake.question q ON q.id = i.question_id WHERE q.document_id = ?
+           UNION SELECT image_path FROM intake.document_table WHERE document_id = ?
+           UNION SELECT path FROM question_files WHERE question_id LIKE ?""",
+        (doc_id, doc_id, doc_id, f"{bank}-%")).fetchall() if r["p"]]
+    # The bank copy (sync_paper_to_bank()): its place on the paper, then the
+    # questions, their pictures' rows with them.
+    conn.execute("DELETE FROM question_assessments WHERE assessment_id = ?", (bank,))
+    conn.execute("DELETE FROM questions WHERE id LIKE ?", (f"{bank}-%",))
     conn.execute("DELETE FROM intake.document WHERE id = ?", (doc_id,))
     return paths
+
+
+# Where a paper is when an administrator may take it off its teacher.
+UNASSIGNABLE = {"teacher_review", "review_done", "ready_to_publish"}
+
+
+def unassign_teachers(conn, doc_id, actor=None):
+    """Take a paper off its teacher: their review closes (kept in the
+    history) and the paper is back at 'data_entry_done', ready to assign
+    again. Its questions and its question-bank copy stay as they are."""
+    doc = conn.execute("SELECT status, archived_at FROM intake.document WHERE id = ?",
+                       (doc_id,)).fetchone()
+    if doc is None:
+        raise KeyError(doc_id)
+    if doc["status"] not in UNASSIGNABLE or doc["archived_at"]:
+        raise ValueError("Only a paper with a teacher, not yet sent or archived, can be "
+                         "unassigned.")
+    for r in conn.execute(
+            "UPDATE intake.review SET active = FALSE WHERE document_id = ? "
+            "AND stage = 'teacher' AND active RETURNING assigned_to", (doc_id,)).fetchall():
+        _log(conn, doc_id, "unassigned", stage="teacher", actor=actor,
+             assigned_to=r["assigned_to"])
+    set_document_status(conn, doc_id, "data_entry_done", actor=actor)
 
 
 def delete_stored_files(paths):
@@ -3748,7 +3942,7 @@ def assignable_teachers(conn):
              FROM staff
             WHERE active
               AND (in_edsider OR role = 'teacher' OR first_seen_at IS NOT NULL)
-            ORDER BY lower(coalesce(name, email))"""
+            ORDER BY lower(trim(coalesce(nullif(trim(name), ''), email)))"""
     ).fetchall()
 
 

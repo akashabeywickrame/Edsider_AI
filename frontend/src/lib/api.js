@@ -189,6 +189,11 @@ export const api = {
   // A paper uploaded by mistake - only while it is still Extracted.
   deleteIntakeDocument: (docId) => request(`/intake/documents/${docId}`, { method: 'DELETE' }),
   // Many questions' marks in one request - [{question_id, marks}] - returns the paper's questions.
+  // Divides a part into sections at the questions named; joins them back.
+  splitSections: (docId, label, starts) =>
+    request(`/intake/documents/${docId}/sections/split`, { method: 'POST', body: { label, starts } }),
+  joinSections: (docId, part) =>
+    request(`/intake/documents/${docId}/sections/join`, { method: 'POST', body: { part } }),
   setQuestionMarks: (docId, items) =>
     request(`/intake/documents/${docId}/marks`, { method: 'POST', body: { marks: items } }),
   updateIntakeDocument: (docId, fields) =>
@@ -278,12 +283,15 @@ export const api = {
   // Re-reads EdSider's teacher list into our copy - fails with a clear
   // message (e.g. EdSider unreachable) while the last copy stays usable.
   syncTeachers: () => request('/teachers/sync', { method: 'POST' }),
-  // A paper is reviewed by two teachers.
+  // A paper is reviewed by one teacher - its author, or another teacher.
   assignDocument: (docId, teacherIdentities) =>
     request(`/intake/documents/${docId}/assign`, {
       method: 'POST',
       body: { teacher_identities: teacherIdentities },
     }),
+
+  // Takes a paper off its teacher - back to Ready to assign.
+  unassignDocument: (docId) => request(`/intake/documents/${docId}/unassign`, { method: 'POST' }),
 
   // Everything that happened to a paper, oldest first.
   documentHistory: (docId) => request(`/intake/documents/${docId}/history`),

@@ -4,6 +4,7 @@ MCQ answer "0,100,0,0", a parent linked at 0 marks with its parts carrying
 the marks under one question number, Draft.js text, "CASS<user id>"."""
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,31 @@ def test_draft_documents_are_edsiders_shape():
     assert export.draft_json([doc]).startswith('[{"blocks":[{"key":')
 
 
+def test_the_papers_line_wraps_are_joined_as_our_preview_joins_them():
+    """Reported: EdSider showed a question broken where the paper's margin
+    broke it, while our preview ran it across the page."""
+    stem = ("Identify the correct combination of associated factors related to ornamental fish\n"
+            "breeding.\n"
+            "a. Platty, Swordtail are live bearing fish, during breeding they give birth to fry and\n"
+            "the fry can be fed with brine shrimp and egg yolk.\n"
+            "b. In ornamental fish breeding, it is necessary to maintain a suitable environment.\n"
+            "(1) A | B\n"
+            "C | D")
+    assert [b["text"] for b in export.draft_doc(stem, "s")["blocks"]] == [
+        "Identify the correct combination of associated factors related to ornamental fish breeding.",
+        "a. Platty, Swordtail are live bearing fish, during breeding they give birth to fry and "
+        "the fry can be fed with brine shrimp and egg yolk.",
+        "b. In ornamental fish breeding, it is necessary to maintain a suitable environment.",
+        "(1) A | B", "C | D"]
+    option = "The percentage of ratio between the length and the breadth that's\nimportant in packaging"
+    assert [b["text"] for b in export.draft_doc(option, "s")["blocks"]] == [
+        "The percentage of ratio between the length and the breadth that's important in packaging"]
+
+    # The preview's own rule (frontend/src/lib/text.js) is the same pattern.
+    js = (ROOT / "frontend" / "src" / "lib" / "text.js").read_text(encoding="utf-8")
+    assert re.search(r"const LIST_START = /(.+)/\n", js).group(1) == export._LIST_START.pattern
+
+
 def test_a_pictures_label_is_a_line_under_it():
     doc = export.draft_doc("Which implement?", "s", images=[("data:a", "A"), ("data:b", None)])
     assert [(b["type"], b["text"]) for b in doc["blocks"]] == [
@@ -167,6 +193,8 @@ def test_a_finished_paper_becomes_edsiders_rows():
     assert lines("q7") == ["Name two input devices used at the counter."]
 
     links = {l["question_key"]: l["row"] for l in pkg["links"]}
+    # Part I is answered whole; Part II is "answer any one" - picked from.
+    assert links["q1"]["is_optional"] is False and links["q8"]["is_optional"] is True
     assert [links[k]["mark_allocation"] for k in ("q3", "q5", "q6", "q7")] == [0.0, 2.0, 3.0, 4.0]
     assert {links[k]["question_number"] for k in ("q3", "q5", "q6", "q7")} == {1}
     assert links["q8"]["question_number"] == 2
@@ -218,3 +246,65 @@ def test_the_preview_route_names_the_sender_and_reads_the_stored_paper(local_db)
     assert out.package["assessment"]["created_by"] == "314"
     assert out.summary["questions"] == 4 and out.summary["rows"] == 7
     assert any("medium" in p["message"] for p in out.problems)
+
+
+def test_a_part_in_sections_says_how_many_to_answer_in_all():
+    """Asked for: "at least 2 from Section A, 2 from Section B, and one more
+    from either" - EdSider's own part total (total_questions_to_answer),
+    each section's count on the section."""
+    sections = [{"label": "Part II - A", "heading": None, "kind": "structured",
+                 "instructions": None, "marks_each": None},
+                {"label": "Part II - B", "heading": None, "kind": "structured",
+                 "instructions": None, "marks_each": None}]
+    questions = [q(n, n, f"0{n}", f"Explain topic {n}.", "Part II - A" if n <= 4 else "Part II - B",
+                   marks=10) for n in range(1, 9)]
+    doc = dict(DOC, sections=sections, instruction_groups=[], assessment_settings=dict(
+        DOC["assessment_settings"], marking={"parts": {
+            "Part II - A": {"answer_count": 2, "group_answer_count": 5},
+            "Part II - B": {"answer_count": 2}}}))
+    pkg = export.build_package(doc, questions, LISTS, PEOPLE)
+    part, = pkg["parts"]
+    assert (part["row"]["allow_questions_to_answer"], part["row"]["total_questions_to_answer"]) == (
+        True, 5)
+    assert [(s["row"]["allow_optional_questions"], s["row"]["no_of_questions_to_answer"])
+            for s in part["sections"]] == [(True, 2), (True, 2)]
+    assert not [p for p in pkg["problems"] if "in all" in p["message"]]
+    # Every question there is one the student may pick - EdSider counts any
+    # other as compulsory.
+    assert {l["row"]["is_optional"] for l in pkg["links"]} == {True}
+
+    # A section asking for none is still optional: only the part's total picks from it.
+    doc["assessment_settings"]["marking"]["parts"]["Part II - B"]["answer_count"] = 0
+    pkg = export.build_package(doc, questions, LISTS, PEOPLE)
+    assert [(s["row"]["allow_optional_questions"], s["row"]["no_of_questions_to_answer"])
+            for s in pkg["parts"][0]["sections"]] == [(True, 2), (True, 0)]
+
+    # Without a total, nothing is added to the part's row.
+    del doc["assessment_settings"]["marking"]["parts"]["Part II - A"]["group_answer_count"]
+    assert "total_questions_to_answer" not in export.build_package(
+        doc, questions, LISTS, PEOPLE)["parts"][0]["row"]
+
+
+def test_a_compulsory_question_then_any_of_the_rest():
+    """Asked for: "Question 1 must be answered, then any 3 of the rest" - its
+    link not optional (EdSider counts it always), the rest optional, and
+    the section's required count saying so."""
+    sections = [{"label": "Part II", "heading": None, "kind": "structured",
+                 "instructions": None, "marks_each": None}]
+    questions = [dict(q(n, n, f"0{n}", f"Explain topic {n}.", "Part II", marks=10),
+                      compulsory=n == 1) for n in range(1, 6)]
+    doc = dict(DOC, sections=sections, instruction_groups=[], assessment_settings=dict(
+        DOC["assessment_settings"], marking={"parts": {"Part II": {"answer_count": 4}}}))
+    pkg = export.build_package(doc, questions, LISTS, PEOPLE)
+    sec = pkg["parts"][0]["sections"][0]["row"]
+    assert (sec["allow_optional_questions"], sec["no_of_required_questions"],
+            sec["no_of_questions_to_answer"]) == (True, 1, 4)
+    optional = {l["question_key"]: l["row"]["is_optional"] for l in pkg["links"]}
+    assert optional == {"q1": False, "q2": True, "q3": True, "q4": True, "q5": True}
+
+    # More compulsory questions than there are to answer cannot be sent.
+    for x in questions[:3]:
+        x["compulsory"] = True
+    doc["assessment_settings"]["marking"]["parts"]["Part II"]["answer_count"] = 2
+    pkg = export.build_package(doc, questions, LISTS, PEOPLE)
+    assert any("3 compulsory" in p["message"] and p["level"] == "error" for p in pkg["problems"])

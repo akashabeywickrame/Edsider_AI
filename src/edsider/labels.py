@@ -1,6 +1,6 @@
 """The labels EdSider needs on a paper and we did not capture: medium,
 term, year (read from the paper where it says so), exam category,
-difficulty, source and author (chosen by data entry). Stored as EdSider's
+difficulty, source, author and chapter (chosen by data entry). Stored as EdSider's
 own ids, from the lists scripts/sync.py copies (store.edsider_lookups()),
 in intake_documents.edsider_labels.
 
@@ -22,13 +22,13 @@ import re
 
 # KEYS in the stored JSON - EdSider ids, each nullable.
 KEYS = ("medium_id", "term_id", "year_id", "exam_category_id", "difficulty_id",
-        "source_id", "author_id", "grading_method_id")
+        "source_id", "author_id", "grading_method_id", "chapter_id")
 
 # Which EdSider list each key is chosen from (store.edsider_lookups kinds).
 LIST_FOR = {"medium_id": "language", "term_id": "term", "year_id": "year",
             "exam_category_id": "exam_category", "difficulty_id": "difficulty",
             "source_id": "source", "author_id": "author",
-            "grading_method_id": "grading_method"}
+            "grading_method_id": "grading_method", "chapter_id": "chapter"}
 
 _SINHALA = re.compile(r"[඀-෿]")
 _TAMIL = re.compile(r"[஀-௿]")
