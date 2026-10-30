@@ -2197,6 +2197,40 @@ Owner and syllabus checker stay in the code for a paper already given two
 (none was in review when this changed); a paper has one teacher, its
 owner, from now on.
 
+**A teacher writes any kind of question, and corrects small mistakes.**
+Asked for: the question a teacher writes in place of a repeat is an MCQ,
+a written-answer question or one with parts, with the inputs each needs;
+and teachers fix a spelling, not only comment on it.
+- *Replace* (`POST .../replace`, `ReplaceQuestionIn.kind`): "mcq" takes
+  `options` and `correct` (by place) and is stored as the paper stores
+  one - the stem, then "(1) ..." lines, the answer "(2)" or "1, 3"; "sub"
+  takes `parts` ({text, answer, marks}), written straight under it as
+  (a), (b)... (`store._add_parts()`, the later questions moved down with
+  `make_room_after`), its marks theirs added up; a question that already
+  has parts cannot take more. `question_type` is stored as written.
+- *Correct* (`POST /intake/questions/{id}/correct`, `TEACHER` + the paper
+  rule - only the paper's teacher, only while their review is open): the
+  stem, an MCQ's options (markers kept) and the answer, edited in place on
+  the teacher's card ("Edit"). `store.correct_question()` keeps the
+  wording before as a revision ("Corrected by the teacher") and logs "Qn
+  corrected by the teacher"; a save that changes nothing keeps nothing.
+
+**An administrator follows a paper as its teacher sees it.** Asked for:
+MASAD, admins and superadmins see a paper's progress and what its teacher
+changed, the way EdSider does it. Read in EdSider's code: there is no
+"log in as" and no monitoring screen - MASAD opens the teacher's own Paper
+Review page from a View icon on its "All Papers" list, and the page's role
+flags decide what each may do; EdSider writes change logs
+(`question_log`, `assessment_review_logs`) but never shows them. Here:
+**View** on each paper in Paper assignment's table opens
+`/app/admin/papers/:id` - `TeacherReview` with `adminView`, the same page,
+read only (no ticks, comments, edits or finish), with the teacher, review
+done or not, how many questions they have ticked (`list_questions` gives a
+non-teacher the paper's teacher's own ticks), every comment, each
+question's "Earlier versions", and "Changes and history" - the paper's
+whole log, newest first. Works on a paper already sent to EdSider too (it
+reads back from the bank).
+
 **Paper assignment's table: filters, pages, Unassign and Delete.** Asked
 for, with a thousand papers in mind: "Already assigned" is now searched a
 page at a time (25, First/Previous/Next/Last) with the paper finder's

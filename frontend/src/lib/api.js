@@ -212,6 +212,8 @@ export const api = {
     request(`/intake/questions/${qid}/flag`, { method: 'POST', body: { repeat_of: repeatOf, note } }),
   unflagRepeat: (qid) => request(`/intake/questions/${qid}/flag`, { method: 'DELETE' }),
   replaceQuestion: (qid, body) => request(`/intake/questions/${qid}/replace`, { method: 'POST', body }),
+  // A teacher's correction to a question's wording; the earlier wording is kept in its history.
+  correctQuestion: (qid, body) => request(`/intake/questions/${qid}/correct`, { method: 'POST', body }),
   keepQuestion: (qid, note) => request(`/intake/questions/${qid}/keep`, { method: 'POST', body: { note } }),
   // A question now and every earlier version of it.
   questionHistory: (qid) => request(`/intake/questions/${qid}/history`),

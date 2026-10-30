@@ -46,7 +46,7 @@ export default function QuestionHistory({ questionId, count }) {
             ? [...history.earlier].reverse().map((v, i) => (
                 <div className="qh__version" key={v.id}>
                   <p className="es-caption qh__meta">
-                    {i === 0 ? 'Before the latest change' : 'Earlier'} - replaced{' '}
+                    {i === 0 ? 'Before the latest change' : 'Earlier'} - changed{' '}
                     {v.replaced_by ? `by ${v.replaced_by} ` : ''}on {when(v.replaced_at)}
                     {v.reason ? ` - ${v.reason}` : ''}
                   </p>

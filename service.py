@@ -796,7 +796,14 @@ class FlagRepeatIn(BaseModel):
     note: Optional[str] = None
 
 
+class ReplacePartIn(BaseModel):
+    text: str = Field(..., min_length=1)
+    answer: Optional[str] = None
+    marks: Optional[Marks] = None
+
+
 class ReplaceQuestionIn(BaseModel):
+    # The question - for an MCQ or a question in parts, its stem.
     text: str = Field(..., min_length=1)
     answer: Optional[str] = None
     marks: Optional[Marks] = None
@@ -804,6 +811,20 @@ class ReplaceQuestionIn(BaseModel):
     reason: Optional[str] = None
     # False: the question's pictures belong to the earlier version.
     keep_pictures: bool = True
+    # What the teacher writes: a written answer, a multiple-choice question
+    # (its options, and which are correct by place), or a question in parts.
+    kind: Literal["descriptive", "mcq", "sub"] = "descriptive"
+    options: List[str] = []
+    correct: List[int] = []
+    parts: List[ReplacePartIn] = []
+
+
+class CorrectQuestionIn(BaseModel):
+    # The question's text - for an MCQ, its stem, with `options` its options
+    # as McqOptionIn (marker kept as printed). Absent: unchanged.
+    text: Optional[str] = None
+    options: Optional[List["McqOptionIn"]] = None
+    answer: Optional[str] = None
 
 
 class KeepQuestionIn(BaseModel):
@@ -866,6 +887,9 @@ class McqOptionIn(BaseModel):
 class McqUpdateIn(BaseModel):
     stem: str
     options: List[McqOptionIn] = []
+
+
+CorrectQuestionIn.model_rebuild()
 
 
 class BlankIn(BaseModel):
@@ -1975,9 +1999,14 @@ def list_questions(doc_id: int, user: dict = Depends(current_user)):
         _require_document(conn, doc_id)
         qs = store.intake_questions(conn, doc_id)
         # A teacher sees their own ticks - the paper's other teacher ticks
-        # every question for themselves.
-        checked = (store.teacher_checks(conn, doc_id, user["identity"])
-                   if _is_teacher(user) else None)
+        # every question for themselves. Anyone else following the paper (an
+        # administrator's View) sees its teacher's: how far their review is.
+        if _is_teacher(user):
+            checked = store.teacher_checks(conn, doc_id, user["identity"])
+        else:
+            teachers = store.paper_teachers(conn, doc_id)
+            checked = (store.teacher_checks(conn, doc_id, teachers[0]["assigned_to"])
+                       if teachers else None)
         qs = _with_repeats(conn, doc_id, qs)
     parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
     if checked is not None:
@@ -2118,11 +2147,53 @@ def replace_repeated_question(q_id: int, body: ReplaceQuestionIn,
     one. The old question - text, answer, marks - is kept in its history,
     and its repeat flag is resolved as replaced."""
     _require_owner(q_id, user)
+    text, answer, marks, parts = body.text.strip(), body.answer, body.marks, []
+    if body.kind == "mcq":
+        options = [o.strip() for o in body.options if o.strip()]
+        if len(options) < 2:
+            raise HTTPException(400, "A multiple-choice question needs at least two options.")
+        if not body.correct or any(not 0 <= i < len(options) for i in body.correct):
+            raise HTTPException(400, "Choose which option is correct.")
+        # Stored as the paper stores one: the stem, then "(1) ..." lines;
+        # the answer names the correct ones, "(2)" or "1, 3".
+        text += "\n" + "\n".join(f"({n}) {o}" for n, o in enumerate(options, 1))
+        picked = sorted(set(body.correct))
+        answer = f"({picked[0] + 1})" if len(picked) == 1 else ", ".join(str(i + 1) for i in picked)
+    elif body.kind == "sub":
+        if not body.parts:
+            raise HTTPException(400, "Add the question's parts.")
+        parts = [p.model_dump() for p in body.parts]
+        if all(p["marks"] is not None for p in parts):
+            marks = intake_extract.mark_total([p["marks"] for p in parts])
     with store.connect() as conn:
         _require_question(conn, q_id)
-        store.replace_question(conn, q_id, body.text, answer=body.answer, marks=body.marks,
-                               replaced_by=_actor(identity), reason=body.reason,
-                               keep_pictures=body.keep_pictures)
+        try:
+            store.replace_question(conn, q_id, text, answer=answer, marks=marks,
+                                   replaced_by=_actor(identity), reason=body.reason,
+                                   keep_pictures=body.keep_pictures,
+                                   question_type=body.kind, parts=parts)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return _one_question_out(conn, q_id, user)
+
+
+@app.post("/intake/questions/{q_id}/correct", response_model=IntakeQuestionOut,
+          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+def correct_question(q_id: int, body: CorrectQuestionIn,
+                     identity: str = Depends(current_identity),
+                     user: dict = Depends(current_user)):
+    """A teacher fixes a spelling or a wrong word in a question, its MCQ
+    options or its answer - while their review is open (the paper rule).
+    The wording before is kept in the question's history, so the paper's
+    administrators see what the teacher changed."""
+    text = body.text
+    if text is not None and body.options is not None:
+        text = text.strip() + "\n" + "\n".join(
+            f"{o.marker.rstrip()} {o.text}".strip() for o in body.options)
+    with store.connect() as conn:
+        _require_question(conn, q_id)
+        store.correct_question(conn, q_id, text=text, answer=body.answer,
+                               corrected_by=_actor(identity))
         return _one_question_out(conn, q_id, user)
 
 

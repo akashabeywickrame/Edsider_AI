@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { AuthImg } from '../../lib/useFileUrl.jsx'
 import { devIdentity, isDevAuth, setDevIdentity } from '../../lib/auth.js'
@@ -16,8 +17,12 @@ import './TeacherReview.css'
 // The subject teacher's review of one paper. Mirrors
 // design-system/screens/project/TeacherReview.dc.html: every question with its
 // marks, options, marking guidance and comments, a per-question reviewed tick,
-// and the finish decision. Only the teacher's own tick and comments are written
-// here; the question text itself is never edited on this page.
+// and the finish decision. The teacher ticks, comments, corrects a small
+// mistake in a question's wording (kept in its history), and finishes.
+//
+// `adminView`: an administrator (MASAD, admin, superadmin) opens a paper here
+// from Paper assignment, as EdSider's MASAD opens its teacher's Paper Review -
+// the same page, read only, with the teacher's progress and what they changed.
 
 const STATUS_TEXT = {
   teacher_review: 'Awaiting your review',
@@ -38,11 +43,17 @@ function when(iso) {
   return Number.isNaN(d.getTime()) ? String(iso).slice(0, 16) : d.toLocaleString()
 }
 
-export default function TeacherReview() {
+export default function TeacherReview({ adminView = false }) {
   const { PageHeader, Button, Notice, StatusPill } = window.EdSider
   const toast = useToast()
-  const [papers, setPapers] = useState(null)
-  const [docId, setDocId] = useState(null)
+  const params = useParams()
+  const [papers, setPapers] = useState(adminView ? [] : null)
+  const [docId, setDocId] = useState(adminView ? Number(params.docId) : null)
+  // The paper's history - every assignment, correction, replacement and
+  // status change - for the administrator's view.
+  const [history, setHistory] = useState(null)
+  // A question being corrected: its id and the wording being edited.
+  const [editing, setEditing] = useState(null)
   // The paper that was open has been deleted.
   const [paperGone, setPaperGone] = useState(false)
   const [doc, setDoc] = useState(null)
@@ -66,6 +77,7 @@ export default function TeacherReview() {
 
   // Register this teacher, then list the papers handed to them.
   useEffect(() => {
+    if (adminView) return
     let live = true
     api
       .touchTeacher()
@@ -96,6 +108,12 @@ export default function TeacherReview() {
     if (!docId) return
     let live = true
     setLoadError(null)
+    if (adminView) {
+      api
+        .documentHistory(docId)
+        .then((h) => live && setHistory(h))
+        .catch(() => live && setHistory([]))
+    }
     Promise.all([
       api.getIntakeDocument(docId),
       api.listIntakeQuestions(docId),
@@ -127,7 +145,8 @@ export default function TeacherReview() {
   }, [docId])
 
   const iFinished = Boolean(doc && myId && (doc.teachers_done || []).includes(myId))
-  const reviewable = doc?.status === 'teacher_review' && !iFinished
+  // An administrator follows the paper; only its teacher works on it.
+  const reviewable = !adminView && doc?.status === 'teacher_review' && !iFinished
   const otherTeacher = (doc?.teachers || []).find((t) => t !== myId)
   // The owner teacher settles repeats; the syllabus checker reads, ticks and
   // comments. A paper from before owners were kept counts its first teacher.
@@ -156,6 +175,37 @@ export default function TeacherReview() {
   }
 
   const labelOf = (q) => (q.question_number ? `Q${q.question_number}` : `Q${q.seq}`)
+
+  // A small correction - a spelling, a wrong word - to the question, its
+  // options or its answer. The wording before stays in its history.
+  function startEdit(q) {
+    setEditing({
+      id: q.id,
+      text: q.mcq ? q.mcq.stem : q.text || '',
+      options: q.mcq ? q.mcq.options.map((o) => ({ marker: o.marker, text: o.text })) : null,
+      answer: q.answer || '',
+    })
+  }
+
+  async function saveEdit(q) {
+    setBusy((b) => ({ ...b, [`e${q.id}`]: true }))
+    setError(null)
+    try {
+      const updated = await api.correctQuestion(q.id, {
+        text: editing.text,
+        options: editing.options,
+        answer: editing.answer,
+      })
+      setQuestions((list) => list.map((x) => (x.id === updated.id ? updated : x)))
+      setEditing(null)
+      toast.success('Correction saved - the earlier wording is in its history.')
+    } catch (err) {
+      setError(err.message)
+      toast.error(`Not saved: ${err.message}`)
+    } finally {
+      setBusy((b) => ({ ...b, [`e${q.id}`]: false }))
+    }
+  }
 
   async function toggleReviewed(q) {
     setBusy((b) => ({ ...b, [q.id]: true }))
@@ -244,11 +294,24 @@ export default function TeacherReview() {
 
   return (
     <>
-      <PageHeader
-        accent="Teacher"
-        title="review"
-        subtitle="Every question on the paper, laid out the way you check it in EdSider - the question, its marks and its answer - with a place to say what is wrong."
-      />
+      {adminView ? (
+        <>
+          <p style={{ margin: '0 0 8px' }}>
+            <Link to="/app/admin">Back to Paper assignment</Link>
+          </p>
+          <PageHeader
+            accent="Paper"
+            title="review"
+            subtitle="This paper as its teacher sees it - their progress, comments and the changes they made. Read only."
+          />
+        </>
+      ) : (
+        <PageHeader
+          accent="Teacher"
+          title="review"
+          subtitle="Every question on the paper, laid out the way you check it in EdSider - the question, its marks and its answer - with a place to say what is wrong."
+        />
+      )}
 
       <div className={`tr-split${doc ? ' tr-split--with-original' : ''}`}>
       <div className="tr-main">
@@ -257,7 +320,7 @@ export default function TeacherReview() {
           It is no longer in EdsiderAI.
         </Notice>
       ) : null}
-      {isDevAuth ? (
+      {isDevAuth && !adminView ? (
         <form className="es-card tr-viewas" onSubmit={applyViewAs}>
           <label className="es-field__label" htmlFor="tr-viewas">
             Viewing as (local development only)
@@ -277,14 +340,63 @@ export default function TeacherReview() {
         </form>
       ) : null}
 
-      {papers.length === 0 ? (
+      {papers.length === 0 && !adminView ? (
         <Notice tone="info">
           No papers have been handed to you yet. The assigning administrator sends papers to teachers who have opened
           this app.
         </Notice>
       ) : null}
 
-      {doc ? (
+      {doc && adminView ? (
+        <section className="es-card tr-picker" aria-label="Review progress">
+          <div>
+            <p className="es-field__label" style={{ margin: 0 }}>Teacher</p>
+            <p style={{ margin: '4px 0 0' }}>
+              {(doc.teachers || []).length
+                ? doc.teachers.map((t) => `${t}${(doc.teachers_done || []).includes(t) ? ' - review done' : ' - reviewing'}`).join(', ')
+                : 'Not assigned yet'}
+            </p>
+          </div>
+          <div className="tr-progress">
+            <p className="es-field__label" style={{ margin: 0 }}>
+              {done} of {questions.length} marked reviewed by the teacher
+            </p>
+            <div className="tr-progress__bar">
+              <div className="tr-progress__fill" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {doc && adminView ? (
+        <details className="es-card tr-changes">
+          <summary>
+            <strong>Changes and history</strong>{' '}
+            <span className="es-caption">
+              {history ? `${history.length} entries - corrections, replaced questions, assignments and status changes` : 'Loading...'}
+            </span>
+          </summary>
+          <ol className="tr-changes__list">
+            {[...(history || [])].reverse().map((h, i) => (
+              <li key={i}>
+                <span className="es-caption">{when(h.at)}</span>{' '}
+                <span>
+                  {h.action === 'status'
+                    ? `Status: ${STATUS_TEXT[h.from_status] || h.from_status || '-'} to ${STATUS_TEXT[h.to_status] || h.to_status}`
+                    : h.action}
+                  {h.assigned_to ? ` - ${h.assigned_to}` : ''}
+                </span>{' '}
+                {h.actor ? <span className="es-caption">by {h.actor}</span> : null}
+              </li>
+            ))}
+          </ol>
+          <p className="es-caption" style={{ margin: 0 }}>
+            Each corrected or replaced question also shows its earlier wording under "Earlier versions".
+          </p>
+        </details>
+      ) : null}
+
+      {doc && !adminView ? (
         <section className="es-card tr-picker" aria-label="Paper">
           <div className="es-field">
             <label className="es-field__label" htmlFor="tr-paper">
@@ -327,7 +439,7 @@ export default function TeacherReview() {
         </Notice>
       ) : null}
 
-      {doc && iFinished && doc.status === 'teacher_review' ? (
+      {adminView ? null : doc && iFinished && doc.status === 'teacher_review' ? (
         <Notice tone="info" title="Your review is done">
           The paper is ready to publish once {otherTeacher ? `the other teacher (${otherTeacher})` : 'the other teacher'}{' '}
           finishes too. You can read it here.
@@ -352,7 +464,7 @@ export default function TeacherReview() {
             {doc.paper_subject || 'Subject not set'} - {gradeText(doc.paper_grade) || 'Grade not set'} -{' '}
             {doc.paper_title || doc.filename}
           </span>
-          {who ? <span className="es-caption">Signed in as {who}</span> : null}
+          {who && !adminView ? <span className="es-caption">Signed in as {who}</span> : null}
         </div>
       ) : null}
 
@@ -406,7 +518,37 @@ export default function TeacherReview() {
                 onChanged={handleRepeatChanged}
               />
 
-              {stem ? (
+              {editing?.id === q.id ? (
+                <div className="tr-edit">
+                  <label className="es-field__label" htmlFor={`tr-e-${q.id}`}>Question</label>
+                  <textarea id={`tr-e-${q.id}`} className="es-input" rows={4} value={editing.text}
+                    onChange={(e) => setEditing((x) => ({ ...x, text: e.target.value }))} />
+                  {editing.options
+                    ? editing.options.map((o, i) => (
+                        <div className="tr-repeat__row" key={i}>
+                          <span className="tr-option__key">{o.marker.trim()}</span>
+                          <input className="es-input" style={{ flex: 1, minWidth: 200 }} value={o.text}
+                            aria-label={`Option ${o.marker.trim()}`}
+                            onChange={(e) => setEditing((x) => ({
+                              ...x,
+                              options: x.options.map((y, j) => (j === i ? { ...y, text: e.target.value } : y)),
+                            }))} />
+                        </div>
+                      ))
+                    : null}
+                  <label className="es-field__label" htmlFor={`tr-ea-${q.id}`}>
+                    {isMcq ? 'Answer (the correct option)' : 'Answer / marking scheme'}
+                  </label>
+                  <textarea id={`tr-ea-${q.id}`} className="es-input" rows={isMcq ? 1 : 3} value={editing.answer}
+                    onChange={(e) => setEditing((x) => ({ ...x, answer: e.target.value }))} />
+                  <div className="tr-repeat__row">
+                    <Button variant="primary" size="sm" onClick={() => saveEdit(q)} disabled={busy[`e${q.id}`]}>
+                      {busy[`e${q.id}`] ? 'Saving...' : 'Save correction'}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : stem ? (
                 <div>
                   <p className="tr-lab">Question</p>
                   <p className="tr-text">{stem}</p>
@@ -414,7 +556,7 @@ export default function TeacherReview() {
               ) : null}
               <Pictures images={questionImages} className="tr-img" />
 
-              {isMcq ? (
+              {isMcq && editing?.id !== q.id ? (
                 <div>
                   <p className="tr-lab">Answer options</p>
                   <div className="tr-options">
@@ -485,6 +627,11 @@ export default function TeacherReview() {
                 >
                   Add comment
                 </Button>
+                {reviewable && editing?.id !== q.id ? (
+                  <Button variant="secondary" size="sm" onClick={() => startEdit(q)}>
+                    Edit
+                  </Button>
+                ) : null}
               </div>
 
               {commenting === q.id ? (
@@ -518,7 +665,7 @@ export default function TeacherReview() {
         })}
       </div>
 
-      {doc ? (
+      {doc && !adminView ? (
         <section className="es-card tr-finish" aria-label="Finish review">
           <h2 className="scr-h2">Finish review</h2>
           <fieldset className="tr-finish__choices">

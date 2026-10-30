@@ -189,3 +189,70 @@ def test_the_history_outlives_archiving(paper):
     # through the paper's bank copy.
     assert [p["slot"] for p in earlier[0]["pictures"]] == ["question"]
     assert flags[q3]["status"] == "replaced"
+
+
+def test_a_repeat_is_replaced_by_a_multiple_choice_question(client, paper):
+    """Asked for: the teacher's new question can be an MCQ, given its
+    options and the correct one."""
+    doc_id, (q1, _q2, q3) = paper
+    call(client, OP, "POST", f"/intake/questions/{q3}/flag", json={"repeat_of": q1})
+    _with_teachers(client, doc_id)
+    assert call(client, T1, "POST", f"/intake/questions/{q3}/replace", json={
+        "text": "Which is an input device?", "kind": "mcq",
+        "options": ["Monitor", "Keyboard"], "correct": []}).status_code == 400
+    new = call(client, T1, "POST", f"/intake/questions/{q3}/replace", json={
+        "text": "Which is an input device?", "kind": "mcq", "marks": 1,
+        "options": ["Monitor", "Keyboard", "Printer", ""], "correct": [1]}).json()
+    assert new["question_type"] == "mcq" and new["mcq"]["stem"] == "Which is an input device?"
+    assert [o["text"] for o in new["mcq"]["options"]] == ["Monitor", "Keyboard", "Printer"]
+    assert new["mcq"]["correct_labels"] == ["2"] and new["repeat"]["status"] == "replaced"
+
+
+def test_a_repeat_is_replaced_by_a_question_in_parts(client, paper):
+    """Its parts go straight under it, the questions after them move down,
+    and its marks are the parts' marks added up."""
+    doc_id, (q1, q2, q3) = paper
+    call(client, OP, "POST", f"/intake/questions/{q1}/flag", json={"repeat_of": q3})
+    _with_teachers(client, doc_id)
+    new = call(client, T1, "POST", f"/intake/questions/{q1}/replace", json={
+        "text": "A school uses a computer network.", "kind": "sub",
+        "parts": [{"text": "Define a network.", "marks": 2},
+                  {"text": "Give two advantages of a network.", "marks": 3.5, "answer": "Sharing"}],
+    }).json()
+    assert new["marks"] == 5.5
+    qs = call(client, T1, "GET", f"/intake/documents/{doc_id}/questions").json()
+    assert [(q["question_number"], q["parent_seq"]) for q in qs] == [
+        ("1", None), ("1(a)", 1), ("1(b)", 1), ("2", None), ("3", None)]
+    assert qs[2]["answer"] == "Sharing" and qs[2]["marks"] == 3.5
+    assert qs[3]["id"] == q2                         # moved down, the same question
+
+
+def test_a_teacher_corrects_a_spelling_and_the_earlier_wording_is_kept(client, paper):
+    """Asked for: teachers fix small mistakes, not only comment - and the
+    administrator following the paper sees what changed."""
+    doc_id, (_q1, q2, _q3) = paper
+    _with_teachers(client, doc_id)
+    fixed = call(client, T1, "POST", f"/intake/questions/{q2}/correct",
+                 json={"text": "Name two input devices used in a school.",
+                       "answer": "Mouse, keyboard."}).json()
+    assert fixed["text"] == "Name two input devices used in a school." and fixed["revisions"] == 1
+    history = call(client, ADMIN, "GET", f"/intake/questions/{q2}/history").json()
+    earlier, = history["earlier"]
+    assert earlier["text"] == "Name two input devices." and earlier["replaced_by"] == T1
+    log = [h["action"] for h in call(client, ADMIN, "GET", f"/intake/documents/{doc_id}/history").json()]
+    assert "Q2 corrected by the teacher" in log
+    # Nothing changed, nothing kept; another teacher cannot.
+    again = call(client, T1, "POST", f"/intake/questions/{q2}/correct",
+                 json={"text": "Name two input devices used in a school."}).json()
+    assert again["revisions"] == 1
+    assert call(client, T2, "POST", f"/intake/questions/{q2}/correct",
+                json={"text": "x"}).status_code == 403
+
+
+def test_an_administrator_sees_the_teachers_own_ticks(client, paper):
+    doc_id, (q1, _q2, _q3) = paper
+    _with_teachers(client, doc_id)
+    call(client, T1, "PATCH", f"/intake/questions/{q1}", json={"teacher_reviewed": True})
+    ticks = {q["id"]: q["teacher_reviewed"]
+             for q in call(client, ADMIN, "GET", f"/intake/documents/{doc_id}/questions").json()}
+    assert ticks[q1] is True and sum(ticks.values()) == 1

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useNavigate, useOutletContext } from 'react-router-dom'
 import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 import StatusPill from '../../components/StatusPill.jsx'
@@ -48,6 +48,7 @@ export default function PaperAssignment() {
   // Only EdSider's Main Assessment Administrators send papers (the API
   // refuses anyone else). me.role is null on a local run, where it is open.
   const me = useOutletContext()
+  const navigate = useNavigate()
   const canSend = !me || !me.role || Boolean(me.masad)
   const sendingOn = !me || !me.role || Boolean(me.edsider_sending)
   const [sending, setSending] = useState(null)
@@ -452,6 +453,10 @@ export default function PaperAssignment() {
                     </td>
                     <td>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'stretch' }}>
+                        {/* The paper as its teacher sees it: progress, comments, changes. */}
+                        <Button variant="secondary" size="sm" onClick={() => navigate(`/app/admin/papers/${a.id}`)}>
+                          View
+                        </Button>
                         {UNASSIGNABLE.includes(a.status) && !a.archived_at ? (
                           <Button variant="secondary" size="sm" className="pa-btn-theme" onClick={() => unassign(a)} disabled={busy[a.id]}>
                             Unassign

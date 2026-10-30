@@ -3541,16 +3541,22 @@ def revision_counts(conn, doc_id):
 
 
 def replace_question(conn, question_id, text, answer=None, marks=None, replaced_by=None,
-                     reason=None, keep_pictures=True):
+                     reason=None, keep_pictures=True, question_type=None, parts=()):
     """Put a new question in this one's place on the paper. What it was -
     text, answer, marks, type - goes into its history first
     (intake.question_revision), and an open repeat flag on it is resolved
     as replaced. Its pictures stay unless `keep_pictures` is False: then
     they belong to the earlier version, kept with it (slot
-    "earlier:<revision>:<slot>"), not deleted. Returns the revision id."""
+    "earlier:<revision>:<slot>"), not deleted. `question_type` is what the
+    teacher wrote ('descriptive', 'mcq', 'sub'); with `parts` ({text,
+    answer, marks}) the new question is a stem and those are its parts,
+    placed right under it. Returns the revision id."""
     q = conn.execute("SELECT * FROM intake.question WHERE id = ?", (question_id,)).fetchone()
     if q is None:
         raise ValueError(f"no such question: {question_id}")
+    if parts and conn.execute("SELECT 1 FROM intake.question WHERE document_id = ? "
+                              "AND parent_seq = ?", (q["document_id"], q["seq"])).fetchone():
+        raise ValueError("This question already has parts - write it as a single question.")
     flag = conn.execute("SELECT id FROM intake.question_flag WHERE question_id = ? "
                         "AND status = 'open'", (question_id,)).fetchone()
     revision = conn.execute(
@@ -3561,10 +3567,11 @@ def replace_question(conn, question_id, text, answer=None, marks=None, replaced_
         (q["document_id"], question_id, q["question_number"], q["text"], q["answer"], q["marks"],
          q["question_type"], replaced_by, reason, flag["id"] if flag else None)).fetchone()["id"]
     conn.execute(
-        """UPDATE intake.question SET text = ?, answer = ?, marks = ?, question_type = NULL
+        """UPDATE intake.question SET text = ?, answer = ?, marks = ?, question_type = ?
             WHERE id = ?""",
-        (text, answer, q["marks"] if marks is None else marks, question_id))
+        (text, answer, q["marks"] if marks is None else marks, question_type, question_id))
     stamp_question_editor(conn, question_id, replaced_by)
+    _add_parts(conn, q, parts)
     if not keep_pictures:
         conn.execute("UPDATE intake.question_image SET slot = 'earlier:' || ? || ':' || slot "
                      "WHERE question_id = ? AND slot NOT LIKE 'earlier:%%'",
@@ -3577,6 +3584,49 @@ def replace_question(conn, question_id, text, answer=None, marks=None, replaced_
     _log(conn, q["document_id"], f"Q{q['question_number']} replaced with a new question",
          actor=replaced_by)
     return revision
+
+
+def _add_parts(conn, q, parts):
+    """Parts written under question `q` (a row), (a), (b)... in order, each
+    placed straight after the one before - the later questions move down."""
+    for i, part in enumerate(parts or []):
+        after = q["seq"] + i
+        make_room_after(conn, q["document_id"], after)
+        conn.execute(
+            """INSERT INTO intake.question
+               (document_id, part_id, seq, parent_seq, question_number, text, marks, answer)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (q["document_id"], q["part_id"], after + 1, q["seq"],
+             f"{q['question_number'] or ''}({'abcdefghijklmnopqrstuvwxyz'[i]})",
+             part["text"], part.get("marks"), part.get("answer")))
+
+
+def correct_question(conn, question_id, text=None, answer=None, corrected_by=None):
+    """A teacher's correction - a spelling, a wrong word - to a question's
+    text or answer. The wording before goes into its history, as a
+    replacement's does, so whoever follows the paper sees what the teacher
+    changed. Nothing is saved when nothing changed; returns whether
+    something was."""
+    q = conn.execute("SELECT * FROM intake.question WHERE id = ?", (question_id,)).fetchone()
+    if q is None:
+        raise ValueError(f"no such question: {question_id}")
+    new_text = q["text"] if text is None else text
+    new_answer = q["answer"] if answer is None else (answer or None)
+    if new_text == q["text"] and new_answer == q["answer"]:
+        return False
+    conn.execute(
+        """INSERT INTO intake.question_revision
+           (document_id, question_id, question_number, text, answer, marks, question_type,
+            replaced_by, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (q["document_id"], question_id, q["question_number"], q["text"], q["answer"], q["marks"],
+         q["question_type"], corrected_by, "Corrected by the teacher"))
+    conn.execute("UPDATE intake.question SET text = ?, answer = ? WHERE id = ?",
+                 (new_text, new_answer, question_id))
+    stamp_question_editor(conn, question_id, corrected_by)
+    _log(conn, q["document_id"], f"Q{q['question_number']} corrected by the teacher",
+         actor=corrected_by)
+    return True
 
 
 def keep_question(conn, question_id, kept_by=None, note=None):

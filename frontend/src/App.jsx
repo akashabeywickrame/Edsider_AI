@@ -43,6 +43,8 @@ export default function App() {
         <Route path="/app/admin" element={<AdminLayout />}>
           <Route index element={<PaperAssignment />} />
           <Route path="users" element={<ManageUsers />} />
+          {/* A paper as its teacher sees it - EdSider's MASAD opens the same page. */}
+          <Route path="papers/:docId" element={<TeacherReview adminView />} />
         </Route>
         <Route path="*" element={<ComingSoon title="Not found" />} />
       </Routes>
