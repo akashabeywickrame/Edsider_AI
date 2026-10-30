@@ -2527,6 +2527,30 @@ answers are labels ("(2)"), not EdSider's weights; the converter
 (`src/edsider/export.py`) does both when a paper is sent. New bank rows
 need `embed.py` before the duplicate checks see them.
 
+**Why finishing and sending took minutes - and the loading screen.**
+Reported: "Finish data entry", Review done and Send to EdSider were slow.
+Measured on the largest open paper (#59, 210 questions and parts), from
+this laptop (one round trip 0.24 s), rolled back: `sync_paper_to_bank()`
+took **391 s** - 176 s of it `link_children_to_parents()`, which re-linked
+every part in the whole 100,000-row bank to link this one paper's, and the
+rest three or four statements per question. It now writes the bank rows,
+their places on the paper (`printed_number`, `position`, `marks` in the
+same upsert) and their pictures as one batched statement each
+(`save_many()`, `execute_values`), and links only this paper's parts,
+which it already knows: **4.5 s**, every part linked and every place
+written, as before. Sending (`send.write_package()`) wrote each row in its
+own INSERT - about 430 for that paper - and now writes questions without
+parts, then questions with parts (naming their parts' new ids), then the
+links, each as multi-row INSERTs (`_insert_many`, 200 rows a statement,
+ids read back in order); its pictures are fetched side by side
+(`store.question_image_blobs()`) instead of one download after another.
+The deployed app is nearer the database, so its round trips are shorter,
+but it made the same number of them. Every slow action now covers the
+page with a loading screen (`components/BusyOverlay.jsx`, three bouncing
+dots and what is happening): reading an upload, re-splitting, reading the
+file again, the duplicate check, Finish data entry, Review done, Send to
+EdSider.
+
 ## Uploaded papers and pictures - in Azure Blob Storage, not the database
 
 Uploaded papers and the pictures data entry attaches were kept in

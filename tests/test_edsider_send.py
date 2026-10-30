@@ -31,6 +31,7 @@ class FakeEdsider:
 
     def __init__(self, fail_on=None, titles=(), renamed=True):
         self.rows, self.next_id, self.fail_on = [], 1000, fail_on
+        self.inserts, self._all = 0, []
         self.renamed = renamed
         self.titles = {t.lower(): i for i, t in enumerate(titles, 1)}
         self.committed = self.rolled_back = self.closed = False
@@ -54,13 +55,23 @@ class FakeEdsider:
             if table == self.fail_on:
                 raise RuntimeError(f"{table} refused the row")
             columns = sql[sql.index("(") + 1:sql.index(")")].split(", ")
-            self.rows.append((table, dict(zip(columns, params))))
+            # One row, or many in one statement - each recorded, each its id.
+            got = []
+            for start in range(0, len(params), len(columns)):
+                self.rows.append((table, dict(zip(columns, params[start:start + len(columns)]))))
+                if "RETURNING" in sql:
+                    self.next_id += 1
+                    got.append((self.next_id,))
+            self.inserts += 1
             if "RETURNING" in sql:
-                self.next_id += 1
-                self._result = (self.next_id,)
+                self._result = got[0] if len(got) == 1 else None
+                self._all = got
 
     def fetchone(self):
         return self._result
+
+    def fetchall(self):
+        return self._all
 
     def close(self):
         self.closed = True
@@ -109,6 +120,8 @@ def test_a_paper_is_written_in_edsiders_order_with_edsiders_ids():
     # Both teachers are recorded as having reviewed it.
     assert [r["teacher_id"] for r in edsider.table("assessment.assessment_review")] == [256, 288]
     assert not edsider.committed            # the caller commits
+    # Questions and links go in a few statements, not one per row.
+    assert edsider.inserts < len(edsider.rows) - len(questions) // 2
 
 
 def test_reviewers_go_to_the_old_table_on_a_database_copied_before_the_rename():

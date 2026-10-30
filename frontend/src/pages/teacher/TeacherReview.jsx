@@ -13,6 +13,7 @@ import QuestionHistory from '../../components/QuestionHistory.jsx'
 import Pictures from '../../components/Pictures.jsx'
 import { groupsStartingAt } from '../data-entry/GroupInstructions.jsx'
 import './TeacherReview.css'
+import BusyOverlay from '../../components/BusyOverlay.jsx'
 
 // The subject teacher's review of one paper. Mirrors
 // design-system/screens/project/TeacherReview.dc.html: every question with its
@@ -313,6 +314,7 @@ export default function TeacherReview({ adminView = false }) {
         />
       )}
 
+      <BusyOverlay message={finishing ? 'Finishing your review...' : null} />
       <div className={`tr-split${doc ? ' tr-split--with-original' : ''}`}>
       <div className="tr-main">
       {paperGone ? (

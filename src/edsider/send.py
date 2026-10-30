@@ -54,6 +54,31 @@ def _insert(cur, table, row, returning=None):
     return cur.fetchone()[0] if returning else None
 
 
+def _insert_many(cur, table, rows, returning=None):
+    """Many rows of one table in as few statements as there are column
+    sets - one INSERT per row cost a round trip each, about 430 for a
+    210-question paper. With `returning`, the new ids in the rows' order
+    (PostgreSQL returns a multi-row VALUES insert's rows in that order)."""
+    ids = [None] * len(rows)
+    groups = {}
+    for i, row in enumerate(rows):
+        columns = tuple(c for c in row if c not in _OURS)
+        groups.setdefault(columns, []).append(i)
+    for columns, places in groups.items():
+        for start in range(0, len(places), 200):
+            chunk = places[start:start + 200]
+            one = f"({', '.join(['%s'] * len(columns))})"
+            sql = (f"INSERT INTO {table} ({', '.join(columns)}) "
+                   f"VALUES {', '.join([one] * len(chunk))}")
+            if returning:
+                sql += f" RETURNING {returning}"
+            cur.execute(sql, [rows[i][c] for i in chunk for c in columns])
+            if returning:
+                for i, got in zip(chunk, cur.fetchall()):
+                    ids[i] = got[0]
+    return ids
+
+
 def _review_table(cur):
     """Where EdSider keeps a paper's reviewers. EdSider renamed
     assessment_review_new to assessment_review (its commit 70ed7a63,
@@ -118,24 +143,31 @@ def write_package(pg, package):
         row["description"] = f"ASMNT{aid} {row['description']}"
         passages[psg["key"]] = _insert(cur, "question.passage", row, "passage_id")
 
-    # Parts come before their question in the package, so a parent can
-    # name its parts' new ids.
+    # Questions without parts first, all at once; then the questions with
+    # parts, which name their parts' new ids.
     ids, ours = {}, {}
-    for q in package["questions"]:
-        row = dict(q, created_at=now)
-        if q.get("sub_question_keys"):
-            row["sub_questions"] = ",".join(str(ids[k]) for k in q["sub_question_keys"])
-        if q.get("passage_key"):
-            row["passage_id"] = passages[q["passage_key"]]
-        new_id = _insert(cur, "question.question", row, "question_id")
-        ids[q["key"]] = new_id
-        if q.get("source_question_id") is not None:
-            ours[q["source_question_id"]] = new_id
 
-    for link in package["links"]:
-        _insert(cur, "assessment.assessment_question",
-                dict(link["row"], assessment_id=aid, question_id=ids[link["question_key"]],
-                     section_id=sections[link["section_key"]]))
+    def write(questions):
+        rows = []
+        for q in questions:
+            row = dict(q, created_at=now)
+            if q.get("sub_question_keys"):
+                row["sub_questions"] = ",".join(str(ids[k]) for k in q["sub_question_keys"])
+            if q.get("passage_key"):
+                row["passage_id"] = passages[q["passage_key"]]
+            rows.append(row)
+        for q, new_id in zip(questions, _insert_many(cur, "question.question", rows,
+                                                     "question_id")):
+            ids[q["key"]] = new_id
+            if q.get("source_question_id") is not None:
+                ours[q["source_question_id"]] = new_id
+
+    write([q for q in package["questions"] if not q.get("sub_question_keys")])
+    write([q for q in package["questions"] if q.get("sub_question_keys")])
+
+    _insert_many(cur, "assessment.assessment_question", [
+        dict(link["row"], assessment_id=aid, question_id=ids[link["question_key"]],
+             section_id=sections[link["section_key"]]) for link in package["links"]])
 
     if package.get("operation"):
         _insert(cur, "assessment.assessment_operation",

@@ -1887,12 +1887,13 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
         images = store.question_images_for_document(conn, doc_id)
         # EdSider keeps a picture inside the question itself, as a data: URL.
         urls = {}
-        for rows in images.values():
-            for img in rows:
-                data = store.question_image_blob(conn, img["id"])
-                if data:
-                    urls[img["id"]] = (f"data:{img['content_type'] or 'image/png'};base64,"
-                                       + base64.b64encode(data).decode("ascii"))
+        every = [img for rows in images.values() for img in rows]
+        blobs = store.question_image_blobs(conn, [img["id"] for img in every])
+        for img in every:
+            data = blobs.get(img["id"])
+            if data:
+                urls[img["id"]] = (f"data:{img['content_type'] or 'image/png'};base64,"
+                                   + base64.b64encode(data).decode("ascii"))
         people = store.document_people(conn, doc_id)
         sender = store.lookup_staff(conn, sender_email.strip().lower()) if sender_email else None
     people["sender"] = dict(sender) if sender else {}

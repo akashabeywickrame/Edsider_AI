@@ -1458,6 +1458,46 @@ def bulk_insert(conn, table, columns, rows, page_size=1000):
     )
 
 
+_SAVE_COLUMNS = ("id, text, title, grade, subject, topic, marks, answer, is_answer_blob, "
+                 "language, contributor, source_file, content_hash, has_figure, shape, "
+                 "children_raw")
+_SAVE_UPDATE = """text=excluded.text, title=excluded.title,
+               grade=excluded.grade, subject=excluded.subject,
+               topic=excluded.topic, marks=excluded.marks,
+               answer=excluded.answer,
+               is_answer_blob=excluded.is_answer_blob,
+               language=excluded.language,
+               contributor=excluded.contributor,
+               source_file=excluded.source_file,
+               content_hash=excluded.content_hash,
+               has_figure=excluded.has_figure, shape=excluded.shape,
+               children_raw=excluded.children_raw"""
+
+
+def _save_values(q):
+    return (
+        q["id"], q["text"], q.get("title"),
+        q.get("grade"), q.get("subject"),
+        q.get("topic"), q.get("marks"), q.get("answer"),
+        1 if q.get("is_answer_blob") else 0,
+        q.get("language", "en"), q.get("contributor"),
+        q.get("source_file"), q["content_hash"],
+        1 if q.get("has_figure") else 0,
+        q.get("shape", "standalone"),
+        q.get("children_raw"),
+    )
+
+
+def save_many(conn, rows):
+    """save() for many rows in one round trip - a paper's whole bank copy."""
+    if rows:
+        psycopg2.extras.execute_values(
+            conn.raw_cursor(),
+            f"INSERT INTO questions ({_SAVE_COLUMNS}) VALUES %s "
+            f"ON CONFLICT(id) DO UPDATE SET {_SAVE_UPDATE}",
+            [_save_values(q) for q in rows], page_size=500)
+
+
 def save(conn, q):
     # ON CONFLICT DO UPDATE, not INSERT OR REPLACE - deliberately. A
     # plain REPLACE deletes and re-inserts the whole row, which would
@@ -3102,6 +3142,22 @@ def question_images_for_document(conn, doc_id):
     return by_question
 
 
+def question_image_blobs(conn, image_ids):
+    """{image id: bytes} for many pictures - one query for where they are,
+    then the files fetched side by side: one after another, a paper with
+    pictures waited on each download in turn."""
+    from concurrent.futures import ThreadPoolExecutor
+    ids = list(image_ids)
+    if not ids:
+        return {}
+    rows = conn.execute(
+        "SELECT id, image_path, image_blob FROM intake.question_image WHERE id = ANY(?)",
+        (ids,)).fetchall()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        data = list(pool.map(_image_bytes, rows))
+    return {r["id"]: d for r, d in zip(rows, data) if d}
+
+
 def question_image_blob(conn, image_id):
     """One attached image's own bytes, for display."""
     row = conn.execute(
@@ -3395,6 +3451,7 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
 
     key = _paper_key(doc_id)
     kept = {}
+    rows, links, parents = [], [], []
     for d in drafts:
         text = (d["text"] or "").strip()
         kids = children_of.get(d["seq"], [])
@@ -3423,17 +3480,42 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
         }
         if doc["medium_name"]:
             row["language"] = doc["medium_name"]
-        save(conn, row)
+        rows.append(row)
         number = re.search(r"\d+", d["question_number"] or "")
-        save_assessment_link(
-            conn, -d["id"], key, ids[d["seq"]],
-            question_number=int(number.group()) if number else None,
-            mark_allocation=0 if kids else d["marks"],
-            section_id=d["section"], added_by=actor)
-        conn.execute("UPDATE question_assessments SET printed_number = ?, position = ?, "
-                     "marks = ? WHERE link_id = ?",
-                     (d["question_number"], d["seq"], d["marks"], -d["id"]))
+        links.append((-d["id"], key, ids[d["seq"]], int(number.group()) if number else None,
+                      0 if kids else d["marks"], d["section"], actor,
+                      d["question_number"], d["seq"], d["marks"]))
+        if d["parent_seq"] is not None and d["parent_seq"] in ids:
+            parents.append((ids[d["seq"]], ids[d["parent_seq"]]))
         kept[d["id"]] = ids[d["seq"]]
+
+    # A few statements for the whole paper, not three or four per question
+    # (210 questions took over six minutes from a laptop, and the deployed
+    # app paid the same round trips, shorter).
+    save_many(conn, rows)
+    if links:
+        psycopg2.extras.execute_values(
+            conn.raw_cursor(),
+            """INSERT INTO question_assessments
+               (link_id, assessment_id, question_id, question_number, mark_allocation,
+                section_id, added_by, printed_number, position, marks)
+               VALUES %s
+               ON CONFLICT(link_id) DO UPDATE SET
+                   assessment_id=excluded.assessment_id, question_id=excluded.question_id,
+                   question_number=excluded.question_number,
+                   mark_allocation=excluded.mark_allocation, section_id=excluded.section_id,
+                   added_by=excluded.added_by, printed_number=excluded.printed_number,
+                   position=excluded.position, marks=excluded.marks""",
+            links, page_size=500)
+    # This paper's parts to their questions - it knows them; the whole
+    # bank's re-link (link_children_to_parents) read every parent in it,
+    # 176 s of the copy.
+    if parents:
+        psycopg2.extras.execute_values(
+            conn.raw_cursor(),
+            """UPDATE questions SET parent_id = v.parent FROM (VALUES %s) AS v(child, parent)
+                WHERE questions.id = v.child AND questions.parent_id IS DISTINCT FROM v.parent""",
+            parents, page_size=500)
 
     # Whatever left the paper since the last copy leaves the bank too
     # (its pictures' rows go with it - ON DELETE CASCADE).
@@ -3443,7 +3525,7 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
     if gone:
         conn.execute("DELETE FROM questions WHERE id = ANY(?)", (gone,))
 
-    pictures = []
+    pictures, picture_rows = [], []
     for image in conn.execute(
             """SELECT i.id, i.question_id, i.slot, i.content_type, i.image_path,
                       i.image_size, i.label, i.image_blob IS NOT NULL AS in_db
@@ -3458,21 +3540,21 @@ def sync_paper_to_bank(conn, doc_id, actor=None):
                                 (image["id"],)).fetchone()["image_path"]
         if path is None:
             continue           # stays with the paper in intake until it is in storage
-        conn.execute(
+        picture_rows.append((image["id"], kept[image["question_id"]], image["slot"], path,
+                             image["content_type"], image["image_size"], image["label"]))
+        pictures.append(image["id"])
+    if picture_rows:
+        psycopg2.extras.execute_values(
+            conn.raw_cursor(),
             """INSERT INTO question_files (id, question_id, slot, path, content_type, size, label)
-               VALUES (?,?,?,?,?,?,?)
+               VALUES %s
                ON CONFLICT (id) DO UPDATE SET question_id = excluded.question_id,
                    slot = excluded.slot, path = excluded.path,
                    content_type = excluded.content_type, size = excluded.size,
                    label = excluded.label""",
-            (image["id"], kept[image["question_id"]], image["slot"], path,
-             image["content_type"], image["image_size"], image["label"]))
-        pictures.append(image["id"])
+            picture_rows, page_size=500)
     conn.execute("DELETE FROM question_files WHERE question_id = ANY(?) AND NOT (id = ANY(?))",
                  (list(kept.values()), pictures))
-
-    if kept:
-        link_children_to_parents(conn)
     _log(conn, doc_id, "copied to the question bank", actor=actor)
     return len(kept)
 

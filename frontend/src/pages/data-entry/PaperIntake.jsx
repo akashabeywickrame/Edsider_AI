@@ -16,6 +16,7 @@ import { AddGroupInstruction, GroupInstructionBanner, groupsStartingAt } from '.
 import { SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
 import { confirmDialog } from '../../components/ConfirmDialog.jsx'
+import BusyOverlay from '../../components/BusyOverlay.jsx'
 
 const RAIL = [
   { id: 'upload', icon: 'upload', label: 'Upload' },
@@ -119,6 +120,9 @@ export default function PaperIntake() {
   const [resplitOpen, setResplitOpen] = useState(false)
   const [preview, setPreview] = useState(null)
   const [resplitBusy, setResplitBusy] = useState(false)
+  // Which of the split actions is running - only re-splitting and reading
+  // the file again are slow enough for the loading screen.
+  const [resplitKind, setResplitKind] = useState(null)
   const [resplitError, setResplitError] = useState(null)
 
   const [instrOpenKey, setInstrOpenKey] = useState(null)
@@ -272,6 +276,7 @@ export default function PaperIntake() {
   }
 
   async function handlePreview() {
+    setResplitKind('preview')
     setResplitBusy(true)
     setResplitError(null)
     try {
@@ -283,6 +288,7 @@ export default function PaperIntake() {
     }
   }
   async function handleApplyResplit() {
+    setResplitKind('apply')
     setResplitBusy(true)
     setResplitError(null)
     try {
@@ -303,6 +309,7 @@ export default function PaperIntake() {
   // questions - and replaces the questions, as a re-split does.
   async function handleReread() {
     if (!(await confirmDialog('Read the file again and replace these questions?', { danger: true }))) return
+    setResplitKind('reread')
     setResplitBusy(true)
     setResplitError(null)
     try {
@@ -461,8 +468,19 @@ export default function PaperIntake() {
     }
   }
 
+  const busyMessage = finishBusy
+    ? 'Copying the questions to the question bank...'
+    : checkBusy
+      ? 'Checking the paper for repeated questions...'
+      : resplitBusy && resplitKind === 'reread'
+        ? 'Reading the paper again...'
+        : resplitBusy && resplitKind === 'apply'
+          ? 'Splitting the paper again...'
+          : null
+
   return (
     <div className="pi-page">
+      <BusyOverlay message={busyMessage} />
       <nav className="pi-rail-col" aria-label="Paper intake sections">
         <ul className="es-rail">
           {RAIL.map((r) => (

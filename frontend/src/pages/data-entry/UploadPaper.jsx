@@ -3,6 +3,7 @@ import { api } from '../../lib/api.js'
 import { useToast } from '../../components/Toast.jsx'
 import { OCR_LANGS, SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
+import BusyOverlay from '../../components/BusyOverlay.jsx'
 
 // Adding a paper - an upload, or text read on a data-entry computer and
 // pasted in - at the top of data entry's Paper intake page.
@@ -49,6 +50,7 @@ export default function UploadPaper({ onUploaded }) {
 
   return (
     <>
+      <BusyOverlay message={uploading ? 'Reading the paper and finding its questions...' : null} />
       <div className="es-row" role="radiogroup" aria-label="How to add the paper" style={{ marginBottom: 8 }}>
         <label className="scr-radio">
           <input type="radio" name="src" checked={source === 'file'} onChange={() => setSource('file')} />

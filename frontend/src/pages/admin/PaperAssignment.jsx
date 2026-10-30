@@ -7,6 +7,7 @@ import { loadLists } from '../data-entry/EdsiderLabels.jsx'
 import PaperFilters, { MENUS, PaperCount, Pager, TEACHER_MENU, usePaperSearch } from '../../components/PaperFilters.jsx'
 import './PaperAssignment.css'
 import { confirmDialog } from '../../components/ConfirmDialog.jsx'
+import BusyOverlay from '../../components/BusyOverlay.jsx'
 
 // Papers data entry has checked for internal repeats, waiting to be handed to
 // a teacher - and the ones already with a teacher. Mirrors
@@ -268,6 +269,7 @@ export default function PaperAssignment() {
 
   return (
     <>
+      <BusyOverlay message={sending !== null ? 'Sending the paper to EdSider...' : null} />
       <PageHeader
         accent="Assign"
         title="papers to teachers"
