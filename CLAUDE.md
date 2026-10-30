@@ -2340,6 +2340,12 @@ recorded as the paper's operator (`finish_data_entry` -> `assign_review`),
 so its history and EdSider's operation row still name the person who did
 it.
 
+**Data entry deletes a paper while it is still theirs** - Extracted, In
+review or Duplicate check done (`store.DATA_ENTRY_DELETABLE`; asked for:
+duplicate-checked papers too) - a red Delete in the paper list. After
+"Finish data entry" it is in the question bank and with a teacher, and
+only an administrator deletes it, from Paper assignment. Before:
+
 **A paper uploaded by mistake can be removed - while it is still
 Extracted.** A "Remove" beside each Extracted paper in data entry's paper
 list (`PaperFinder.jsx`), `DELETE /intake/documents/{id}` (data entry and

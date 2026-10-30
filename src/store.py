@@ -3180,10 +3180,15 @@ def update_intake_question(conn, q_id, **fields):
                  (*fields.values(), q_id))
 
 
+# Where a paper is still data entry's own - read, corrected, checked for
+# repeats - and nothing of it is in the question bank yet.
+DATA_ENTRY_DELETABLE = {"extracted", "in_review", "checked"}
+
+
 def delete_intake_document(conn, doc_id, moved_on=False):
-    """An upload made by mistake, removed whole - by data entry only while
-    it is still 'extracted': once data entry has checked it, a copy is in
-    the question bank and a teacher may have it. With `moved_on` (an
+    """An upload made by mistake, removed whole - by data entry while it
+    is still theirs (DATA_ENTRY_DELETABLE): once data entry has finished, a
+    copy is in the question bank and a teacher may have it. With `moved_on` (an
     administrator, from Paper assignment) a paper at any later stage goes
     too, its question-bank copy with it - a paper sent to EdSider and
     archived as well (asked for): only our copy and our record of sending
@@ -3196,10 +3201,10 @@ def delete_intake_document(conn, doc_id, moved_on=False):
                        (doc_id,)).fetchone()
     if doc is None:
         raise KeyError(doc_id)
-    if not moved_on and (doc["status"] != "extracted" or doc["archived_at"]
+    if not moved_on and (doc["status"] not in DATA_ENTRY_DELETABLE or doc["archived_at"]
                          or last_send(conn, doc_id)):
-        raise ValueError("Only a paper still at Extracted can be removed - this one has "
-                         "moved on.")
+        raise ValueError("This paper has been passed on from data entry - an administrator "
+                         "can delete it from Paper assignment.")
     bank = f"intake-{doc_id}"
     paths = [r["p"] for r in conn.execute(
         """SELECT file_path AS p FROM intake.document_file WHERE document_id = ?

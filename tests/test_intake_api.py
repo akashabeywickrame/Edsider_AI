@@ -419,11 +419,22 @@ def test_a_paper_uploaded_by_mistake_is_removed_with_its_file(document):
 
 def test_a_paper_that_has_moved_on_is_not_removed(document):
     with store.connect() as conn:
-        store.set_document_status(conn, document.id, "checked")
+        store.set_document_status(conn, document.id, "data_entry_done")
     with pytest.raises(HTTPException) as err:
         service.remove_document(document.id)
     assert err.value.status_code == 409
-    assert get_document(document.id).status == "checked"
+    assert get_document(document.id).status == "data_entry_done"
+
+
+def test_a_duplicate_checked_paper_is_removed_by_data_entry(document):
+    """Asked for: papers whose duplicate check has run can be deleted too -
+    they are still data entry's, nothing in the question bank yet."""
+    with store.connect() as conn:
+        store.set_document_status(conn, document.id, "checked")
+    service.remove_document(document.id)
+    with pytest.raises(HTTPException) as err:
+        get_document(document.id)
+    assert err.value.status_code == 404
 
 
 def test_a_paper_both_teachers_finished_is_not_checked_or_flagged_again(document):

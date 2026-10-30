@@ -8,6 +8,10 @@ import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 // long before 1,000 of them. The filters are EdSider's assessment library's
 // (components/PaperFilters.jsx); results come a page at a time.
 
+// Papers still with data entry - nothing of them is in the question bank
+// yet (the API agrees: store.DATA_ENTRY_DELETABLE).
+const DELETABLE = ['extracted', 'in_review', 'checked']
+
 function gradeLabel(code) {
   const m = /^G(\d{2})$/.exec(code || '')
   return m ? `Grade ${Number(m[1])}` : code
@@ -90,11 +94,12 @@ export default function PaperFinder({ selectedId, onSelect, refreshKey, onRemove
               </span>
               <StatusPill status={d.status} />
             </button>
-            {d.status === 'extracted' && !d.archived_at ? (
-              <Button variant="ghost" size="sm" onClick={() => remove(d)} disabled={removing !== null}
-                aria-label={`Remove paper ${d.id}`} style={{ marginRight: 10 }}>
-                {removing === d.id ? 'Removing...' : 'Remove'}
-              </Button>
+            {DELETABLE.includes(d.status) && !d.archived_at ? (
+              <span style={{ marginRight: 10 }}>
+                <Button variant="danger" size="sm" onClick={() => remove(d)} disabled={removing !== null}>
+                  {removing === d.id ? 'Deleting...' : 'Delete'}
+                </Button>
+              </span>
             ) : null}
             </div>
           )
