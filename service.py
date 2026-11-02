@@ -497,6 +497,21 @@ def _is_teacher(user):
     return isinstance(user, dict) and user.get("role") == "teacher"
 
 
+def _ticker(conn, doc_id, user):
+    """Whose review ticks this caller reads and writes on a paper: their
+    own when they are its teacher - by assignment, not role, because an
+    administrator can be given a paper to review too, and their ticks went
+    to the question's shared column where the paper's View never looked -
+    else None."""
+    me = user.get("identity") if isinstance(user, dict) else None
+    if not me:
+        return None
+    if _is_teacher(user):
+        return me
+    return me if any(t["assigned_to"] == me
+                     for t in store.paper_teachers(conn, doc_id)) else None
+
+
 def _own_papers(user):
     """(operator, teacher) a paper list is narrowed to: a teacher sees only
     their own papers; Data Entry Operators see every paper, since papers
@@ -2002,11 +2017,15 @@ def list_questions(doc_id: int, user: dict = Depends(current_user)):
         # A teacher sees their own ticks - the paper's other teacher ticks
         # every question for themselves. Anyone else following the paper (an
         # administrator's View) sees its teacher's: how far their review is.
-        if _is_teacher(user):
-            checked = store.teacher_checks(conn, doc_id, user["identity"])
+        ticker = _ticker(conn, doc_id, user)
+        if ticker:
+            checked = store.teacher_checks(conn, doc_id, ticker)
         else:
+            # Ticks made before _ticker() - by an administrator given the
+            # paper - are in the question's own column; they count too.
             teachers = store.paper_teachers(conn, doc_id)
             checked = (store.teacher_checks(conn, doc_id, teachers[0]["assigned_to"])
+                       | {q["id"] for q in qs if q.get("teacher_reviewed")}
                        if teachers else None)
         qs = _with_repeats(conn, doc_id, qs)
     parent_seqs = {q["parent_seq"] for q in qs if q["parent_seq"] is not None}
@@ -2073,19 +2092,19 @@ def update_question(q_id: int, body: QuestionUpdate,
     for key in ("reviewed", "teacher_reviewed"):
         if key in fields:
             fields[key] = int(fields[key])
-    # A teacher's tick is theirs alone (see store.set_teacher_check).
-    own_tick = fields.pop("teacher_reviewed", None) if _is_teacher(user) else None
     with store.connect() as conn:
-        _require_question(conn, q_id)
+        # A teacher's tick is theirs alone (see store.set_teacher_check).
+        ticker = _ticker(conn, _require_question(conn, q_id)["document_id"], user)
+        own_tick = fields.pop("teacher_reviewed", None) if ticker else None
         if own_tick is not None:
-            store.set_teacher_check(conn, q_id, identity, bool(own_tick))
+            store.set_teacher_check(conn, q_id, ticker, bool(own_tick))
         if fields:
             store.update_intake_question(conn, q_id, **fields)
             store.stamp_question_editor(conn, q_id, identity)
         q = store.get_intake_question(conn, q_id)
-        if _is_teacher(user):
+        if ticker:
             q = dict(q, teacher_reviewed=q_id in store.teacher_checks(
-                conn, q["document_id"], identity))
+                conn, q["document_id"], ticker))
         has_parts = store.intake_question_has_children(conn, q_id)
     return _question_out(q, has_parts=has_parts)
 
@@ -2105,9 +2124,10 @@ def _require_owner(q_id, user):
 
 def _one_question_out(conn, q_id, user=None):
     q = store.get_intake_question(conn, q_id)
-    if _is_teacher(user):
+    ticker = _ticker(conn, q["document_id"], user)
+    if ticker:
         q = dict(q, teacher_reviewed=q_id in store.teacher_checks(
-            conn, q["document_id"], user["identity"]))
+            conn, q["document_id"], ticker))
     q = _with_repeats(conn, q["document_id"], [q])[0]
     return _question_out(q, has_parts=store.intake_question_has_children(conn, q_id))
 

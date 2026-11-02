@@ -256,3 +256,24 @@ def test_an_administrator_sees_the_teachers_own_ticks(client, paper):
     ticks = {q["id"]: q["teacher_reviewed"]
              for q in call(client, ADMIN, "GET", f"/intake/documents/{doc_id}/questions").json()}
     assert ticks[q1] is True and sum(ticks.values()) == 1
+
+
+def test_an_administrator_given_a_paper_ticks_as_its_teacher(client, paper):
+    # Reported: an administrator reviewing a paper as its teacher ticked
+    # every question and finished, and the paper's View said "0 of 13".
+    doc_id, (q1, q2, _q3) = paper
+    assert call(client, OP, "POST", f"/intake/documents/{doc_id}/finish-data-entry").status_code == 200
+    # On the teacher list as EdSider lists them; admin here.
+    with store.connect() as conn:
+        conn.execute("UPDATE staff SET in_edsider = TRUE WHERE email = ?", (ADMIN,))
+    assert call(client, ADMIN, "POST", f"/intake/documents/{doc_id}/assign",
+                json={"teacher_identities": [ADMIN]}).status_code == 200
+    for q in (q1, q2):
+        assert call(client, ADMIN, "PATCH", f"/intake/questions/{q}",
+                    json={"teacher_reviewed": True}).json()["teacher_reviewed"] is True
+    with store.connect() as conn:
+        assert store.teacher_checks(conn, doc_id, ADMIN) == {q1, q2}
+    # Anyone else following the paper sees that teacher's ticks.
+    ticks = {q["id"]: q["teacher_reviewed"]
+             for q in call(client, OP, "GET", f"/intake/documents/{doc_id}/questions").json()}
+    assert ticks == {q1: True, q2: True, _q3: False}
