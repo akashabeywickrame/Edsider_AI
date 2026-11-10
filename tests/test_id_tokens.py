@@ -65,6 +65,30 @@ def test_a_microsoft_token_uses_preferred_username():
         _ms_token(preferred_username="Akash@InfyInnos.com")) == "akash@infyinnos.com"
 
 
+B2C_ISS = next(iter(id_tokens.DEFAULT_B2C))
+
+
+def test_an_edsider_token_signs_in_whoever_edsider_signed_in(monkeypatch):
+    """Single sign-on: EdSider's own sign-in (Azure AD B2C) issued it, for
+    the app registration this app's Easy Auth signs in with."""
+    monkeypatch.setenv("EDSIDER_TOKEN_AUDIENCES", "edsider-ai-client")
+    token = _token(iss=B2C_ISS, aud="edsider-ai-client", email="Akash@InfyInnos.com",
+                   email_verified=None)
+    assert id_tokens.email_from_id_token(token) == "akash@infyinnos.com"
+    with pytest.raises(id_tokens.InvalidToken):       # issued for another app
+        id_tokens.email_from_id_token(_token(iss=B2C_ISS, aud="another-app", email="a@b.com"))
+
+
+def test_another_edsider_tenant_counts_once_it_is_configured(monkeypatch):
+    issuer = "https://login.edsider.com/0000-tenant/v2.0/"
+    token = _token(iss=issuer, aud=MS_AUD, email=None, emails=["Op@Edsider.com"])
+    with pytest.raises(id_tokens.InvalidToken):
+        id_tokens.email_from_id_token(token)
+    monkeypatch.setenv("EDSIDER_B2C_ISSUERS", issuer)
+    monkeypatch.setenv("EDSIDER_B2C_KEYS", "https://login.edsider.com/keys")
+    assert id_tokens.email_from_id_token(token) == "op@edsider.com"
+
+
 @pytest.mark.parametrize("bad, why", [
     (lambda: _token(key=OTHER_KEY), "signed with someone else's key"),
     (lambda: _token(aud="some-other-app.apps.googleusercontent.com"), "issued for another app"),

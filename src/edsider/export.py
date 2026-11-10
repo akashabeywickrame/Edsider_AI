@@ -310,7 +310,9 @@ def build_package(doc, questions, lists, people, images=None, image_src=None,
         "exam_category_id": label["exam_category_id"], "source_id": label["source_id"],
         # The paper's general instructions go on its first part, where
         # EdSider shows instructions; this stays for anything else.
-        "additional_info": "", "template_id": None, "no_of_parts": len(groups),
+        # No template_id: always NULL here, and a database copied before
+        # EdSider added the column (dev's) lacks it.
+        "additional_info": "", "no_of_parts": len(groups),
         "part_notation_id": NOTATION_IDS.get(settings.get("part_notation")),
         "is_restart": bool(settings.get("restart_option")),
         "is_pause": bool(settings.get("pause_option")), "pause_until": 0,

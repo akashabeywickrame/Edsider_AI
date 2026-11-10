@@ -514,7 +514,23 @@ CREATE TABLE IF NOT EXISTS intake.edsider_send (
     ok             BOOLEAN NOT NULL,
     assessment_id  INTEGER,
     question_ids   TEXT,
-    error          TEXT
+    error          TEXT,
+    -- Taken back out of EdSider when the paper was reopened here
+    -- (reopen_document) - a recalled send no longer counts as sent.
+    recalled_at    TIMESTAMPTZ,
+    recalled_by    TEXT
+);
+
+-- A paper's question rows as they were when it was archived. Archiving
+-- removes them from intake (they are read from the question bank from then
+-- on); reopening the paper puts them back from here exactly - with what the
+-- bank does not keep (question type, compulsory, ticks, part) - or, for a
+-- paper archived before this table, rebuilds them from the bank.
+CREATE TABLE IF NOT EXISTS intake.archived_question (
+    document_id  INTEGER NOT NULL REFERENCES intake.document(id) ON DELETE CASCADE,
+    question_id  INTEGER NOT NULL,
+    row          JSONB NOT NULL,
+    PRIMARY KEY (document_id, question_id)
 );
 
 -- A question data entry's duplicate check found repeated on its own paper
@@ -1104,6 +1120,9 @@ MIGRATIONS = [
     ("intake.part", "plan_group_answer_count", "INTEGER"),
     # "Question 1 must be answered, then any 3 of the rest."
     ("intake.question", "compulsory", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    # A send taken back out of EdSider when its paper was reopened.
+    ("intake.edsider_send", "recalled_at", "TIMESTAMPTZ"),
+    ("intake.edsider_send", "recalled_by", "TEXT"),
 ]
 
 # Columns whose type changed - ALTER ... TYPE, which ADD COLUMN cannot
@@ -3765,36 +3784,122 @@ def record_send(conn, doc_id, sent_by, target, arrival_state, ok,
 
 
 def last_send(conn, doc_id):
-    """The paper's latest successful send to EdSider, or None."""
+    """The paper's latest successful send to EdSider still there, or None -
+    a send taken back when the paper was reopened (reopen_document) no
+    longer counts, so the paper can be sent again."""
     return conn.execute(
         "SELECT * FROM intake.edsider_send WHERE document_id = ? AND ok "
-        "ORDER BY id DESC LIMIT 1", (doc_id,)).fetchone()
+        "AND recalled_at IS NULL ORDER BY id DESC LIMIT 1", (doc_id,)).fetchone()
 
 
-def archive_document(conn, doc_id, actor=None, status="archived"):
+def archive_document(conn, doc_id, actor=None, status="archived",
+                     ready_statuses=("ready_to_publish",)):
     """The last step, once the teacher's review is done ('ready_to_publish'):
     refresh the paper's bank copy one final time, then remove its questions
     from intake - from here on they are read from the bank
     (bank_paper_questions()) - and archive the paper. Its record, file,
     parts, settings and history stay; it can no longer change. Sending the
-    paper to EdSider belongs to this step once EdSider's route exists."""
+    paper to EdSider belongs to this step once EdSider's route exists.
+    `ready_statuses`: ('checked',) when data entry sends a paper itself,
+    with no teacher's review here (service.data_entry_only())."""
     doc = get_intake_document(conn, doc_id)
     if doc is None:
         raise ValueError(f"no such intake document: {doc_id}")
     if doc.get("archived_at"):
         raise ValueError("this paper is already archived")
-    if doc["status"] != "ready_to_publish":
+    if doc["status"] not in ready_statuses:
         raise ValueError(f"a paper is archived once it is ready to publish "
                          f"(status is {doc['status']!r})")
     sync_paper_to_bank(conn, doc_id, actor=actor)
     if unfinished_pictures(conn, doc_id):
         raise ValueError("some pictures on this paper are still in the database and no file "
                          "storage is set here, so they cannot go with it")
+    # The rows as they are, kept aside so reopening the paper loses nothing.
+    conn.execute("DELETE FROM intake.archived_question WHERE document_id = ?", (doc_id,))
+    conn.execute("INSERT INTO intake.archived_question (document_id, question_id, row) "
+                 "SELECT q.document_id, q.id, to_jsonb(q) FROM intake.question q "
+                 "WHERE q.document_id = ?", (doc_id,))
     # The files stay - the bank points at them; the rows here go, comments too.
     conn.execute("DELETE FROM intake.question WHERE document_id = ?", (doc_id,))
     conn.execute("UPDATE intake.document SET archived_at = now() WHERE id = ?", (doc_id,))
     # 'published' once it has been sent to EdSider; 'archived' without.
     set_document_status(conn, doc_id, status, actor=actor, action="archived")
+
+
+def reopen_document(conn, doc_id, actor=None, to_status="in_review", recalled_send=None,
+                    reason=None):
+    """Undo archive_document(): the paper's questions come back into intake
+    - exactly as archived (intake.archived_question), or, for a paper
+    archived before that was kept, rebuilt from its bank copy with their
+    own ids, places, numbers, parts, text, marks, answers and pictures
+    (question type and "compulsory" are not in the bank and come back
+    unset) - and the paper is back with data entry in `to_status`.
+
+    `recalled_send` is the intake.edsider_send row whose paper the caller
+    has just taken back out of EdSider (src/edsider/recall.py); it stops
+    counting as sent. The bank copy stays until the paper is archived
+    again, which refreshes it. Returns how many questions came back."""
+    doc = get_intake_document(conn, doc_id)
+    if doc is None:
+        raise ValueError(f"no such intake document: {doc_id}")
+    if not doc.get("archived_at"):
+        raise ValueError("this paper is not archived - it can still be changed")
+    saved = [r["row"] for r in conn.execute(
+        "SELECT row FROM intake.archived_question WHERE document_id = ? ORDER BY question_id",
+        (doc_id,)).fetchall()]
+    rows = saved or _questions_from_bank(conn, doc_id)
+    if conn.execute("SELECT 1 FROM intake.question WHERE document_id = ? LIMIT 1",
+                    (doc_id,)).fetchone():
+        raise ValueError("this paper already has questions in intake")
+
+    intake_schema = schema_names()[0]
+    columns = {r["column_name"] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = ? AND table_name = 'question'", (intake_schema,)).fetchall()}
+    for row in rows:
+        # Only columns the table still has; one added since takes its default.
+        fields = {k: v for k, v in row.items() if k in columns}
+        fields["document_id"] = doc_id
+        conn.execute(
+            f"INSERT INTO intake.question ({', '.join(fields)}) "
+            f"VALUES ({', '.join(['?'] * len(fields))})", tuple(fields.values()))
+    # Their pictures, from the bank's record of them - the same ids, so a
+    # link to one keeps working; the files never left file storage.
+    conn.execute(
+        """INSERT INTO intake.question_image
+               (id, question_id, slot, image_path, image_size, content_type, label, created_at)
+           SELECT f.id, q.id, f.slot, f.path, f.size, f.content_type, f.label, f.created_at
+             FROM question_files f
+             JOIN intake.question q ON q.document_id = ?
+                  AND f.question_id = 'intake-' || q.document_id || '-' || q.id
+            WHERE NOT EXISTS (SELECT 1 FROM intake.question_image i WHERE i.id = f.id)""",
+        (doc_id,))
+    conn.execute("DELETE FROM intake.archived_question WHERE document_id = ?", (doc_id,))
+    conn.execute("UPDATE intake.document SET archived_at = NULL WHERE id = ?", (doc_id,))
+    if recalled_send is not None:
+        conn.execute("UPDATE intake.edsider_send SET recalled_at = now(), recalled_by = ? "
+                     "WHERE id = ?", (actor, recalled_send["id"]))
+        _log(conn, doc_id, f"taken back from EdSider (#{recalled_send['assessment_id']})",
+             actor=actor)
+    reopen_stage(conn, doc_id, "data_entry", actor=actor)
+    reason = (reason or "").strip()[:500]
+    set_document_status(conn, doc_id, to_status, actor=actor,
+                        action=f"reopened - {reason}" if reason else "reopened")
+    return len(rows)
+
+
+def _questions_from_bank(conn, doc_id):
+    """intake.question rows rebuilt from an archived paper's bank copy
+    (bank_paper_questions) - for papers archived before their rows were
+    kept aside. Each keeps its intake id (the bank's link is its negative);
+    its part is found again by label."""
+    parts = {r["label"]: r["id"] for r in conn.execute(
+        "SELECT id, label FROM intake.part WHERE document_id = ?", (doc_id,)).fetchall()}
+    return [{"id": q["id"], "part_id": parts.get(q["section"]), "seq": q["seq"],
+             "parent_seq": q["parent_seq"], "question_number": q["question_number"],
+             "text": q["text"], "marks": q["marks"], "topic": q["topic"],
+             "answer": q["answer"], "reviewed": True}
+            for q in bank_paper_questions(conn, doc_id)]
 
 
 # What a row may sign in as - one rule, used by every reader below so
@@ -3888,6 +3993,31 @@ def remove_staff_access(conn, email):
             "WHERE email = ?", (email,))
     else:
         conn.execute("DELETE FROM staff WHERE email = ?", (email,))
+
+
+def upsert_edsider_person(conn, email, person):
+    """One person's EdSider ids and name brought in line with what EdSider
+    says right now (edsider.staff.edsider_person - {user_id, staff_id,
+    role_code, name}), at an EdSider sign-in: the ids are what a sent paper
+    names as its creator (export.build_package's sender). Only this row,
+    and never the in_edsider / edsider_operator / edsider_admin marks of a
+    row that exists - those are sync_edsider_teachers()'s, and the
+    standalone app's sign-in still reads them. A new row is marked from
+    role_code. EdSider's name is taken unless a superadmin entered this
+    person by hand, as in the sync."""
+    role = person.get("role_code")
+    conn.execute(
+        """INSERT INTO staff (email, name, in_edsider, edsider_operator, edsider_admin,
+                              edsider_user_id, edsider_staff_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(email) DO UPDATE SET
+               edsider_user_id = excluded.edsider_user_id,
+               edsider_staff_id = excluded.edsider_staff_id,
+               name = CASE WHEN staff.added_by IS NULL THEN excluded.name
+                           ELSE staff.name END""",
+        (email, person.get("name"), role == "TEACH", role == "DEOP", role == "MASAD",
+         person.get("user_id"), person.get("staff_id")),
+    )
 
 
 def sync_edsider_teachers(conn, teachers):

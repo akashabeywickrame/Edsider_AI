@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
 import { api, signInSession } from '../lib/api.js'
-import { loginUrl as authUrl, BYPASS_SIGN_IN } from '../lib/auth.js'
+import { loginUrl as authUrl, BYPASS_SIGN_IN, EDSIDER_SSO_PROVIDER } from '../lib/auth.js'
+import { homeFor } from '../lib/flow.js'
 import './SignIn.css'
 
 // Where each role lands once signed in. These routes don't exist in
@@ -53,7 +54,25 @@ export default function SignIn() {
   const next = params.get('next')
   const safeNext = next && /^\/app(\/|$)/.test(next) ? next : null
   const dest = safeNext || role.dest
+  // EdSider's login is the only way in (EDSIDER_SSO_PROVIDER, see auth.js):
+  // this page never shows - anyone not signed in goes through EdSider's own
+  // sign-in, which passes them straight back to `dest` while EdSider has
+  // them signed in. Without it, the Microsoft and Google buttons below.
+  const edsiderOnly = Boolean(EDSIDER_SSO_PROVIDER) && !BYPASS_SIGN_IN
   const [checking, setChecking] = useState(!BYPASS_SIGN_IN)
+  // With no teacher review here (lib/flow.js), data entry is the only role
+  // that signs in - /health says so before anyone has.
+  const [dataEntryOnly, setDataEntryOnly] = useState(false)
+  useEffect(() => {
+    let live = true
+    api
+      .health()
+      .then((h) => live && setDataEntryOnly(h.flow === 'data_entry_only'))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
 
   // Already signed in (Easy Auth's session is still there on a reload):
   // skip the buttons. On the staff list - to where they were going, else
@@ -66,7 +85,8 @@ export default function SignIn() {
       .me()
       .then((me) => {
         if (!live) return
-        if (me.role) navigate(safeNext || HOME_BY_ROLE[me.role] || role.dest, { replace: true })
+        if (me.role) navigate(safeNext || homeFor(me, HOME_BY_ROLE) || role.dest, { replace: true })
+        else if (edsiderOnly) window.location.assign(authUrl(EDSIDER_SSO_PROVIDER, dest))
         else setChecking(false)
       })
       .catch(async (err) => {
@@ -98,6 +118,10 @@ export default function SignIn() {
             window.location.assign(authUrl(s.provider, dest))
             return
           }
+          if (live && edsiderOnly && !s.provider) {
+            window.location.assign(authUrl(EDSIDER_SSO_PROVIDER, dest))
+            return
+          }
         }
         if (live) setChecking(false)
       })
@@ -108,6 +132,18 @@ export default function SignIn() {
   }, [])
 
   if (checking) return null
+  if (edsiderOnly) {
+    // Only reached when the service itself did not answer - there are no
+    // buttons to offer, as EdSider's sign-in is the only way in.
+    return (
+      <div className="si-page">
+        <main className="si-main">
+          <img className="si-logo" src="/edsider-ai-logo.png" alt="EdSider AI" />
+          <p className="si-lede">EdSider AI could not be reached. Reload the page to try again.</p>
+        </main>
+      </div>
+    )
+  }
 
   return (
     <div className="si-page">
@@ -129,7 +165,7 @@ export default function SignIn() {
             <div className="si-roles-wrap">
               <p className="si-roles-label">I am signing in as</p>
               <div className="si-roles" role="group" aria-label="Role">
-                {ROLES.map((r) => (
+                {ROLES.filter((r) => !dataEntryOnly || r.key === 'data').map((r) => (
                   <a
                     key={r.key}
                     className="si-role"

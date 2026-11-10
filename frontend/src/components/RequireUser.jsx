@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from 'react-router-dom'
 import { useMe } from '../lib/useMe.js'
 import { BYPASS_SIGN_IN, devIdentity, isDevAuth, logoutUrl, setDevIdentity } from '../lib/auth.js'
+import { homeFor } from '../lib/flow.js'
 
 // Where each role works - the section a person is sent to when they open
 // one that is not theirs. Mirrors SignIn's HOME_BY_ROLE.
@@ -92,7 +93,7 @@ export default function RequireUser({ roles = [], children }) {
   }
   const allowed = me.role == null || ['admin', 'superadmin', ...roles].includes(me.role)
   if (!allowed) {
-    const home = HOME_BY_ROLE[me.role]
+    const home = homeFor(me, HOME_BY_ROLE)
     return (
       <div className="es-root">
         <main className="scr-main" style={{ maxWidth: 640 }}>

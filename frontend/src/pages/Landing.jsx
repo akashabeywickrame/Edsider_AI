@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Footer from '../components/Footer.jsx'
+import { api } from '../lib/api.js'
 import './Landing.css'
 
 // By-the-numbers facts for the hero stat row and the "Why it matters"
@@ -107,6 +108,20 @@ export default function Landing() {
   // that load has happened.
   const { Icon, LanguagePill, Stat } = window.EdSider
   const active = useActiveSection(SECTIONS.map((s) => s.id))
+  // With no teacher review here (lib/flow.js) only data entry signs in -
+  // the one thing this page asks /health for; the stats stay hardcoded.
+  const [dataEntryOnly, setDataEntryOnly] = useState(false)
+  useEffect(() => {
+    let live = true
+    api
+      .health()
+      .then((h) => live && setDataEntryOnly(h.flow === 'data_entry_only'))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
+  const roles = dataEntryOnly ? ROLES.filter((r) => r.role === 'data') : ROLES
 
   return (
     <>
@@ -236,9 +251,13 @@ export default function Landing() {
       <section id="who" className="ld-sec ld-who">
         <div className="ld-container">
           <h2>Who it is for</h2>
-          <p>One sign-in, three roles. Each person sees only the tools for their part of the work.</p>
+          <p>
+            {dataEntryOnly
+              ? 'Data entry signs in here; each paper is then reviewed in EdSider.'
+              : 'One sign-in, three roles. Each person sees only the tools for their part of the work.'}
+          </p>
           <div className="ld-grid3">
-            {ROLES.map((r) => (
+            {roles.map((r) => (
               <article className="ld-card" key={r.title}>
                 <span className={`es-stat__icon es-accent--${r.accent}`}>
                   <Icon name={r.icon} />

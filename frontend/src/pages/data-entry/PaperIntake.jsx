@@ -17,6 +17,7 @@ import { SPLIT_STYLES } from './paperOptions.js'
 import './PaperIntake.css'
 import { confirmDialog } from '../../components/ConfirmDialog.jsx'
 import BusyOverlay from '../../components/BusyOverlay.jsx'
+import { isDataEntryOnly } from '../../lib/flow.js'
 
 const RAIL = [
   { id: 'upload', icon: 'upload', label: 'Upload' },
@@ -138,6 +139,42 @@ export default function PaperIntake() {
   const [checkBusy, setCheckBusy] = useState(false)
   const [checkError, setCheckError] = useState(null)
   const [checkResult, setCheckResult] = useState(null)
+
+  // Data entry sends the paper to EdSider itself (lib/flow.js): what EdSider
+  // still needs, from the send preview - read again whenever the paper or
+  // its questions change, so each fix shows at once.
+  const dataEntryOnly = isDataEntryOnly(me)
+  const [sendProblems, setSendProblems] = useState(null)
+  const [sendBusy, setSendBusy] = useState(false)
+  const [sendError, setSendError] = useState(null)
+  // A sent or archived paper back to editing (taken out of EdSider first) -
+  // any Data Entry Operator, as any may send.
+  const [reopenBusy, setReopenBusy] = useState(false)
+  const [reopenError, setReopenError] = useState(null)
+  const canReopen = !me || !me.role || ['employee', 'admin', 'superadmin'].includes(me.role)
+  const sendErrors = (sendProblems || []).filter((p) => p.level === 'error')
+  const sendWarnings = (sendProblems || []).filter((p) => p.level !== 'error')
+  // Each question's own errors, shown on its card as well as in the list.
+  const sendIssuesByQ = useMemo(() => {
+    const out = {}
+    for (const p of sendErrors) if (p.question_id != null) (out[p.question_id] ||= []).push(p)
+    return out
+  }, [sendProblems]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!dataEntryOnly || !doc || doc.archived_at) {
+      setSendProblems(null)
+      return undefined
+    }
+    let live = true
+    api
+      .edsiderPreview(doc.id)
+      .then((p) => live && setSendProblems(p.problems))
+      .catch((err) => live && setSendProblems([{ level: 'error', message: err.message }]))
+    return () => {
+      live = false
+    }
+  }, [dataEntryOnly, doc, questions])
 
   const [previewMode, setPreviewMode] = useState('file')
   // The paper itself, fetched signed-in (a src cannot carry the sign-in
@@ -271,6 +308,17 @@ export default function PaperIntake() {
   function handleQuestionRemoved(id) {
     setQuestions((prev) => prev.filter((q) => q.id !== id))
   }
+  // A repeat replaced or kept by data entry itself: a new question can
+  // bring parts of its own, and its pictures may have moved to the earlier
+  // version - so the paper's questions and pictures are read again.
+  async function handleRepeatSettled() {
+    const [qs, imgs] = await Promise.all([
+      api.listIntakeQuestions(selectedId),
+      api.listDocumentImages(selectedId),
+    ])
+    setQuestions(qs)
+    setImages(imgs)
+  }
   function handleImagesChanged(qid, next) {
     setImages((prev) => ({ ...prev, [String(qid)]: next }))
   }
@@ -378,6 +426,50 @@ export default function PaperIntake() {
     }
   }
 
+  // With no teacher review here, data entry's last step: the paper goes to
+  // EdSider for its MASAD, is copied to the question bank and locked.
+  async function handleSend() {
+    if (!(await confirmDialog('Send this paper to EdSider? It cannot be changed here afterwards.'))) return
+    setSendBusy(true)
+    setSendError(null)
+    try {
+      const d = await api.sendToEdsider(selectedId)
+      loadSelected(selectedId)
+      refreshList()
+      toast.success(`Sent to EdSider as assessment #${d.edsider_assessment_id} - ready for its MASAD.`)
+    } catch (err) {
+      setSendError(err.message)
+      if (err.problems) setSendProblems(err.problems)
+      toast.error(`Not sent: ${err.message}`)
+    } finally {
+      setSendBusy(false)
+    }
+  }
+
+  // Back to editing: a sent paper is taken out of EdSider first - refused
+  // once EdSider has started on it (assessors, students, past Ready).
+  async function handleReopen() {
+    const sentThere = Boolean(doc && doc.edsider_assessment_id)
+    if (!(await confirmDialog(sentThere
+      ? `Reopen this paper for editing? Assessment #${doc.edsider_assessment_id} is taken out of EdSider, and you send it again once it is corrected and checked.`
+      : 'Reopen this paper for editing?'))) return
+    setReopenBusy(true)
+    setReopenError(null)
+    try {
+      await api.reopenDocument(selectedId)
+      loadSelected(selectedId)
+      refreshList()
+      toast.success(sentThere
+        ? 'Reopened - taken out of EdSider. Run the duplicate check again before sending it.'
+        : 'Reopened for editing.')
+    } catch (err) {
+      setReopenError(err.message)
+      toast.error(`Not reopened: ${err.message}`)
+    } finally {
+      setReopenBusy(false)
+    }
+  }
+
   async function handleCheckDuplicates() {
     setCheckBusy(true)
     setCheckError(null)
@@ -470,7 +562,9 @@ export default function PaperIntake() {
 
   const busyMessage = finishBusy
     ? 'Copying the questions to the question bank...'
-    : checkBusy
+    : sendBusy
+      ? 'Sending the paper to EdSider...'
+      : checkBusy
       ? 'Checking the paper for repeated questions...'
       : resplitBusy && resplitKind === 'reread'
         ? 'Reading the paper again...'
@@ -584,7 +678,8 @@ export default function PaperIntake() {
               {doc.archived_at ? (
                 <Notice tone="info" title="This paper is in the question bank">
                   Its questions are shown from the question bank, where they now live. It was archived on{' '}
-                  {doc.archived_at.slice(0, 10)} and can no longer be changed.
+                  {doc.archived_at.slice(0, 10)}. To change it, reopen it at the foot of the page
+                  {doc.edsider_assessment_id ? ' - while EdSider has not started on it' : ''}.
                 </Notice>
               ) : ['data_entry_done', 'teacher_review', 'review_done', 'ready_to_publish'].includes(doc.status) ? (
                 <Notice tone="info" title="Data entry is finished for this paper">
@@ -920,6 +1015,10 @@ export default function PaperIntake() {
                             onChanged={handleQuestionChanged}
                             onRemoved={handleQuestionRemoved}
                             onImagesChanged={handleImagesChanged}
+                            dataEntryOnly={dataEntryOnly}
+                            original={q.repeat ? byId[q.repeat.repeat_of] || null : null}
+                            sendIssues={sendIssuesByQ[q.id] || []}
+                            onRepeatSettled={handleRepeatSettled}
                           />
                           </Fragment>
                         ))}
@@ -1083,11 +1182,15 @@ export default function PaperIntake() {
                       ? 'Ready to publish'
                       : doc.archived_at
                       ? 'Archive'
-                      : 'Finish data entry'}
+                      : dataEntryOnly
+                        ? 'Send to EdSider'
+                        : 'Finish data entry'}
                 </h2>
                 <p className="es-caption pi-status__text" style={{ margin: 0 }}>
                   {doc.edsider_assessment_id
-                    ? `Sent to EdSider on ${(doc.sent_to_edsider_at || '').slice(0, 10)} as assessment #${doc.edsider_assessment_id}, ready to publish there. Its questions are kept in the question bank.`
+                    ? `Sent to EdSider on ${(doc.sent_to_edsider_at || '').slice(0, 10)} as assessment #${doc.edsider_assessment_id}, ${dataEntryOnly ? "waiting for its MASAD's review" : 'ready to publish'} there. Its questions are kept in the question bank.`
+                    : dataEntryOnly && !doc.archived_at
+                    ? 'Mark every question reviewed, run the duplicate check and settle any repeat flags, then fix what EdSider still needs below. Sending makes it a paper in EdSider for its MASAD, copies it to the question bank and locks it here.'
                     : doc.archived_at
                     ? `Archived on ${doc.archived_at.slice(0, 10)}. Its questions are kept in the question bank.`
                     : doc.status === 'ready_to_publish'
@@ -1103,12 +1206,82 @@ export default function PaperIntake() {
                     {finishError}
                   </Notice>
                 ) : null}
-                {!doc.archived_at && ['extracted', 'in_review', 'checked', 'refer_back'].includes(doc.status) ? (
+                {dataEntryOnly && !doc.archived_at ? (
+                  <>
+                    {sendProblems === null ? (
+                      <p className="es-caption" style={{ margin: 0 }}>Checking what EdSider needs...</p>
+                    ) : sendErrors.length ? (
+                      <Notice tone="error" title={`${sendErrors.length} to fix before sending`}>
+                        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                          {sendErrors.map((p, i) => (
+                            <li key={i}>
+                              {p.question_id != null ? (
+                                <a href={`#q-${p.question_id}`}>
+                                  {p.question_number ? `Q${p.question_number}` : 'The question'}
+                                </a>
+                              ) : null}
+                              {p.question_id != null ? ': ' : ''}
+                              {p.message}
+                            </li>
+                          ))}
+                        </ul>
+                      </Notice>
+                    ) : (
+                      <Notice tone="success" title="Ready to send">
+                        Everything EdSider needs is here.
+                      </Notice>
+                    )}
+                    {sendWarnings.length ? (
+                      <Notice tone="warning" title="Worth checking">
+                        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                          {sendWarnings.map((p, i) => (
+                            <li key={i}>
+                              {p.question_number ? `Q${p.question_number}: ` : ''}
+                              {p.message}
+                            </li>
+                          ))}
+                        </ul>
+                      </Notice>
+                    ) : null}
+                    {sendError ? (
+                      <Notice tone="error" title="Not sent">
+                        {sendError}
+                      </Notice>
+                    ) : null}
+                    <div>
+                      <Button variant="primary" onClick={handleSend}
+                              disabled={sendProblems === null || sendErrors.length > 0 || sendBusy}>
+                        {sendBusy ? 'Sending to EdSider...' : 'Send to EdSider'}
+                      </Button>
+                    </div>
+                  </>
+                ) : !doc.archived_at && ['extracted', 'in_review', 'checked', 'refer_back'].includes(doc.status) ? (
                   <div>
                     <Button variant="primary" onClick={handleFinish} disabled={doc.status !== 'checked' || finishBusy}>
                       {finishBusy ? 'Copying to the question bank...' : 'Finish data entry - copy to the question bank'}
                     </Button>
                   </div>
+                ) : null}
+                {doc.archived_at && canReopen ? (
+                  <>
+                    {reopenError ? (
+                      <Notice tone="error" title="Not reopened">
+                        {reopenError}
+                      </Notice>
+                    ) : null}
+                    <div>
+                      <Button variant="secondary" onClick={handleReopen} disabled={reopenBusy}>
+                        {reopenBusy
+                          ? (doc.edsider_assessment_id ? 'Taking it back from EdSider...' : 'Reopening...')
+                          : 'Reopen for editing'}
+                      </Button>
+                    </div>
+                    <p className="es-caption" style={{ margin: 0 }}>
+                      {doc.edsider_assessment_id
+                        ? 'Takes the paper out of EdSider and brings it back here to correct. Only while it is still Initial, Ready or Referred back there, with no assessors, students or orders.'
+                        : 'Brings the paper back here to correct.'}
+                    </p>
+                  </>
                 ) : null}
               </div>
               <StatusPill status={doc.status} />

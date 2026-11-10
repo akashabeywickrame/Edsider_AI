@@ -23,6 +23,14 @@ export const isDevAuth = import.meta.env.DEV
 // false would 404 every real sign-in attempt - the two go together.
 export const BYPASS_SIGN_IN = isDevAuth
 
+// The name EdSider's own sign-in (Azure AD B2C) has as an OpenID Connect
+// provider in this app's Easy Auth - /.auth/login/<name>. Set, EdSider's
+// login is the only way in: the sign-in page never shows, and anyone not
+// signed in (EdSider's Extract Paper button opens Paper intake directly) goes
+// through EdSider's sign-in - already signed in to EdSider, they are not
+// asked again. Unset, the Microsoft and Google buttons as before.
+export const EDSIDER_SSO_PROVIDER = import.meta.env.VITE_EDSIDER_SSO_PROVIDER || ''
+
 export function loginUrl(provider, dest) {
   return `/.auth/login/${provider}?post_login_redirect_uri=${encodeURIComponent(dest)}`
 }

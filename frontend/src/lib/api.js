@@ -228,8 +228,13 @@ export const api = {
   // An administrator's last step once a paper is ready to publish.
   archiveDocument: (docId) => request(`/intake/documents/${docId}/archive`, { method: 'POST' }),
   // Writes the paper into EdSider (ready to publish there) and archives it here.
+  // Everything sending would write, and every problem that would stop it.
+  edsiderPreview: (docId) => request(`/intake/documents/${docId}/edsider-preview`),
   sendToEdsider: (docId) =>
     request(`/intake/documents/${docId}/send-to-edsider`, { method: 'POST', body: {} }),
+  // Back to editing - taken out of EdSider first if it was sent there.
+  reopenDocument: (docId, reason) =>
+    request(`/intake/documents/${docId}/reopen`, { method: 'POST', body: { reason: reason || null } }),
   checkDocumentDuplicates: (docId) =>
     request(`/intake/documents/${docId}/check-duplicates`, { method: 'POST' }),
   // Informational only - runs before anyone has reviewed a single

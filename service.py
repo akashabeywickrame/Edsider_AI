@@ -53,7 +53,9 @@ sys.path.insert(0, str(ROOT))
 from src import files, id_tokens, store, dedupe
 from src.edsider import export as edsider_export
 from src.edsider import labels as edsider_labels
+from src.edsider import recall as edsider_recall
 from src.edsider import send as edsider_send
+from src.edsider import staff as edsider_staff
 from src.dedupe import guards
 from src.dedupe.embeddings import Embedder, DEFAULT_MODEL
 from src.intake import extract as intake_extract
@@ -305,7 +307,7 @@ def _resolve_identity(x_ms_client_principal_name, id_token=None):
         email = x_ms_client_principal_name.strip().lower()
     elif id_token:
         try:
-            email = id_tokens.email_from_id_token(id_token)
+            who = id_tokens.identity_from_id_token(id_token)
         except id_tokens.InvalidToken as e:
             # Usually an hour-old token - Google's and Microsoft's ID
             # tokens expire, and signing in again issues a fresh one. The
@@ -315,6 +317,9 @@ def _resolve_identity(x_ms_client_principal_name, id_token=None):
             # and cost a pre-prod deployment its sign-in. Never the token.
             log.warning("ID token refused: %s", e)
             raise HTTPException(401, f"Your sign-in was not accepted ({e}) - sign in again.")
+        email = who["email"]
+        if who["edsider_web"]:
+            return _edsider_identity(email)
     elif _require_signin():
         raise HTTPException(401, "Sign in first.")
     else:
@@ -340,6 +345,40 @@ def _resolve_identity(x_ms_client_principal_name, id_token=None):
     raise HTTPException(
         403, f"{email} is not allowed to use EdsiderAI. "
              "Ask an administrator to add this email, or sign in with a different account.")
+
+
+# What each EdSider sign-in's staff row was last brought in line with - so
+# the row is written when EdSider's answer changes, not on every request.
+_edsider_rows = {}
+
+
+def _edsider_identity(email):
+    """A sign-in from inside EdSider's own web app - data entry running in
+    its Assess pages, forwarding the ID token EdSider's B2C issued to that
+    app (id_tokens.edsider_web_clients; single sign-on into this app's own
+    pages is not this, and keeps the staff list). Who may come in, and as
+    what, is EdSider's to say: only its Data Entry Operators
+    (registration.teacher.role_code DEOP, what EdSider's own menus go by -
+    see src/edsider/staff.py), as employee. The bootstrap list and this
+    app's own staff roles are not consulted. Their staff row is kept
+    current, so a paper they send names them in EdSider."""
+    try:
+        person = edsider_staff.edsider_person(email)
+    except edsider_send.SendNotSetUp:
+        raise HTTPException(503, "Signing in through EdSider needs EdSider's database "
+                                 "(EDSIDER_SEND_DB), which this server does not have.")
+    except Exception as e:
+        log.warning("EdSider role lookup failed for %s: %s", email, e)
+        raise HTTPException(503, "Could not reach EdSider to check your role - try again shortly.")
+    if person is None or person["role_code"] != "DEOP":
+        raise HTTPException(
+            403, f"{email} is not a Data Entry Operator in EdSider. "
+                 "Only EdSider's Data Entry Operators can use AI data entry.")
+    if _edsider_rows.get(email) != person:
+        with store.connect() as conn:
+            store.upsert_edsider_person(conn, email, person)
+        _edsider_rows[email] = person
+    return {"identity": email, "name": person["name"] or email, "role": "employee"}
 
 
 def current_identity(
@@ -407,6 +446,19 @@ def allow(*roles):
 
 EMPLOYEE = allow("employee")
 TEACHER = allow("teacher")
+
+
+def repeat_settler(user: dict = Depends(current_user)):
+    """Who settles a repeat flag (replace or keep the question): the paper's
+    owner teacher - and data entry itself when there is no teacher review
+    here (data_entry_only()). Admins and a local run, as allow()."""
+    roles = {"teacher", "employee"} if data_entry_only() else {"teacher"}
+    if user["role"] is not None and user["role"] not in roles | {"admin", "superadmin"}:
+        raise HTTPException(403, "Your role cannot use this part of EdsiderAI.")
+    return user
+
+
+repeat_settler.allowed_roles = frozenset({"teacher", "employee", "admin", "superadmin"})
 EMPLOYEE_OR_TEACHER = allow("employee", "teacher")
 ADMIN = allow()
 
@@ -448,6 +500,10 @@ def paper_access(request: Request, user: dict = Depends(current_user)):
     # An administrator deleting a whole paper - archived and sent ones too.
     deleting_paper = (request.method == "DELETE" and key == "doc_id"
                       and role in (None, "admin", "superadmin"))
+    # Reopening is the one write an archived or sent paper takes - the
+    # route itself decides whether it can be (reopen_document).
+    if writing and key == "doc_id" and request.url.path.endswith("/reopen"):
+        return user
     if writing and held["archived_at"] and not deleting_paper:
         # Its questions live in the question bank now - for everyone.
         raise HTTPException(409, "This paper is in the question bank and archived - "
@@ -489,6 +545,21 @@ def _actor(identity):
     """Who to log an action against - None when a route is called directly
     (the tests), not through a request."""
     return identity if isinstance(identity, str) else None
+
+
+def data_entry_only():
+    """EDSIDER_FLOW=data_entry_only: EdSider's data entry with no review
+    here. The teacher and admin sections are off, and data entry sends the
+    paper to EdSider itself (send_to_edsider), where EdSider's MASAD assigns
+    proof-reading and reviewers. Unset, the full flow: a teacher reviews the
+    paper here and a MASAD sends it. Read on every call, like EDSIDER_SEND_DB."""
+    return (os.environ.get("EDSIDER_FLOW") or "").strip() == "data_entry_only"
+
+
+def _refuse_in_data_entry_only(step):
+    if data_entry_only():
+        raise HTTPException(409, f"{step} is off on this server - data entry sends each paper "
+                                 "to EdSider itself, where it is reviewed.")
 
 
 def _is_teacher(user):
@@ -540,6 +611,7 @@ def health():
         # Which EdSider database "Send to EdSider" writes to - a name, never
         # the credentials - so a deployed app's setting can be checked.
         "edsider_send": edsider_send.target() or "off",
+        "flow": "data_entry_only" if data_entry_only() else "full",
     }
 
 
@@ -1046,6 +1118,8 @@ class MeOut(BaseModel):
     # paper to EdSider - and whether this server sends at all.
     masad: bool = False
     edsider_sending: bool = False
+    # "data_entry_only" when data entry sends papers itself - see data_entry_only().
+    flow: Literal["full", "data_entry_only"] = "full"
 
 
 StaffRole = Literal["superadmin", "admin", "teacher", "employee"]
@@ -1666,12 +1740,15 @@ def precheck_document_duplicates(doc_id: int) -> Dict[str, Any]:
                                               vectors=vectors)
 
     against_bank = []
+    own_copy = f"intake-{doc_id}-"
     for d, vector in zip(fresh, vectors):
         question = {"id": None, "text": d["text"], "vector": vector,
                    "grade": d.get("grade"), "subject": d.get("subject")}
         hits = dedupe.check_one(question, state["index"],
-                                threshold=dedupe.REVIEW_THRESHOLD, top_k=3)
-        flagged = [h for h in hits if h["score"] >= dedupe.REVIEW_THRESHOLD]
+                                threshold=dedupe.REVIEW_THRESHOLD, top_k=6)
+        # A reopened paper's own copy in the bank is not a repeat of it.
+        flagged = [h for h in hits if h["score"] >= dedupe.REVIEW_THRESHOLD
+                   and not str(h["match"]["id"]).startswith(own_copy)][:3]
         if flagged:
             against_bank.append({
                 "question_id": d["id"],
@@ -1746,6 +1823,7 @@ def finish_data_entry(doc_id: int, identity: str = Depends(current_identity)):
     for a teacher's review - it stays in intake, where the teacher can still
     correct it. Only once every question is reviewed and the duplicate check
     has run on the corrected paper (status 'checked')."""
+    _refuse_in_data_entry_only("Passing a paper on for a teacher's review")
     who = _actor(identity)
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
@@ -1801,6 +1879,7 @@ def assign_document(doc_id: int, body: AssignIn,
     publish once they have finished. Naming a different teacher takes the
     paper off the one they replace - how a paper whose author does not want
     to review it goes to someone else."""
+    _refuse_in_data_entry_only("Assigning a paper to a teacher")
     asked = [t.strip() for t in body.teacher_identities]
     with store.connect() as conn:
         _require_document(conn, doc_id)
@@ -1824,9 +1903,28 @@ class EdsiderPreviewOut(BaseModel):
     package: Dict[str, Any]
 
 
+def _data_entry_send_problems(conn, doc):
+    """What stops data entry sending a paper itself (data_entry_only()),
+    beyond the converter's own problems: the duplicate check not yet run on
+    the corrected paper, and every repeat flag still open - each on its own
+    question, as the converter's are."""
+    problems = []
+    if doc["status"] != "checked":
+        problems.append({"level": "error", "question_id": None, "question_number": None,
+                         "message": "Mark every question reviewed and run the duplicate check."})
+    numbers = {q["id"]: q["question_number"] for q in store.intake_questions(conn, doc["id"])}
+    for qid, flag in store.question_flags(conn, doc["id"]).items():
+        if flag["status"] == "open":
+            problems.append({"level": "error", "question_id": qid, "kind": "repeat",
+                             "question_number": numbers.get(qid),
+                             "message": "Flagged as a repeat - on its card, write a new question "
+                                        "in its place, keep it (not a repeat), or remove it."})
+    return problems
+
+
 @app.get("/intake/documents/{doc_id}/edsider-preview", response_model=EdsiderPreviewOut,
-         dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
-def edsider_preview(doc_id: int, arrival_state: str = edsider_export.DEFAULT_ARRIVAL,
+         dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def edsider_preview(doc_id: int, arrival_state: Optional[str] = None,
                     exam_number: Optional[int] = None, as_email: Optional[str] = None,
                     user: dict = Depends(current_user)):
     """Exactly what sending this paper to EdSider would write - its paper,
@@ -1837,11 +1935,19 @@ def edsider_preview(doc_id: int, arrival_state: str = edsider_export.DEFAULT_ARR
 
     The paper is recorded in EdSider as created by whoever sends it, so
     the preview uses the caller's EdSider ids. `as_email` names someone
-    else - only on a local run, where nobody is signed in."""
+    else - only on a local run, where nobody is signed in.
+
+    Data entry's checklist when it sends papers itself (data_entry_only());
+    otherwise an administrator's view."""
+    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    only_data_entry = data_entry_only()
+    if not only_data_entry and caller.get("role") not in (None, "admin", "superadmin"):
+        raise HTTPException(403, "Your role cannot use this part of EdsiderAI.")
+    arrival_state = arrival_state or (DATA_ENTRY_ARRIVAL if only_data_entry
+                                      else edsider_export.DEFAULT_ARRIVAL)
     if arrival_state not in edsider_export.ARRIVAL_STATES:
         raise HTTPException(400, f"A paper can arrive in EdSider as one of: "
                                  f"{', '.join(edsider_export.ARRIVAL_STATES)}.")
-    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
     sender_email = as_email if (as_email and caller.get("role") is None) else caller.get("identity")
     with store.connect() as conn:
         doc = _require_document(conn, doc_id)
@@ -1849,11 +1955,12 @@ def edsider_preview(doc_id: int, arrival_state: str = edsider_export.DEFAULT_ARR
         images = store.question_images_for_document(conn, doc_id)
         people = store.document_people(conn, doc_id)
         sender = store.lookup_staff(conn, sender_email.strip().lower()) if sender_email else None
+        before = _data_entry_send_problems(conn, doc) if only_data_entry else []
     people["sender"] = dict(sender) if sender else {}
     package = edsider_export.build_package(
         doc, questions, _edsider_lists(), people, images=images,
         arrival_state=arrival_state, exam_number=exam_number)
-    return EdsiderPreviewOut(summary=package["summary"], problems=package["problems"],
+    return EdsiderPreviewOut(summary=package["summary"], problems=before + package["problems"],
                              package=package)
 
 
@@ -1868,10 +1975,14 @@ class SendIn(BaseModel):
 # A paper sent from here arrives in EdSider as it left us, ready to publish;
 # EdSider's own staff schedule and publish it there.
 SEND_ARRIVAL = "ReadyToPublish"
+# Sent by data entry with no review here (data_entry_only()), it arrives
+# earlier: Ready, the state EdSider's MASAD list shows, where proof-reading
+# and reviewers are assigned. Not live - EdSider's live state is Published.
+DATA_ENTRY_ARRIVAL = "Ready"
 
 
 @app.post("/intake/documents/{doc_id}/send-to-edsider", response_model=IntakeDocumentDetail,
-          dependencies=[Depends(require_api_key), Depends(ADMIN), PAPER])
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
 def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user)):
     """The Main Assessment Administrator's last step, once both teachers
     have finished ('ready_to_publish'): the paper is written into EdSider's
@@ -1879,11 +1990,20 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     links, in one transaction (src/edsider/send.py) - recorded here, and
     archived from intake ('published', "Sent to EdSider"). Anything that
     would stop EdSider taking it (a missing label, a question with no
-    marks) comes back as a 409 listing each problem, and nothing is sent."""
+    marks) comes back as a 409 listing each problem, and nothing is sent.
+
+    With data_entry_only(), data entry's last step instead: once the
+    duplicate check has run on the corrected paper ('checked') and every
+    repeat flag is settled, the operator sends it, arriving Ready
+    (DATA_ENTRY_ARRIVAL) with them as its creator and data-entry operator
+    and no reviewers - EdSider's MASAD assigns those."""
     caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    only_data_entry = data_entry_only()
+    arrival = DATA_ENTRY_ARRIVAL if only_data_entry else SEND_ARRIVAL
     # Only EdSider's Main Assessment Administrators send - an admin a
     # superadmin made here is not one. A local run (no role) is open.
-    if caller.get("role") is not None and not _is_masad(caller):
+    if not only_data_entry and caller.get("role") is not None and (
+            caller["role"] not in ("admin", "superadmin") or not _is_masad(caller)):
         raise HTTPException(403, "Only a Main Assessment Administrator (MASAD in EdSider) can "
                                  "send a paper to EdSider.")
     if not edsider_send.target():
@@ -1895,7 +2015,18 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
         doc = _require_document(conn, doc_id)
         if store.last_send(conn, doc_id):
             raise HTTPException(409, "This paper has already been sent to EdSider.")
-        if doc["status"] != "ready_to_publish":
+        if only_data_entry:
+            if doc["status"] != "checked":
+                raise HTTPException(409, "Run the duplicate check on the corrected paper first - "
+                                         "every question reviewed - then send it.")
+            if store.open_flags(conn, doc_id):
+                raise HTTPException(409, "Settle every repeat flag first - delete the repeat, "
+                                         "rewrite it, or mark it not a repeat.")
+            if who and doc["operator"] != who:
+                # Whoever sends it did the data entry - EdSider's operation
+                # row names them, as finish_data_entry does.
+                store.assign_review(conn, doc_id, "data_entry", who, assigned_by=who)
+        elif doc["status"] != "ready_to_publish":
             raise HTTPException(409, "A paper is sent to EdSider once its teacher has finished "
                                      "their review and it is ready to publish.")
         questions = store.intake_questions(conn, doc_id)
@@ -1914,7 +2045,7 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     people["sender"] = dict(sender) if sender else {}
     package = edsider_export.build_package(
         doc, questions, _edsider_lists(), people, images=images,
-        image_src=lambda img: urls.get(img["id"], ""), arrival_state=SEND_ARRIVAL,
+        image_src=lambda img: urls.get(img["id"], ""), arrival_state=arrival,
         exam_number=body.exam_number)
     problems = [p for p in package["problems"] if p["level"] == "error"]
     if problems:
@@ -1935,7 +2066,7 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     except Exception as e:
         pg.rollback()
         with store.connect() as conn:
-            store.record_send(conn, doc_id, who, target, SEND_ARRIVAL, False,
+            store.record_send(conn, doc_id, who, target, arrival, False,
                               error=f"{type(e).__name__}: {e}"[:2000])
         raise HTTPException(502, f"EdSider did not take the paper - nothing was written there: {e}")
     finally:
@@ -1944,12 +2075,92 @@ def send_to_edsider(doc_id: int, body: SendIn, user: dict = Depends(current_user
     # In EdSider now: recorded on its own (so the record survives whatever
     # happens next), then archived here.
     with store.connect() as conn:
-        store.record_send(conn, doc_id, who, target, SEND_ARRIVAL, True,
+        store.record_send(conn, doc_id, who, target, arrival, True,
                           assessment_id=result["assessment_id"],
                           question_ids={str(k): v for k, v in result["questions"].items()})
     with store.connect() as conn:
-        store.archive_document(conn, doc_id, actor=who, status="published")
+        if only_data_entry:
+            # Archiving copies it to the question bank, so later duplicate
+            # checks see it - the step finish_data_entry would have taken.
+            store.finish_stage(conn, doc_id, "data_entry", actor=who)
+        store.archive_document(conn, doc_id, actor=who, status="published",
+                               ready_statuses=("checked",) if only_data_entry
+                               else ("ready_to_publish",))
         doc = store.get_intake_document(conn, doc_id)
+    return _document_out(doc, detail=True)
+
+
+class ReopenIn(BaseModel):
+    # Why it is being reopened - kept in the paper's history.
+    reason: Optional[str] = None
+
+
+@app.post("/intake/documents/{doc_id}/reopen", response_model=IntakeDocumentDetail,
+          dependencies=[Depends(require_api_key), Depends(EMPLOYEE), PAPER])
+def reopen_document(doc_id: int, body: ReopenIn = ReopenIn(),
+                    user: dict = Depends(current_user)):
+    """Back to editing: a sent or archived paper returns to data entry
+    ('in_review' - the duplicate check runs again before it is sent again)
+    with its questions back in intake (store.reopen_document). Any Data
+    Entry Operator may, as any may send.
+
+    A paper sent to EdSider is first taken back out of it
+    (src/edsider/recall.py) - refused with a 409, nothing changed on either
+    side, once EdSider has started on it (assessors assigned, students,
+    orders, past Ready). EdSider's rows go only once the paper is back
+    here; should our commit fail after theirs, reopening again finds the
+    paper gone from EdSider and finishes the job."""
+    caller = user if isinstance(user, dict) else {"identity": None, "role": None}
+    who = _actor(caller.get("identity"))
+    with store.connect() as conn:
+        doc = _require_document(conn, doc_id)
+        if not doc.get("archived_at"):
+            raise HTTPException(409, "This paper has not been sent or archived - "
+                                     "it can be changed as it is.")
+        sent = store.last_send(conn, doc_id)
+
+    pg = None
+    if sent:
+        target = edsider_send.target()
+        if not target:
+            raise HTTPException(409, "Sending to EdSider is not set up on this server, so the "
+                                     "paper cannot be taken back out of EdSider here.")
+        if sent["target"] != target:
+            raise HTTPException(409, f"This paper was sent to {sent['target']}, and this server "
+                                     f"sends to {target} - reopen it where it was sent from.")
+        try:
+            pg = edsider_send.connect()
+        except Exception as e:
+            raise HTTPException(502, f"Could not reach EdSider's database: {e}")
+        try:
+            edsider_recall.recall(pg, sent["assessment_id"],
+                                  json.loads(sent["question_ids"] or "{}").values())
+        except edsider_recall.RecallRefused as e:
+            pg.rollback()
+            pg.close()
+            raise HTTPException(409, str(e))
+        except Exception as e:
+            pg.rollback()
+            pg.close()
+            raise HTTPException(502, f"Could not take the paper back from EdSider - "
+                                     f"nothing was changed: {e}")
+    try:
+        with store.connect() as conn:
+            try:
+                store.reopen_document(conn, doc_id, actor=who, recalled_send=sent,
+                                      reason=body.reason)
+            except ValueError as e:
+                raise HTTPException(409, str(e))
+            if pg is not None:
+                pg.commit()
+            doc = store.get_intake_document(conn, doc_id)
+    except Exception:
+        if pg is not None:
+            pg.rollback()
+        raise
+    finally:
+        if pg is not None:
+            pg.close()
     return _document_out(doc, detail=True)
 
 
@@ -2160,7 +2371,7 @@ def unflag_repeated_question(q_id: int, identity: str = Depends(current_identity
 
 
 @app.post("/intake/questions/{q_id}/replace", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+          dependencies=[Depends(require_api_key), Depends(repeat_settler), PAPER])
 def replace_repeated_question(q_id: int, body: ReplaceQuestionIn,
                               identity: str = Depends(current_identity),
                               user: dict = Depends(current_user)):
@@ -2219,7 +2430,7 @@ def correct_question(q_id: int, body: CorrectQuestionIn,
 
 
 @app.post("/intake/questions/{q_id}/keep", response_model=IntakeQuestionOut,
-          dependencies=[Depends(require_api_key), Depends(TEACHER), PAPER])
+          dependencies=[Depends(require_api_key), Depends(repeat_settler), PAPER])
 def keep_flagged_question(q_id: int, body: KeepQuestionIn,
                           identity: str = Depends(current_identity),
                           user: dict = Depends(current_user)):
@@ -2493,7 +2704,8 @@ def me(user: dict = Depends(current_user)):
     frontend shows a "contact your administrator" page instead of the
     app - this is the actual "at login, check the signed-in email
     against the list" gate, not something enforced route by route."""
-    return MeOut(**user, masad=_is_masad(user), edsider_sending=bool(edsider_send.target()))
+    return MeOut(**user, masad=_is_masad(user), edsider_sending=bool(edsider_send.target()),
+                 flow="data_entry_only" if data_entry_only() else "full")
 
 
 def _is_masad(user):

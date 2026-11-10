@@ -238,3 +238,102 @@ def test_only_a_paper_ready_to_publish_is_sent(ready_paper):
     with pytest.raises(HTTPException) as err:
         service.send_to_edsider(ready_paper, service.SendIn())
     assert err.value.status_code == 409
+
+
+# ---- EDSIDER_FLOW=data_entry_only: data entry sends it, no review here ----
+
+OPERATOR = {"identity": "op@gmail.com", "name": "Operator", "role": "employee"}
+
+
+@pytest.fixture
+def checked_paper(local_db, monkeypatch):
+    """Two questions, the duplicate check run on them ('checked'), on a
+    server where data entry sends papers itself. build_package is replaced
+    as in ready_paper, keeping what it was asked for in `asked`."""
+    monkeypatch.setenv("EDSIDER_SEND_DB", "examonliine_db_prod_copy")
+    monkeypatch.setenv("EDSIDER_FLOW", "data_entry_only")
+    with store.connect() as conn:
+        doc_id = store.create_intake_document(conn, "GIT.pdf")
+        q1 = store.add_intake_question(conn, doc_id, 1, "Explain what an operating system does.",
+                                       question_number="1", marks=9)
+        q2 = store.add_intake_question(conn, doc_id, 2, "Explain what an operating system does.",
+                                       question_number="2", marks=9)
+        store.update_intake_document(conn, doc_id, status="checked")
+    package, asked = _package(), {}
+    monkeypatch.setattr(service.edsider_export, "build_package",
+                        lambda *a, **kw: asked.update(kw) or package)
+    return doc_id, (q1, q2), asked
+
+
+def test_data_entry_sends_a_checked_paper_itself_arriving_ready(checked_paper, monkeypatch):
+    doc_id, _, asked = checked_paper
+    edsider = FakeEdsider()
+    monkeypatch.setattr(service.edsider_send, "connect", lambda: edsider)
+    out = service.send_to_edsider(doc_id, service.SendIn(), user=OPERATOR)
+    assert edsider.committed and asked["arrival_state"] == "Ready"
+    assert out.status == "published" and out.archived_at and out.edsider_assessment_id == 1001
+    with store.connect() as conn:
+        assert store.last_send(conn, doc_id)["arrival_state"] == "Ready"
+        # The operator who sent it is the paper's data entry, finished.
+        entry = store.document_people(conn, doc_id)["data_entry"]
+    assert entry["assigned_to"] == OPERATOR["identity"] and entry["finished_at"]
+
+
+def test_data_entry_sends_only_once_checked_and_every_repeat_settled(checked_paper):
+    doc_id, (q1, q2), _ = checked_paper
+    with store.connect() as conn:
+        store.update_intake_document(conn, doc_id, status="in_review")
+    with pytest.raises(HTTPException) as err:
+        service.send_to_edsider(doc_id, service.SendIn(), user=OPERATOR)
+    assert err.value.status_code == 409 and "duplicate check" in err.value.detail
+
+    with store.connect() as conn:
+        store.update_intake_document(conn, doc_id, status="checked")
+        store.flag_repeat(conn, q2, q1, flagged_by=OPERATOR["identity"])
+    with pytest.raises(HTTPException) as err:
+        service.send_to_edsider(doc_id, service.SendIn(), user=OPERATOR)
+    assert err.value.status_code == 409 and "repeat flag" in err.value.detail
+
+    # The checklist shows the open flag on its own question.
+    preview = service.edsider_preview(doc_id, user=OPERATOR)
+    flagged = [p for p in preview.problems if p["question_id"] == q2]
+    assert flagged and flagged[0]["level"] == "error"
+
+
+def test_data_entry_settles_its_own_repeat_flags(checked_paper, monkeypatch):
+    """No teacher here to replace or keep a repeat - data entry does."""
+    doc_id, (q1, q2), _ = checked_paper
+    with store.connect() as conn:
+        store.flag_repeat(conn, q2, q1, flagged_by=OPERATOR["identity"])
+    assert service.repeat_settler(OPERATOR) == OPERATOR
+    service.keep_flagged_question(q2, service.KeepQuestionIn(note="Asks for a different unit."),
+                                  identity=OPERATOR["identity"], user=OPERATOR)
+    with store.connect() as conn:
+        assert store.open_flags(conn, doc_id) == 0
+    # With a teacher review here, settling a repeat stays the teacher's.
+    monkeypatch.delenv("EDSIDER_FLOW")
+    with pytest.raises(HTTPException) as err:
+        service.repeat_settler(OPERATOR)
+    assert err.value.status_code == 403
+
+
+def test_without_the_setting_data_entry_neither_sends_nor_previews(checked_paper, monkeypatch):
+    doc_id, _, _ = checked_paper
+    monkeypatch.delenv("EDSIDER_FLOW")
+    for route in (lambda: service.send_to_edsider(doc_id, service.SendIn(), user=OPERATOR),
+                  lambda: service.edsider_preview(doc_id, user=OPERATOR)):
+        with pytest.raises(HTTPException) as err:
+            route()
+        assert err.value.status_code == 403
+
+
+def test_data_entry_only_turns_the_teacher_review_off(checked_paper):
+    doc_id, _, _ = checked_paper
+    assert service.me(OPERATOR).flow == "data_entry_only"
+    assert service.health()["flow"] == "data_entry_only"
+    with pytest.raises(HTTPException) as err:
+        service.finish_data_entry(doc_id)
+    assert err.value.status_code == 409
+    with pytest.raises(HTTPException) as err:
+        service.assign_document(doc_id, service.AssignIn(teacher_identities=["t@gmail.com"]))
+    assert err.value.status_code == 409

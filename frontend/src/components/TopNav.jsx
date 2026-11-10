@@ -15,7 +15,7 @@ const LINKS = {
   ],
   teacher: [{ to: '/app/teacher', label: 'My papers' }],
   admin: [
-    { to: '/app/admin', label: 'Assign to teachers', end: true },
+    { to: '/app/admin', label: 'Assign to teachers', end: true, fullFlowOnly: true },
     { to: '/app/admin/users', label: 'Manage users', superadminOnly: true },
   ],
 }
@@ -27,10 +27,13 @@ const APP_LABEL = {
 }
 
 // role is null on a local run with no Easy Auth header - everything is
-// open there, same as service.py's require_superadmin().
-export default function TopNav({ app, who, role = null }) {
+// open there, same as service.py's require_superadmin(). dataEntryOnly
+// drops the teacher-review links (see lib/flow.js).
+export default function TopNav({ app, who, role = null, dataEntryOnly = false }) {
   const canManageUsers = role === null || role === 'superadmin'
-  const links = (LINKS[app] || []).filter((l) => !l.superadminOnly || canManageUsers)
+  const links = (LINKS[app] || []).filter(
+    (l) => (!l.superadminOnly || canManageUsers) && !(l.fullFlowOnly && dataEntryOnly),
+  )
   return (
     <nav className="es-nav tn" aria-label="Pages">
       <Link to={links[0]?.to || '/'} aria-label="EdSider AI home" className="tn__logo">

@@ -6,6 +6,8 @@ import RichEditor from '../../components/RichEditor.jsx'
 import QuestionHistory from '../../components/QuestionHistory.jsx'
 import { useToast } from '../../components/Toast.jsx'
 import { confirmDialog } from '../../components/ConfirmDialog.jsx'
+import RepeatPanel from '../teacher/RepeatPanel.jsx'
+import '../teacher/TeacherReview.css'
 
 function slotLabel(slot) {
   if (slot === 'question') return 'Question'
@@ -241,6 +243,13 @@ export default function PaperIntakeQuestion({
   onChanged,
   onRemoved,
   onImagesChanged,
+  // With no teacher review here (lib/flow.js): data entry settles its own
+  // repeat flags - `original` is the question this one repeats - and
+  // `sendIssues` are what EdSider still needs from this question.
+  dataEntryOnly = false,
+  original = null,
+  sendIssues = [],
+  onRepeatSettled,
 }) {
   const { Button, Notice } = window.EdSider
 
@@ -542,6 +551,7 @@ export default function PaperIntakeQuestion({
 
   return (
     <article
+      id={`q-${q.id}`}
       className={`es-card es-draft${isStem ? ' es-draft--stem' : ''}${q.depth > 0 ? ' pi-part' : ''}`}
       style={{ marginLeft: (q.depth || 0) * 30 }}
       aria-label={label}
@@ -583,7 +593,30 @@ export default function PaperIntakeQuestion({
         </p>
       ) : null}
 
-      {q.repeat?.status === 'open' ? (
+      {sendIssues.filter((p) => p.kind !== 'repeat').length ? (
+        <Notice tone="error" title="EdSider needs">
+          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+            {sendIssues.filter((p) => p.kind !== 'repeat').map((p, i) => (
+              <li key={i}>{p.message}</li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
+
+      {dataEntryOnly && q.repeat ? (
+        <>
+          <RepeatPanel q={q} original={original} editable
+            onChanged={() => onRepeatSettled && onRepeatSettled()} />
+          {q.repeat.status === 'open' ? (
+            <p className="es-caption" style={{ margin: 0 }}>
+              Or, if the paper should not have it at all, Remove it below.{' '}
+              <Button variant="ghost" size="sm" onClick={handleUnflag} disabled={flagBusy}>
+                Take the flag back
+              </Button>
+            </p>
+          ) : null}
+        </>
+      ) : q.repeat?.status === 'open' ? (
         <Notice tone="warning" title={`Flagged as a repeat of Q${q.repeat.repeat_of_number}`}>
           The teacher will replace it with a new question, or keep it.{' '}
           <Button variant="ghost" size="sm" onClick={handleUnflag} disabled={flagBusy}>
