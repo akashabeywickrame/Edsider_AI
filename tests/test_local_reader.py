@@ -88,9 +88,61 @@ def test_something_that_is_not_a_paper_is_refused(tmp_path):
         reader.page_images(path)
 
 
+def _job(pages, typical=None):
+    job = reader.new_job({"id": "f", "filename": "p.pdf", "pages_total": 9},
+                         [p[0] for p in pages])
+    job["status"], job["typical"] = "reading", typical
+    for rec, (n, status, seconds, text, started) in zip(job["pages"], pages):
+        rec.update(status=status, seconds=seconds, text=text, started=started)
+    return job
+
+
 def test_progress_estimates_the_time_left_from_pages_read_so_far():
-    job = {"id": "j", "filename": "p.pdf", "status": "reading", "error": None,
-           "pages_total": 5, "pages": ["a", "", "c"], "page_seconds": [300, 200, 250],
-           "load_seconds": 2.0}
+    job = _job([(1, "done", 300, "a", 0), (2, "done", 200, "", 0), (3, "done", 250, "c", 0),
+                (4, "waiting", None, "", None), (5, "waiting", None, "", None)])
     view = reader.job_view(job)
     assert (view["pages_done"], view["seconds_left"], view["text"]) == (3, 500, "a\nc")
+    assert view["estimate_is_measured"] and view["average_seconds"] == 250
+
+
+def test_the_page_being_read_counts_only_its_unfinished_part():
+    job = _job([(1, "done", 200, "a", 0), (2, "reading", None, "", 1000),
+                (3, "waiting", None, "", None)])
+    # 150 s into page 2 of an average 200: 50 s of it left, plus page 3.
+    assert reader.job_view(job, now=1150)["seconds_left"] == 250
+
+
+def test_before_any_page_is_read_the_estimate_is_this_computers_usual_speed():
+    job = _job([(1, "waiting", None, "", None), (2, "waiting", None, "", None)], typical=240)
+    view = reader.job_view(job)
+    assert view["seconds_left"] == 480 and not view["estimate_is_measured"]
+
+
+def test_page_stats_counts_questions_formulas_and_language():
+    text = ("10. Find the value of √196 using prime factors.\n"
+            "13. Solve. p/4 - 3 = 2\n30, 35, 38, 42\n09 The distance between two cities")
+    blocks = [{"label": "Text", "html": "<p>10. <math>\\sqrt{196}</math></p>"},
+              {"label": "Text", "html": "<p>13. <math>\\frac{p}{4}</math></p>"},
+              {"label": "Table", "html": "<table></table>"}]
+    stats = reader.page_stats(text, blocks)
+    assert (stats["questions"], stats["formulas"], stats["tables"]) == (3, 2, 1)
+    assert stats["languages"] == ["English"]
+    assert any("table" in w for w in stats["warnings"])
+
+
+def test_page_stats_flags_a_page_with_almost_no_text():
+    stats = reader.page_stats("fmd;a\n25]")
+    assert stats["warnings"][0].startswith("Very little text")
+
+
+def test_page_stats_names_sinhala_and_english_on_a_mixed_page():
+    stats = reader.page_stats("1. පහත ප්‍රකාශ අතුරින් නිවැරදි ප්‍රකාශය Find the answer")
+    assert set(stats["languages"]) == {"Sinhala", "English"}
+
+
+def test_only_the_chosen_pages_are_rendered(tmp_path):
+    from PIL import Image
+    path = tmp_path / "page.png"
+    Image.new("RGB", (4, 4), "white").save(path)
+    count, pages = reader.page_images(path, only=set())
+    assert count == 1 and list(pages) == []

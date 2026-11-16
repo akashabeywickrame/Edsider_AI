@@ -5,151 +5,551 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EdsiderAI Reader</title>
 <style>
-  :root { --ink:#1b2430; --muted:#5d6b7a; --line:#d9e0e7; --bg:#f5f7fa; --card:#fff; --brand:#1f6feb; --ok:#1a7f37; --bad:#c62828; }
-  * { box-sizing: border-box; }
+  :root {
+    --ink:#1b2430; --muted:#5d6b7a; --faint:#8a96a3; --line:#dde3ea; --bg:#f4f6f9; --card:#fff;
+    --brand:#1f6feb; --brand-soft:#e8f0fe; --ok:#1a7f37; --ok-soft:#e6f4ea; --warn:#9a6700;
+    --warn-soft:#fff6db; --bad:#c62828; --bad-soft:#fdecea; --idle:#eef1f5;
+  }
+  * { box-sizing:border-box; }
   body { margin:0; font:15px/1.5 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
-  main { max-width:880px; margin:0 auto; padding:24px 16px 48px; }
-  h1 { font-size:22px; margin:0 0 4px; }
-  .lede { color:var(--muted); margin:0 0 20px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:16px; }
-  .drop { border:2px dashed var(--line); border-radius:10px; padding:32px 16px; text-align:center; cursor:pointer; }
-  .drop.over { border-color:var(--brand); background:#eef4ff; }
+  main { max-width:1080px; margin:0 auto; padding:20px 16px 56px; }
+  header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  h1 { font-size:22px; margin:0; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .lede { color:var(--muted); margin:2px 0 0; }
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:13px; font-weight:600; background:var(--idle); color:var(--muted); white-space:nowrap; }
+  .chip.reading, .chip.starting, .chip.queued { background:var(--brand-soft); color:var(--brand); }
+  .chip.done { background:var(--ok-soft); color:var(--ok); }
+  .chip.failed { background:var(--bad-soft); color:var(--bad); }
+  .chip.stopped, .chip.skipped { background:var(--warn-soft); color:var(--warn); }
+  .dot { width:8px; height:8px; border-radius:50%; background:currentColor; }
+  .chip.reading .dot, .chip.starting .dot { animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.25; } }
+
+  .steps { display:flex; gap:6px; margin:0 0 16px; padding:0; list-style:none; flex-wrap:wrap; }
+  .steps li { flex:1 1 150px; padding:8px 10px; border-radius:8px; background:var(--card); border:1px solid var(--line); font-size:13px; color:var(--faint); }
+  .steps li b { display:block; font-size:12px; letter-spacing:.02em; }
+  .steps li.now { border-color:var(--brand); color:var(--ink); box-shadow:inset 0 -3px 0 var(--brand); }
+  .steps li.past { color:var(--ok); }
+
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  .drop { display:block; border:2px dashed var(--line); border-radius:10px; padding:30px 16px; text-align:center; cursor:pointer; }
+  .drop.over { border-color:var(--brand); background:var(--brand-soft); }
   .drop input { display:none; }
   .drop strong { display:block; font-size:16px; margin-bottom:4px; }
   .muted { color:var(--muted); font-size:13px; }
-  button { font:inherit; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; background:var(--brand); color:#fff; }
+  .faint { color:var(--faint); font-size:12px; }
+  button { font:inherit; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; background:var(--brand); color:#fff; }
   button.secondary { background:#e8edf3; color:var(--ink); }
+  button.danger { background:var(--bad-soft); color:var(--bad); }
+  button.link { background:none; color:var(--brand); padding:2px 4px; }
   button:disabled { opacity:.5; cursor:default; }
-  .bar { height:10px; background:#e8edf3; border-radius:6px; overflow:hidden; margin:10px 0 6px; }
-  .bar > div { height:100%; width:0; background:var(--brand); transition:width .4s; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .spread { justify-content:space-between; }
   .err { color:var(--bad); }
-  .done { color:var(--ok); font-weight:600; }
-  textarea { width:100%; min-height:340px; font:14px/1.5 "Nirmala UI", "Iskoola Pota", "Latha", "Segoe UI", sans-serif; border:1px solid var(--line); border-radius:8px; padding:12px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:10px; }
-  ol { margin:8px 0 0; padding-left:20px; }
   [hidden] { display:none !important; }
+
+  .fileinfo { display:flex; gap:18px; flex-wrap:wrap; margin:4px 0 14px; font-size:14px; }
+  .fileinfo span b { display:block; font-size:12px; color:var(--faint); font-weight:600; }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px; margin:10px 0 14px; }
+  .thumb { position:relative; border:2px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; cursor:pointer; }
+  .thumb img { display:block; width:100%; height:auto; }
+  .thumb.on { border-color:var(--brand); }
+  .thumb:not(.on) img { opacity:.35; filter:grayscale(1); }
+  .thumb .lab { position:absolute; left:0; right:0; bottom:0; display:flex; justify-content:space-between; align-items:center; padding:4px 6px; background:rgba(255,255,255,.92); font-size:12px; font-weight:600; }
+  .thumb input { width:16px; height:16px; margin:0; }
+  .thumb .zoom { position:absolute; top:4px; right:4px; background:rgba(27,36,48,.7); color:#fff; border-radius:6px; padding:1px 7px; font-size:12px; }
+
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:10px; margin-bottom:14px; }
+  .tile { background:var(--bg); border-radius:10px; padding:10px 12px; }
+  .tile b { display:block; font-size:12px; color:var(--faint); font-weight:600; }
+  .tile span { font-size:18px; font-weight:600; }
+  .bar { height:10px; background:#e8edf3; border-radius:6px; overflow:hidden; }
+  .bar > div { height:100%; width:0; background:var(--brand); transition:width .8s linear; }
+  .bar.ok > div { background:var(--ok); }
+  .bar.slim { height:5px; margin-top:6px; }
+  .phase { margin:10px 0 0; font-size:14px; }
+
+  .pages { list-style:none; margin:0; padding:0; }
+  .pages li { display:grid; grid-template-columns:64px 1fr auto; gap:12px; padding:10px 0; border-top:1px solid var(--line); align-items:start; }
+  .pages li:first-child { border-top:0; }
+  .pages img { width:64px; border:1px solid var(--line); border-radius:4px; display:block; }
+  .pg-title { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-weight:600; }
+  .facts { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+  .fact { font-size:12px; padding:1px 8px; border-radius:999px; background:var(--idle); color:var(--muted); }
+  .warn { margin-top:6px; font-size:13px; color:var(--warn); background:var(--warn-soft); border-radius:6px; padding:4px 8px; }
+  .pg-actions { display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end; }
+
+  details.log summary { cursor:pointer; font-weight:600; }
+  .log ol { list-style:none; margin:10px 0 0; padding:0; max-height:260px; overflow:auto; font:13px/1.6 Consolas, "Cascadia Mono", monospace; }
+  .log li time { color:var(--faint); margin-right:8px; }
+
+  textarea { width:100%; min-height:320px; font:14px/1.55 "Nirmala UI", "Iskoola Pota", "Latha", "Segoe UI", sans-serif; border:1px solid var(--line); border-radius:8px; padding:12px; color:var(--ink); }
+  ol.next { margin:8px 0 0; padding-left:20px; }
+
+  .modal { position:fixed; inset:0; background:rgba(15,20,28,.55); display:flex; align-items:center; justify-content:center; padding:16px; z-index:10; }
+  .modal-box { background:var(--card); border-radius:12px; width:min(1200px, 100%); max-height:calc(100vh - 32px); display:flex; flex-direction:column; overflow:hidden; }
+  .modal-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .modal-body { display:grid; grid-template-columns:1fr 1fr; gap:0; min-height:0; flex:1; }
+  .modal-body > div { overflow:auto; padding:14px; }
+  .modal-body img { width:100%; height:auto; border:1px solid var(--line); }
+  .modal-body pre { margin:0; white-space:pre-wrap; font:14px/1.6 "Nirmala UI", "Iskoola Pota", "Latha", "Segoe UI", sans-serif; }
+  @media (max-width:720px) {
+    .modal-body { grid-template-columns:1fr; }
+    .pages li { grid-template-columns:48px 1fr; }
+    .pages img { width:48px; }
+    .pg-actions { grid-column:2; justify-content:flex-start; }
+  }
 </style>
 </head>
 <body>
 <main>
-  <h1>EdsiderAI Reader</h1>
-  <p class="lede">Reads a scanned question paper on this computer - nothing is sent anywhere.
-    Then copy the text into EdsiderAI.</p>
+  <header>
+    <div>
+      <h1>EdsiderAI Reader</h1>
+      <p class="lede">Reads a scanned question paper on this computer - nothing is sent anywhere.</p>
+    </div>
+    <span class="chip" id="chip"><span class="dot"></span><span id="chipText">Ready</span></span>
+  </header>
 
+  <ol class="steps" id="steps">
+    <li data-step="1"><b>STEP 1</b>Choose the paper</li>
+    <li data-step="2"><b>STEP 2</b>Pick the pages</li>
+    <li data-step="3"><b>STEP 3</b>Read</li>
+    <li data-step="4"><b>STEP 4</b>Copy into EdsiderAI</li>
+  </ol>
+
+  <!-- 1 + 2: choose a paper, then the pages to read -->
   <section class="card" id="pick">
     <label class="drop" id="drop">
       <input type="file" id="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.bmp">
       <strong id="dropText">Drop the scanned paper here, or click to choose it</strong>
       <span class="muted">PDF, or a picture of a page (PNG, JPG, TIFF, BMP)</span>
     </label>
-    <div class="row"><button id="start" disabled>Read the paper</button>
-      <span class="muted">Each page takes a few minutes. You can use the computer for other work meanwhile - keep this window and the black reader window open.</span></div>
+    <p class="err" id="pickErr" hidden></p>
+
+    <div id="pagesPick" hidden>
+      <div class="fileinfo" id="fileinfo"></div>
+      <div class="row spread">
+        <h2 style="margin:0">Pages to read</h2>
+        <div class="row">
+          <button class="link" id="all">Tick all</button>
+          <button class="link" id="none">Untick all</button>
+        </div>
+      </div>
+      <p class="muted" style="margin:4px 0 0">Untick covers, blank pages, answer sheets and adverts - every page takes a few minutes.
+        Click <b>View</b> to look at a page more closely.</p>
+      <div class="thumbs" id="thumbs"></div>
+      <div class="row">
+        <button id="start" disabled>Read the paper</button>
+        <span class="muted" id="estimate"></span>
+      </div>
+    </div>
   </section>
 
+  <!-- 3: what is happening -->
   <section class="card" id="progress" hidden>
-    <div id="state">Starting...</div>
-    <div class="bar"><div id="fill"></div></div>
-    <div class="muted" id="detail"></div>
+    <div class="row spread" style="margin-bottom:12px">
+      <h2 style="margin:0" id="progTitle">Reading</h2>
+      <button class="danger" id="stop">Stop after this page</button>
+    </div>
+    <div class="tiles">
+      <div class="tile"><b>Pages read</b><span id="tPages">-</span></div>
+      <div class="tile"><b>Time so far</b><span id="tElapsed">-</span></div>
+      <div class="tile"><b>Time left</b><span id="tLeft">-</span></div>
+      <div class="tile"><b>Finishes around</b><span id="tEta">-</span></div>
+      <div class="tile"><b>Per page</b><span id="tPer">-</span></div>
+    </div>
+    <div class="bar" id="overallBar"><div id="overall"></div></div>
+    <p class="phase" id="phase"></p>
+    <p class="faint" id="phaseNote"></p>
+
+    <h2 style="margin-top:18px">Pages</h2>
+    <ul class="pages" id="pageList"></ul>
+
+    <details class="log" id="logBox" open style="margin-top:14px">
+      <summary>What happened (activity log)</summary>
+      <ol id="log"></ol>
+    </details>
   </section>
 
+  <!-- 4: the text -->
   <section class="card" id="result" hidden>
-    <div id="resultHead"></div>
+    <div class="row spread" style="margin-bottom:8px">
+      <h2 style="margin:0" id="resultHead">Text read so far</h2>
+      <span class="faint" id="resultCount"></span>
+    </div>
     <textarea id="text" spellcheck="false"></textarea>
-    <div class="row">
+    <div class="row" style="margin-top:10px">
       <button id="copy">Copy all the text</button>
       <button class="secondary" id="save">Save as .txt</button>
       <button class="secondary" id="again">Read another paper</button>
       <span class="muted" id="copied"></span>
     </div>
     <p class="muted" style="margin:14px 0 0">Next:</p>
-    <ol class="muted">
+    <ol class="muted next">
       <li>Open EdsiderAI, go to <b>Paper intake</b> and choose <b>Paste text</b>.</li>
       <li>Give the paper a name, paste the text, and press <b>Extract questions</b>.</li>
-      <li>Check the questions as usual - fix anything read wrongly here or there.</li>
+      <li>Check the questions as usual - use <b>Check</b> on a page here to compare its text with the scan.</li>
     </ol>
   </section>
 </main>
+
+<!-- a page next to its text -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <strong id="modalTitle">Page</strong>
+      <div class="row">
+        <button class="secondary" id="mPrev">&larr; Previous</button>
+        <button class="secondary" id="mNext">Next &rarr;</button>
+        <button class="secondary" id="mCopy">Copy this page</button>
+        <button id="mClose">Close</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div><img id="mImg" alt=""></div>
+      <div><pre id="mText"></pre></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = (id) => document.getElementById(id);
-let chosen = null, jobId = null, timer = null;
+const STATUS = { queued: 'Starting', starting: 'Starting', reading: 'Reading', done: 'Finished',
+                 failed: 'Failed', stopped: 'Stopped' };
+const PAGE_STATUS = { waiting: 'Waiting', reading: 'Reading...', done: 'Done', failed: 'Could not read',
+                      skipped: 'Not read' };
+let file = null, selected = new Set(), job = null, timer = null, ticker = null, offset = 0;
+let textEdited = false, modalPage = null;
 
-function choose(f) {
-  chosen = f || null;
-  $('dropText').textContent = chosen ? chosen.name : 'Drop the scanned paper here, or click to choose it';
-  $('start').disabled = !chosen;
+// ------------------------------------------------------------ helpers
+function dur(s) {
+  if (s == null) return '-';
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  if (m < 60) return `${m} min ${String(r).padStart(2, '0')} s`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
+function roughly(s) {
+  if (s == null) return '-';
+  const m = Math.round(s / 60);
+  return s < 60 ? 'under a minute' : m <= 1 ? 'about 1 min' : `about ${m} min`;
+}
+function clock(t) { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+function clockSec(t) { return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+function serverNow() { return Date.now() + offset; }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Something went wrong (${res.status}).`);
+  return body;
+}
+function setStep(n) {
+  document.querySelectorAll('#steps li').forEach((li) => {
+    const s = Number(li.dataset.step);
+    li.className = s === n ? 'now' : s < n ? 'past' : '';
+  });
+}
+function setChip(status, text) {
+  $('chip').className = `chip ${status || ''}`;
+  $('chipText').textContent = text;
+}
+
+// ------------------------------------------------------------ 1 + 2: choose
 $('file').addEventListener('change', (e) => choose(e.target.files[0]));
 ['dragover', 'dragenter'].forEach((t) => $('drop').addEventListener(t, (e) => { e.preventDefault(); $('drop').classList.add('over'); }));
 ['dragleave', 'drop'].forEach((t) => $('drop').addEventListener(t, () => $('drop').classList.remove('over')));
 $('drop').addEventListener('drop', (e) => { e.preventDefault(); choose(e.dataTransfer.files[0]); });
 
-function minutes(s) {
-  if (s == null) return '';
-  const m = Math.round(s / 60);
-  return m < 1 ? 'under a minute' : m === 1 ? 'about 1 minute' : `about ${m} minutes`;
+async function choose(f) {
+  if (!f) return;
+  $('pickErr').hidden = true;
+  $('dropText').textContent = `Opening ${f.name}...`;
+  $('pagesPick').hidden = true;
+  const form = new FormData();
+  form.append('file', f);
+  try {
+    file = await api('/files', { method: 'POST', body: form });
+  } catch (e) {
+    $('dropText').textContent = 'Drop the scanned paper here, or click to choose it';
+    $('pickErr').textContent = e.message; $('pickErr').hidden = false;
+    return;
+  }
+  $('dropText').textContent = `${file.filename} - drop another file to change it`;
+  selected = new Set(Array.from({ length: file.pages_total }, (_, i) => i + 1));
+  renderFileInfo(); renderThumbs(); renderEstimate();
+  $('pagesPick').hidden = false;
+  setStep(2);
 }
+
+function renderFileInfo() {
+  const box = $('fileinfo'); box.textContent = '';
+  const add = (label, value) => { const s = el('span'); s.append(el('b', null, label), document.createTextNode(value)); box.append(s); };
+  add('File', file.filename);
+  add('Size', `${(file.size / 1e6).toFixed(1)} MB`);
+  add('Pages', String(file.pages_total));
+  add('This computer', file.computer);
+  add('Speed here', file.seconds_per_page ? `about ${dur(file.seconds_per_page)} a page (measured)` : 'not measured yet - usually 3-6 min a page');
+}
+
+function renderThumbs() {
+  const box = $('thumbs'); box.textContent = '';
+  for (let n = 1; n <= file.pages_total; n++) {
+    const t = el('div', `thumb${selected.has(n) ? ' on' : ''}`);
+    const img = el('img'); img.src = `/files/${file.id}/pages/${n}`; img.alt = `Page ${n}`; img.loading = 'lazy';
+    const lab = el('label', 'lab');
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = selected.has(n);
+    lab.append(el('span', null, `Page ${n}`), cb);
+    const zoom = el('span', 'zoom', 'View');
+    zoom.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); openModal(n, true); });
+    const toggle = () => { selected.has(n) ? selected.delete(n) : selected.add(n); cb.checked = selected.has(n); t.classList.toggle('on', selected.has(n)); renderEstimate(); };
+    t.addEventListener('click', (e) => { if (e.target !== cb) { e.preventDefault(); toggle(); } });
+    cb.addEventListener('change', () => { cb.checked = !cb.checked; toggle(); });
+    t.append(img, zoom, lab);
+    box.append(t);
+  }
+}
+
+function renderEstimate() {
+  const count = selected.size;
+  $('start').disabled = !count;
+  $('start').textContent = count ? `Read ${count} page${count === 1 ? '' : 's'}` : 'Tick a page to read';
+  const per = file.seconds_per_page;
+  const left = file.pages_total - count;
+  const parts = [];
+  if (count) parts.push(per ? `${roughly(per * count)} on this computer` : `roughly ${Math.round(count * 3)}-${count * 6} min (first run - speed not measured yet)`);
+  if (left) parts.push(`${left} page${left === 1 ? '' : 's'} left out`);
+  $('estimate').textContent = parts.join(' - ');
+}
+$('all').addEventListener('click', () => { selected = new Set(Array.from({ length: file.pages_total }, (_, i) => i + 1)); renderThumbs(); renderEstimate(); });
+$('none').addEventListener('click', () => { selected = new Set(); renderThumbs(); renderEstimate(); });
 
 $('start').addEventListener('click', async () => {
-  if (!chosen) return;
+  if (!file || !selected.size) return;
   $('start').disabled = true;
-  const form = new FormData();
-  form.append('file', chosen);
-  const res = await fetch('/read', { method: 'POST', body: form });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) { $('start').disabled = false; alert(body.detail || 'Could not start reading.'); return; }
-  jobId = body.id;
-  $('pick').hidden = true; $('progress').hidden = false; $('result').hidden = true;
-  poll();
+  try {
+    const r = await api('/read', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: file.id, pages: [...selected].sort((a, b) => a - b) }) });
+    textEdited = false; $('text').value = '';
+    await follow(r.id);
+  } catch (e) {
+    $('start').disabled = false;
+    $('pickErr').textContent = e.message; $('pickErr').hidden = false;
+  }
 });
 
-async function poll() {
-  clearTimeout(timer);
-  const res = await fetch(`/jobs/${jobId}`);
-  const j = await res.json();
-  const total = j.pages_total || 0, done = j.pages_done;
-  $('fill').style.width = total ? `${Math.round((done / total) * 100)}%` : '3%';
-  if (j.status === 'starting' || j.status === 'queued') {
-    $('state').textContent = 'Starting the reader...';
-    $('detail').textContent = 'The very first time on this computer it downloads its reading model (about 1.5 GB) - that can take a while.';
-  } else if (j.status === 'reading') {
-    $('state').textContent = `Reading page ${Math.min(done + 1, total)} of ${total}`;
-    $('detail').textContent = j.seconds_left != null ? `${minutes(j.seconds_left)} left` : 'Working out how long it will take...';
-  }
-  if (j.text) { $('result').hidden = false; $('text').value = j.text; }
-  if (j.status === 'done') {
-    $('state').innerHTML = '<span class="done">Finished</span>';
-    $('detail').textContent = `${total} page(s) read.`;
-    $('resultHead').textContent = `${j.filename} - check the text, then copy it into EdsiderAI.`;
-    $('result').hidden = false;
-    return;
-  }
-  if (j.status === 'failed') {
-    $('state').innerHTML = `<span class="err">Could not read this paper</span>`;
-    $('detail').textContent = j.error;
-    $('result').hidden = !j.text;
-    $('pick').hidden = false; $('start').disabled = false;
-    return;
-  }
-  $('resultHead').textContent = 'Pages read so far:';
-  timer = setTimeout(poll, 2000);
+// ------------------------------------------------------------ 3: follow the reading
+async function follow(id) {
+  $('pick').hidden = true; $('progress').hidden = false;
+  setStep(3);
+  clearInterval(ticker); ticker = setInterval(tick, 1000);
+  await poll(id);
 }
 
-$('copy').addEventListener('click', async () => {
-  const t = $('text');
-  try { await navigator.clipboard.writeText(t.value); } catch { t.select(); document.execCommand('copy'); }
-  $('copied').textContent = 'Copied - now paste it into EdsiderAI.';
+async function poll(id) {
+  clearTimeout(timer);
+  try {
+    job = await api(`/jobs/${id}`);
+  } catch (e) {
+    $('phase').textContent = e.message;
+    return;
+  }
+  offset = job.now * 1000 - Date.now();
+  render();
+  if (['queued', 'starting', 'reading'].includes(job.status)) timer = setTimeout(() => poll(id), 2000);
+  else { clearInterval(ticker); tick(); }
+}
+
+function active() { return job && ['queued', 'starting', 'reading'].includes(job.status); }
+
+function render() {
+  const j = job;
+  const label = j.status === 'reading'
+    ? `Reading ${Math.min(j.pages_done + 1, j.pages_total)} of ${j.pages_total}` : STATUS[j.status] || j.status;
+  setChip(j.status, label);
+  $('progTitle').textContent = `${j.filename}`;
+  $('stop').hidden = !active();
+  $('stop').disabled = j.stopping;
+  $('stop').textContent = j.stopping ? 'Stopping after this page...' : 'Stop after this page';
+  $('overallBar').className = `bar${j.status === 'done' ? ' ok' : ''}`;
+  renderPages(); renderLog(); renderText(); tick();
+  if (!active()) {
+    setStep(4);
+    const read = j.pages.filter((p) => p.status === 'done').length;
+    $('phase').textContent = j.status === 'done' ? `Finished - ${read} of ${j.pages_total} page(s) read. Check the text below, then copy it into EdsiderAI.`
+      : j.status === 'stopped' ? `Stopped - ${read} page(s) read. The text of those pages is below.`
+      : `Could not read this paper: ${j.error || 'unknown error'}`;
+    $('phaseNote').textContent = '';
+    document.title = `${j.status === 'done' ? '✓ Finished' : STATUS[j.status]} - EdsiderAI Reader`;
+  }
+}
+
+// Updates the clocks every second between polls.
+function tick() {
+  if (!job) return;
+  const j = job, now = serverNow() / 1000;
+  const end = j.finished || now;
+  const reading = j.pages.find((p) => p.status === 'reading');
+  const per = j.average_seconds;
+  let left = j.seconds_left;
+  if (left != null && active()) left = Math.max(0, left - (now - j.now));
+  $('tPages').textContent = `${j.pages_done} of ${j.pages_total}`;
+  $('tElapsed').textContent = dur(end - j.created);
+  $('tLeft').textContent = active() ? (left != null ? roughly(left) : 'working it out...') : '-';
+  $('tEta').textContent = active() && left != null ? clock(serverNow() + left * 1000) : j.finished ? `done ${clock(j.finished * 1000)}` : '-';
+  $('tPer').textContent = per ? `${dur(per)}${j.estimate_is_measured ? '' : ' (usual)'}` : '-';
+  // overall progress: finished pages plus the part of the page being read
+  let partial = 0;
+  if (reading && per) partial = Math.min((now - reading.started) / per, 0.95);
+  const settled = j.pages.filter((p) => ['done', 'failed', 'skipped'].includes(p.status)).length;
+  const pct = j.pages_total ? ((settled + partial) / j.pages_total) * 100 : 0;
+  $('overall').style.width = `${active() ? Math.max(pct, 2) : 100}%`;
+  if (active()) {
+    if (j.status !== 'reading') {
+      $('phase').textContent = 'Starting the reading model...';
+      $('phaseNote').textContent = 'The very first time on this computer it downloads its reading model (about 1.5 GB). After that it starts in seconds.';
+    } else if (reading) {
+      const so = now - reading.started;
+      $('phase').textContent = `Reading page ${reading.n} - ${dur(so)} so far${per ? ` (a page usually takes ${dur(per)})` : ''}.`;
+      $('phaseNote').textContent = 'You can use the computer for other work meanwhile - keep this window and the black reader window open. Reloading this page is safe.';
+      const bar = document.querySelector(`#pg${reading.n} .bar > div`);
+      if (bar && per) bar.style.width = `${Math.min(so / per, 0.97) * 100}%`;
+      const t = document.querySelector(`#pg${reading.n} .pg-time`);
+      if (t) t.textContent = dur(so);
+    }
+    document.title = `(${j.pages_done}/${j.pages_total}) Reading - EdsiderAI Reader`;
+  }
+}
+
+function renderPages() {
+  const list = $('pageList'); list.textContent = '';
+  for (const p of job.pages) {
+    const li = el('li'); li.id = `pg${p.n}`;
+    const img = el('img'); img.src = `/files/${job.file_id}/pages/${p.n}`; img.alt = `Page ${p.n}`;
+    img.onerror = () => { img.replaceWith(el('div', 'faint', `p.${p.n}`)); };
+    const body = el('div');
+    const title = el('div', 'pg-title');
+    const chipCls = p.status === 'done' ? 'done' : p.status === 'reading' ? 'reading' : p.status === 'failed' ? 'failed' : p.status === 'skipped' ? 'skipped' : '';
+    const chip = el('span', `chip ${chipCls}`); chip.append(el('span', 'dot'), el('span', null, PAGE_STATUS[p.status] || p.status));
+    title.append(el('span', null, `Page ${p.n}`), chip);
+    if (p.seconds != null || p.status === 'reading') title.append(el('span', 'faint pg-time', dur(p.seconds)));
+    body.append(title);
+    if (p.status === 'reading') { const b = el('div', 'bar slim'); b.append(el('div')); body.append(b); }
+    if (p.stats) {
+      const s = p.stats, facts = el('div', 'facts');
+      const add = (t) => facts.append(el('span', 'fact', t));
+      add(`${s.chars.toLocaleString()} characters`);
+      add(`${s.lines} lines`);
+      add(`${s.questions} question number${s.questions === 1 ? '' : 's'}`);
+      if (s.formulas) add(`${s.formulas} formula${s.formulas === 1 ? '' : 's'}`);
+      if (s.pictures) add(`${s.pictures} picture${s.pictures === 1 ? '' : 's'}`);
+      if (s.languages.length) add(s.languages.join(' + '));
+      body.append(facts);
+      for (const w of s.warnings) body.append(el('div', 'warn', `⚠ ${w}`));
+    }
+    if (p.error) body.append(el('div', 'warn', `✕ ${p.error}`));
+    if (p.status === 'waiting') body.append(el('div', 'faint', 'In the queue.'));
+    const actions = el('div', 'pg-actions');
+    if (p.status === 'done') {
+      const check = el('button', 'secondary', 'Check'); check.addEventListener('click', () => openModal(p.n));
+      const copy = el('button', 'link', 'Copy'); copy.addEventListener('click', () => copyText(p.text, `Page ${p.n} copied.`));
+      actions.append(check, copy);
+    }
+    li.append(img, body, actions);
+    list.append(li);
+  }
+}
+
+function renderLog() {
+  const box = $('log');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 20;
+  box.textContent = '';
+  for (const e of job.log) {
+    const li = el('li'); const t = el('time', null, clockSec(e.t * 1000));
+    li.append(t, document.createTextNode(e.msg)); box.append(li);
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderText() {
+  const read = job.pages.filter((p) => p.status === 'done').length;
+  $('result').hidden = !job.text && active();
+  $('resultHead').textContent = active() ? 'Text read so far' : 'The text - check it, then copy it into EdsiderAI';
+  $('resultCount').textContent = `${read} page(s), ${job.text.length.toLocaleString()} characters${textEdited ? ' - edited by you' : ''}`;
+  if (!textEdited) $('text').value = job.text;
+}
+$('text').addEventListener('input', () => { textEdited = true; });
+
+$('stop').addEventListener('click', async () => {
+  if (!job) return;
+  try { job = await api(`/jobs/${job.id}/stop`, { method: 'POST' }); render(); } catch (e) { alert(e.message); }
 });
+
+// ------------------------------------------------------------ 4: the text
+async function copyText(value, note) {
+  try { await navigator.clipboard.writeText(value); }
+  catch { const t = $('text'); const keep = t.value; t.value = value; t.select(); document.execCommand('copy'); t.value = keep; }
+  $('copied').textContent = note;
+}
+$('copy').addEventListener('click', () => copyText($('text').value, 'Copied - now paste it into EdsiderAI.'));
 $('save').addEventListener('click', () => {
   const blob = new Blob([$('text').value], { type: 'text/plain;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = (chosen ? chosen.name.replace(/\.[^.]+$/, '') : 'paper') + '.txt';
+  a.download = ((job && job.filename) || 'paper').replace(/\.[^.]+$/, '') + '.txt';
   a.click();
 });
 $('again').addEventListener('click', () => {
-  choose(null); $('file').value = '';
-  $('pick').hidden = false; $('progress').hidden = true; $('result').hidden = true; $('copied').textContent = '';
+  if (active() && !confirm('A paper is still being read. Leave it reading and choose another file? You can only start the next one when this one finishes.')) return;
+  clearTimeout(timer); clearInterval(ticker);
+  job = null; file = null; textEdited = false; $('file').value = '';
+  $('dropText').textContent = 'Drop the scanned paper here, or click to choose it';
+  $('pagesPick').hidden = true; $('pick').hidden = false; $('progress').hidden = true; $('result').hidden = true;
+  $('copied').textContent = ''; setChip('', 'Ready'); setStep(1); document.title = 'EdsiderAI Reader';
 });
+
+// ------------------------------------------------------------ page beside its text
+function modalPages() {
+  if (job && !$('progress').hidden) return job.pages.filter((p) => p.status === 'done').map((p) => p.n);
+  return file ? Array.from({ length: file.pages_total }, (_, i) => i + 1) : [];
+}
+function openModal(n, previewOnly) {
+  modalPage = n;
+  const fid = previewOnly || !job ? file.id : job.file_id;
+  const page = job && !previewOnly ? job.pages.find((p) => p.n === n) : null;
+  $('modalTitle').textContent = page ? `Page ${n} - the scan beside the text read from it` : `Page ${n}`;
+  $('mImg').src = `/files/${fid}/pages/${n}?big=true`;
+  $('mImg').alt = `Page ${n}`;
+  $('mText').textContent = page ? (page.text || '(no text was read from this page)') : 'Not read yet.';
+  $('mCopy').hidden = !page;
+  const pages = modalPages(), i = pages.indexOf(n);
+  $('mPrev').disabled = i <= 0; $('mNext').disabled = i < 0 || i >= pages.length - 1;
+  $('modal').hidden = false;
+}
+$('mClose').addEventListener('click', () => { $('modal').hidden = true; });
+$('modal').addEventListener('click', (e) => { if (e.target === $('modal')) $('modal').hidden = true; });
+document.addEventListener('keydown', (e) => {
+  if ($('modal').hidden) return;
+  if (e.key === 'Escape') $('modal').hidden = true;
+  if (e.key === 'ArrowLeft' && !$('mPrev').disabled) $('mPrev').click();
+  if (e.key === 'ArrowRight' && !$('mNext').disabled) $('mNext').click();
+});
+const step = (d) => { const pages = modalPages(); const i = pages.indexOf(modalPage); if (pages[i + d]) openModal(pages[i + d], $('progress').hidden); };
+$('mPrev').addEventListener('click', () => step(-1));
+$('mNext').addEventListener('click', () => step(1));
+$('mCopy').addEventListener('click', () => { const p = job && job.pages.find((x) => x.n === modalPage); if (p) copyText(p.text, `Page ${p.n} copied.`); });
+
+// ------------------------------------------------------------ start: pick up a paper already being read
+setStep(1);
+(async () => {
+  try {
+    const current = await api('/jobs/current');
+    if (current && (['queued', 'starting', 'reading'].includes(current.status) || current.text)) await follow(current.id);
+  } catch { /* nothing read yet */ }
+})();
 </script>
 </body>
 </html>

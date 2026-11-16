@@ -36,6 +36,7 @@ data/files/
 local_reader/venv/
 local_reader/llamacpp/
 local_reader/_upload_*
+local_reader/speed.json
 
 # Office lock files, present while a document is open in Word/Excel.
 ~$*
